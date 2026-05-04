@@ -1,0 +1,120 @@
+"""
+Manual position tracker — independent of any paper-wallet logic.
+
+When the user clicks "I entered" on a LIVE ticket card, the full ticket payload
+is pinned here. The frontend continues to live-reprice the contract and fires
+exit alerts (SL hit, T1 hit, theta zone, 15:00 force-exit) regardless of any
+later AI verdict revisions.
+
+Storage is a flat JSON file — no DB, no schema migration, easy to inspect/edit.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import threading
+import uuid
+from datetime import datetime
+from typing import List, Optional
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+_DATA_DIR  = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
+_FILE_PATH = os.path.abspath(os.path.join(_DATA_DIR, 'tracked_positions.json'))
+_lock      = threading.Lock()
+
+
+def _read() -> List[dict]:
+    if not os.path.exists(_FILE_PATH):
+        return []
+    try:
+        with open(_FILE_PATH, 'r') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _write(items: List[dict]) -> None:
+    os.makedirs(_DATA_DIR, exist_ok=True)
+    with open(_FILE_PATH, 'w') as f:
+        json.dump(items, f, indent=2, default=str)
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+def list_tracked() -> List[dict]:
+    """Return all tracked positions, newest first."""
+    with _lock:
+        items = _read()
+    return sorted(items, key=lambda x: x.get('entered_at', ''), reverse=True)
+
+
+def add_tracked(ticket: dict, qty: int = 1, notes: str = '') -> dict:
+    """Pin a ticket as an entered position. Returns the saved record.
+    Rejects duplicates: if a position with the same trading_symbol already
+    exists, returns the existing record instead of creating another."""
+    if not ticket or not ticket.get('trading_symbol'):
+        raise ValueError("ticket with trading_symbol required")
+    sym = str(ticket.get('trading_symbol') or '').strip().upper()
+    record = {
+        'id':          uuid.uuid4().hex[:12],
+        'entered_at':  datetime.now().isoformat(),
+        'qty':         int(qty or 1),
+        'notes':       (notes or '').strip(),
+        'ticket':      ticket,
+    }
+    with _lock:
+        items = _read()
+        # Dedup by trading_symbol — guards against rapid double-clicks racing
+        # the frontend's isTracked() check.
+        for existing in items:
+            t = (existing.get('ticket') or {}).get('trading_symbol') or ''
+            if t.strip().upper() == sym:
+                return existing
+        items.append(record)
+        _write(items)
+    # Notify the backend watcher so it begins repricing this position on every
+    # spot tick / poll cycle. Lazy import to avoid an import cycle at startup.
+    try:
+        from . import tracked_monitor
+        tracked_monitor.sync()
+    except Exception:
+        pass
+    return record
+
+
+def remove_tracked(track_id: str, exit_premium: Optional[float] = None,
+                    exit_reason: str = '') -> Optional[dict]:
+    """
+    Remove a tracked position. Returns the removed record (with exit metadata
+    appended) so the caller can show a final P&L summary.
+    """
+    with _lock:
+        items = _read()
+        idx = next((i for i, r in enumerate(items) if r.get('id') == track_id), -1)
+        if idx < 0:
+            return None
+        rec = items.pop(idx)
+        _write(items)
+
+    rec['exited_at']    = datetime.now().isoformat()
+    rec['exit_premium'] = exit_premium
+    rec['exit_reason']  = exit_reason or 'manual'
+    # Re-sync the watcher so it stops monitoring this id (clears stale state).
+    try:
+        from . import tracked_monitor
+        tracked_monitor.sync()
+    except Exception:
+        pass
+    return rec
+
+
+def update_notes(track_id: str, notes: str) -> Optional[dict]:
+    with _lock:
+        items = _read()
+        for r in items:
+            if r.get('id') == track_id:
+                r['notes'] = (notes or '').strip()
+                _write(items)
+                return r
+    return None
