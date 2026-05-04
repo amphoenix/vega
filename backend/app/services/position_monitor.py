@@ -498,12 +498,15 @@ def _check_positions():
         cost      = _position_cost(pos) or 1
         pnl_pct   = round(net_pnl / cost * 100, 2)
 
-        # ── CE/PE: premium-multiple SL/T1/T2 ─────────────────────────────────
+        # ── CE/PE: premium-level SL/T1/T2 ────────────────────────────────────
+        # Use B-S repriced levels from option_planner when available (stored at
+        # open time as premium_sl/t1/t2). Fall back to entry-multiple heuristics
+        # for positions opened without option_planner (e.g. manual entries).
         if itype in ('CE', 'PE') and option_premium is not None:
             opt_price = option_premium
-            opt_sl    = round(avg_entry * 0.50, 2)
-            opt_t1    = round(avg_entry * 2.00, 2)
-            opt_t2    = round(avg_entry * 3.00, 2)
+            opt_sl    = round(float(pos.get('premium_sl') or avg_entry * 0.50), 2)
+            opt_t1    = round(float(pos.get('premium_t1') or avg_entry * 2.00), 2)
+            opt_t2    = round(float(pos.get('premium_t2') or avg_entry * 3.00), 2)
 
             exit_reason = None
             if force_exit_now:
@@ -749,6 +752,9 @@ def open_position(
     stop_loss: float,
     target_1: float,
     target_2: float,
+    premium_sl: float = 0.0,        # option premium SL (₹/unit) from option_planner
+    premium_t1: float = 0.0,        # option premium T1 (₹/unit)
+    premium_t2: float = 0.0,        # option premium T2 (₹/unit)
     strike_price: float = 0.0,
     expiry: str = '',
     security_id: str = '',
@@ -817,6 +823,9 @@ def open_position(
             'stop_loss':       stop_loss,
             'target_1':        target_1,
             'target_2':        target_2,
+            'premium_sl':      premium_sl,
+            'premium_t1':      premium_t1,
+            'premium_t2':      premium_t2,
             'entry_date':      datetime.now().isoformat(),
             'entry_order_id':  result.get('order_id', ''),
             'sl_order_id':     sl_oid,

@@ -53,7 +53,7 @@ Market technicals (index context):
    - Sector-specific: FIIs favour IT, Pharma, Private Banks; DIIs rotate into domestic cyclicals
 
 3. INDIA VIX
-   - Below 13 = complacency / risk-on; 13-18 = normal; above 20 = fear regime
+   - Below 13 = complacency / risk-on; 13–18 = normal; 18–22 = elevated; above 22 = fear regime
    - VIX spike before results/budget/elections = elevated option premiums, widen stops
    - VIX crush after event = IV collapse, short-premium strategies win
 

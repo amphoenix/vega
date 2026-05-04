@@ -78,17 +78,19 @@ class MemoryManager:
         except Exception:
             pass
 
-        # Fallback: sentence-transformers (smaller, no server needed)
-        try:
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-            vec = model.encode(text).tolist()
-            # Pad/truncate to VECTOR_DIM if needed
-            if len(vec) < VECTOR_DIM:
-                vec = vec + [0.0] * (VECTOR_DIM - len(vec))
-            return vec[:VECTOR_DIM]
-        except Exception:
-            pass
+        # Fallback: sentence-transformers (no server needed).
+        # Prefer a 768-dim model matching the collection; skip storage if only
+        # a 384-dim model is available — zero-padding to 768 destroys cosine similarity.
+        for st_model in ('paraphrase-multilingual-mpnet-base-v2', 'all-mpnet-base-v2'):
+            try:
+                from sentence_transformers import SentenceTransformer
+                model = SentenceTransformer(st_model)
+                vec = model.encode(text).tolist()
+                if len(vec) == VECTOR_DIM:
+                    return vec
+                # Wrong dimension — try next model
+            except Exception:
+                pass
 
         return None
 

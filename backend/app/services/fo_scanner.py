@@ -40,10 +40,8 @@ logger = get_logger('phoenixtrade.fo_scanner')
 # Tickers in yfinance format. Scanner cycles through these.
 FO_UNIVERSE = [
     '^NSEI',        # NIFTY 50
-    # '^BSESN' (SENSEX) intentionally excluded: IndStocks broker has no live
-    # quote endpoint for BSE indices/derivatives — only equities. Re-enable
-    # only when you switch to a broker that supports BSE F&O streaming.
-    '^NSEBANK',     # BANKNIFTY (most liquid index after NIFTY)
+    '^NSEBANK',     # BANKNIFTY
+    '^BSESN',       # SENSEX (BSE F&O — confirmed in IndMoney instrument master)
 ]
 
 # Lot sizes are now sourced from the IndStocks F&O instrument master
@@ -51,12 +49,12 @@ FO_UNIVERSE = [
 # only as a fallback used when the master fetch fails for ranking purposes —
 # never trusted for live order sizing.
 _LOT_SIZE_FALLBACK = {
-    '^NSEI':         75,    # NIFTY (NSE revised Nov-2024)
+    '^NSEI':         65,    # NIFTY (Jan-2026 series revision)
     '^NSEBANK':      30,    # BANKNIFTY
     '^BSESN':        20,    # SENSEX (BSE)
-    'NIFTY':         75,
+    'NIFTY':         65,
     'BANKNIFTY':     30,
-    'FINNIFTY':      65,
+    'FINNIFTY':      60,
 }
 
 
@@ -74,12 +72,14 @@ def _lot_size_for(ticker: str) -> Optional[int]:
 UNDERLYING_MAP = {
     '^NSEI':    '^NSEI',
     '^NSEBANK': '^NSEBANK',
+    '^BSESN':   '^BSESN',
 }  # For stocks, underlying == ticker
 
 SCAN_INTERVAL_SECONDS = int(os.environ.get('FO_SCAN_INTERVAL_SEC', '0'))
 MAX_OPEN_POSITIONS    = int(os.environ.get('FO_MAX_POSITIONS', '3'))
 MIN_CONFIDENCE        = int(os.environ.get('FO_MIN_CONFIDENCE', '70'))
 MIN_AGENT_AGREEMENT   = int(os.environ.get('FO_MIN_AGENTS', '3'))  # of 5 agents
+SIGNAL_MIN_DTE        = int(os.environ.get('FO_SIGNAL_MIN_DTE', '1'))  # 0 = allow all days
 
 _scanner_thread: Optional[threading.Thread] = None
 _stop_event     = threading.Event()
@@ -228,7 +228,8 @@ def _passes_safety_gates(ticker: str, cio: dict, wallet: dict) -> tuple[bool, st
 def _nse_base(ticker: str) -> str:
     """Strip .NS/.BO/^ and map index tickers to NSE base names."""
     t = ticker.upper().replace('.NS', '').replace('.BO', '').lstrip('^')
-    return {'NSEI': 'NIFTY', 'NSEBANK': 'BANKNIFTY', 'CNXFIN': 'FINNIFTY'}.get(t, t)
+    return {'NSEI': 'NIFTY', 'NSEBANK': 'BANKNIFTY', 'CNXFIN': 'FINNIFTY',
+            'BSESN': 'SENSEX'}.get(t, t)
 
 
 def _resolve_option_contract(ticker: str, option_type: str, strike: float) -> dict | None:
@@ -419,9 +420,12 @@ def _execute_scan_trade(ticker: str, price: float, cio: dict, wallet: dict) -> O
         logger.warning(f"Scanner: invalid premium {premium} for {trading_symbol}")
         return None
 
-    stop_loss = float(cio.get('stop_loss', round(price * 0.97, 2)))
-    target_1  = float(cio.get('target_1',  round(price * 1.03, 2)))
-    target_2  = float(cio.get('target_2',  round(price * 1.06, 2)))
+    stop_loss  = float(cio.get('stop_loss', round(price * 0.97, 2)))
+    target_1   = float(cio.get('target_1',  round(price * 1.03, 2)))
+    target_2   = float(cio.get('target_2',  round(price * 1.06, 2)))
+    premium_sl = float(cio.get('premium_sl') or 0)
+    premium_t1 = float(cio.get('premium_t1') or 0)
+    premium_t2 = float(cio.get('premium_t2') or 0)
 
     cash         = wallet.get('cash', 0)
     position_pct = min(float(cio.get('position_size_pct', 2)), 10) / 100.0
@@ -451,6 +455,9 @@ def _execute_scan_trade(ticker: str, price: float, cio: dict, wallet: dict) -> O
         stop_loss=stop_loss,
         target_1=target_1,
         target_2=target_2,
+        premium_sl=premium_sl,
+        premium_t1=premium_t1,
+        premium_t2=premium_t2,
         strike_price=strike,
         expiry=expiry_iso,
         security_id=sec_id,
@@ -459,21 +466,23 @@ def _execute_scan_trade(ticker: str, price: float, cio: dict, wallet: dict) -> O
         live=live,
     )
     return {
-        'ticker':         ticker,
-        'trading_symbol': trading_symbol,
+        'ticker':          ticker,
+        'trading_symbol':  trading_symbol,
         'instrument_type': itype,
-        'qty':            qty,
-        'lot_size':       lot_size,
-        'premium':        premium,
-        'cost':           round(cost_per_lot * qty, 2),
-        'stop_loss':      stop_loss,
-        'target_1':       target_1,
-        'target_2':       target_2,
-        'verdict':        cio.get('final_verdict'),
-        'confidence':     cio.get('confidence_to_trade'),
-        'order_status':   result.get('status'),
-        'mode':           'live' if live else 'paper',
-        'timestamp':      datetime.now().isoformat(),
+        'strike':          strike,
+        'expiry':          cio.get('expiry'),
+        'qty':             qty,
+        'lot_size':        lot_size,
+        'premium':         premium,
+        'cost':            round(cost_per_lot * qty, 2),
+        'stop_loss':       stop_loss,
+        'target_1':        target_1,
+        'target_2':        target_2,
+        'verdict':         cio.get('final_verdict'),
+        'confidence':      cio.get('confidence_to_trade'),
+        'order_status':    result.get('status'),
+        'mode':            'live' if live else 'paper',
+        'timestamp':       datetime.now().isoformat(),
     }
 
 
@@ -548,16 +557,25 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
     lot_size = _lot_size_for(ticker) or 1
 
     # Strike: CE = price + 1.5%, PE = price - 1.5% (delta ~0.35)
+    # Round to exchange-mandated strike interval: NIFTY/BANKNIFTY → 50, SENSEX → 100, stocks → int
+    def _round_strike(raw, tkr):
+        t = tkr.upper()
+        if 'NIFTY' in t or '^NSE' in t:
+            return round(raw / 50) * 50
+        if 'SENSEX' in t or 'BSESN' in t:
+            return round(raw / 100) * 100
+        return round(raw)
+
     if itype == 'CE':
         raw_strike = price * 1.015
-        strike = round(raw_strike / 50) * 50 if 'NIFTY' in ticker.upper() or '^NSE' in ticker else round(raw_strike)
+        strike = _round_strike(raw_strike, ticker)
         sl_underlying = round(price * 0.98, 2)
         t1_underlying = round(price * 1.03, 2)
         t2_underlying = round(price * 1.05, 2)
         bull_count, bear_count = 3, 1
     else:
         raw_strike = price * 0.985
-        strike = round(raw_strike / 50) * 50 if 'NIFTY' in ticker.upper() or '^NSE' in ticker else round(raw_strike)
+        strike = _round_strike(raw_strike, ticker)
         sl_underlying = round(price * 1.02, 2)
         t1_underlying = round(price * 0.97, 2)
         t2_underlying = round(price * 0.95, 2)
@@ -832,6 +850,9 @@ def _run_scan_cycle(llm_client):
                 cio['option_ltp']        = ticket['entry']['expected_premium_inr']
                 cio['estimated_premium'] = ticket['entry']['expected_premium_inr']
                 cio['lot_size']          = ticket['lot_size']
+                cio['premium_sl']        = ticket['exit']['stop_loss_inr']
+                cio['premium_t1']        = ticket['exit']['target_1_inr']
+                cio['premium_t2']        = ticket['exit']['target_2_inr']
                 logger.info(f"Scanner ticket: {ticket['trading_symbol']} "
                             f"@ ₹{ticket['entry']['expected_premium_inr']:.2f} "
                             f"Δ={ticket['greeks']['delta']:.2f} "
@@ -876,8 +897,8 @@ def _run_scan_cycle(llm_client):
             _state['signals'].append(signal)
             # Persist most-recent ticket per underlying so a browser refresh
             # can replay it via subscribe_sse().
-            ticket = signal.get('ticket') or {}
-            under  = ticket.get('underlying') or signal.get('ticker')
+            _sig_ticket = signal.get('ticket') or {}
+            under  = _sig_ticket.get('underlying') or signal.get('ticker')
             if under:
                 _state['latest_by_under'][under] = signal
 

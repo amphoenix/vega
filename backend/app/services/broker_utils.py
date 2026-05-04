@@ -42,7 +42,7 @@ NSE_HOLIDAYS_2025 = {
     '2025-08-15',  # Independence Day
     '2025-08-27',  # Ganesh Chaturthi
     '2025-10-02',  # Mahatma Gandhi Jayanti / Dussehra
-    '2025-10-21',  # Diwali Laxmi Pujan (special muhurat session only)
+    '2025-10-20',  # Diwali Laxmi Pujan (special muhurat session only)
     '2025-10-22',  # Diwali-Balipratipada
     '2025-11-05',  # Prakash Gurpurb Sri Guru Nanak Dev
     '2025-12-25',  # Christmas

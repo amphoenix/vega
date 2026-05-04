@@ -1175,9 +1175,9 @@ def _ind_place_order(ticker: str, txn_type: str, qty_units: int,
         for inst in _load_instruments('fno'):
             t_sym  = (inst.get('TRADING_SYMBOL') or inst.get('tradingsymbol') or '').strip().upper()
             t_exch = (inst.get('EXCH') or inst.get('exchange') or '').strip().upper()
-            if t_sym == sym and t_exch in ('NFO', 'BFO'):
+            if t_sym == sym and t_exch in ('NFO', 'BFO', 'NSE', 'BSE'):
                 sec_id         = (inst.get('SECURITY_ID') or inst.get('security_id') or '').strip()
-                order_exchange = t_exch
+                order_exchange = 'BFO' if t_exch in ('BFO', 'BSE') else 'NFO'
                 break
         if not sec_id:
             return {"status": "error", "error": f"F&O instrument not found: {ticker}"}

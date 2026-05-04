@@ -92,11 +92,12 @@ class AnalysisRunner:
             else:
                 normal_agents.append(entry)
 
-        agent_results: List[AgentOutput] = []
+        results_with_domain: List[tuple] = []   # (AgentOutput, domain_str)
 
-        def _dispatch(entry: dict) -> AgentOutput:
+        def _dispatch(entry: dict) -> tuple:
             agent  = entry['agent']
             entity = entry['entity']
+            domain = entity.get('domain', 'fundamental')
             exec_id = str(uuid.uuid4())
             process_store.register(exec_id, agent.name(), ticker)
             event_bus.publish(agent_submitted_event(exec_id, agent.name()))
@@ -115,7 +116,7 @@ class AnalysisRunner:
                 process_store.complete(exec_id, result.to_dict())
                 event_bus.publish(agent_completed_event(exec_id, agent.name(), result.to_dict()))
                 emit_fn('agent', {'agent': result.to_dict()})
-                return result
+                return result, domain
             except Exception as exc:
                 process_store.fail(exec_id, str(exc))
                 event_bus.publish(agent_failed_event(exec_id, agent.name(), str(exc)))
@@ -134,13 +135,15 @@ class AnalysisRunner:
 
             for future in as_completed(all_futures):
                 try:
-                    agent_results.append(future.result())
+                    results_with_domain.append(future.result())
                 except Exception:
                     pass
 
-        tech_result  = next((r for r in agent_results if 'RSI'  in r.data_focus), None)
-        fund_result  = next((r for r in agent_results if 'PE'   in r.data_focus), None)
-        risk_result  = next((r for r in agent_results if 'Risk' in r.role), None)
+        agent_results = [r for r, _ in results_with_domain]
+
+        tech_result  = next((r for r, d in results_with_domain if d == 'technical'),   None)
+        fund_result  = next((r for r, d in results_with_domain if d == 'fundamental'), None)
+        risk_result  = next((r for r, d in results_with_domain if d == 'risk'),        None)
 
         tech_block = tech_result.reasoning  if tech_result  else ''
         fund_block = fund_result.reasoning  if fund_result  else ''

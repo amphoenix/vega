@@ -33,7 +33,8 @@ def run_cio(
     )
 
     is_fo_universe = any(x in ticker.upper() for x in [
-        'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY',
+        'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'BSESN', 'SENSEX',
+        'NSEI', 'BSE',
         'RELIANCE', 'TCS', 'HDFCBANK', 'ICICIBANK', 'INFY',
         'SBIN', 'AXISBANK', 'WIPRO', 'BAJFINANCE', 'MARUTI',
         'TATAMOTORS', 'TATASTEEL', 'ONGC', 'NTPC', 'SUNPHARMA',
@@ -52,19 +53,21 @@ You must recommend the BEST instrument to trade right now:
     Current month expiry is always safer. Use next month only if thesis needs >2 weeks.
 
   - strike_price: for CE/PE only — use delta 0.30–0.45 (slightly OTM, best risk/reward)
-    CE: slightly OTM = current price + 1–3% (round to nearest 50 for NIFTY/BANKNIFTY)
-        Example: NIFTY @ 24000 → pick 24250 CE (≈1% OTM, delta ~0.35)
+    Strike rounding: NIFTY/^NSEI/BANKNIFTY → nearest 50 | SENSEX/^BSESN → nearest 100
+    CE: slightly OTM = current price + 1–3%
+        Example: NIFTY @ 24000 → pick 24250 CE | SENSEX @ 80000 → pick 80800 CE
     PE: slightly OTM = current price - 1–3%
-        Example: NIFTY @ 24000 → pick 23750 PE (≈1% OTM, delta ~0.35)
+        Example: NIFTY @ 24000 → pick 23750 PE | SENSEX @ 80000 → pick 79200 PE
     Deep OTM (>5% away) = AVOID unless very high conviction (delta <0.15 = lottery ticket)
     ATM = delta ~0.50, highest premium but max theta decay
     FUT: set strike_price to 0
 
-  - lot_size: standard NSE lot sizes
-    NIFTY=50, BANKNIFTY=15, FINNIFTY=40, MIDCPNIFTY=75
-    Stocks: RELIANCE=250, TCS=150, HDFCBANK=550, ICICIBANK=700,
-            INFY=300, SBIN=1500, AXISBANK=1200, WIPRO=3000,
-            BAJFINANCE=125, MARUTI=50, TATAMOTORS=900, TATASTEEL=5500
+  - lot_size: lot sizes (Jan-2026 series — always cross-check instrument master)
+    Indices: NIFTY/^NSEI=65, BANKNIFTY=30, FINNIFTY=60, MIDCPNIFTY=120, SENSEX/^BSESN=20
+    Stocks (indicative):
+    RELIANCE=500, TCS=175, HDFCBANK=550, ICICIBANK=700,
+    INFY=400, SBIN=750, AXISBANK=625, WIPRO=3000,
+    BAJFINANCE=750, MARUTI=50, TATAMOTORS=800, TATASTEEL=2750
 
   - estimated_premium: approximate option premium in ₹ per lot (for CE/PE)
     Use: ATM premium ≈ 0.4-0.6% of underlying for weekly, 0.8-1.2% for monthly
@@ -179,3 +182,4 @@ Return a JSON object with exactly these keys (no extra keys, no markdown):
         }
 
     return data
+

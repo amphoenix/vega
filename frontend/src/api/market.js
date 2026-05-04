@@ -92,7 +92,7 @@ export const getInvestAnalysis = (ticker) => {
 
 // Streaming version — returns EventSource, emits agent/debate/done events in real-time
 export const createInvestAnalysisStream = (ticker) => {
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291'
   return new EventSource(`${base}/api/market/invest-analysis-stream/${ticker}`)
 }
 
@@ -136,7 +136,7 @@ export const searchTicker = (q) => {
 
 // Portfolio simulation — SSE stream (EventSource, caller manages lifecycle)
 export const createPortfolioSimStream = (capital, horizon, scope = 'all') => {
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291'
   return new EventSource(`${base}/api/market/portfolio-sim-stream?capital=${capital}&horizon=${horizon}&scope=${scope}`)
 }
 
@@ -152,7 +152,7 @@ export const placeIndmoneyOrder  = (payload) => service.post('/api/indmoney/orde
 export const cancelIndmoneyOrder = (orderId) => service.post('/api/indmoney/order/cancel', { order_id: orderId })
 
 export const createIndmoneyStream = (ticker) => {
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291'
   return new EventSource(`${base}/api/indmoney/stream/${ticker}`)
 }
 
@@ -167,12 +167,12 @@ export const triggerFoScan      = () => service.post('/api/trade/fo-scanner/trig
 export const getFoScannerStatus = () => service.get('/api/trade/fo-scanner/status')
 
 export const createFoScannerStream = () => {
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291'
   return new EventSource(`${base}/api/trade/fo-scanner/stream`)
 }
 
 export const createMonitorStream = () => {
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:47291'
   return new EventSource(`${base}/api/trade/monitor/stream`)
 }
 

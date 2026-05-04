@@ -444,7 +444,9 @@ def backtest(ticker: str):
 
         # Position sizing recommendation (NautilusTrader-style: risk 1% per trade)
         last_close = float(df['close'].iloc[-1])
-        atr_series = df['close'].rolling(14).std()
+        _h = df['high']; _l = df['low']; _c = df['close']
+        _tr = np.maximum(_h - _l, np.maximum(abs(_h - _c.shift()), abs(_l - _c.shift())))
+        atr_series = _tr.rolling(14).mean()
         atr_val    = float(atr_series.iloc[-1]) if len(atr_series) > 14 else last_close * 0.02
         stop_dist  = atr_val * 1.5
         risk_per_trade = cash * 0.01          # 1% of capital
@@ -801,13 +803,9 @@ def execute_order():
 
 def _compute_levels(df, exec_price: float = None) -> dict:
     """
+    Compute entry, stop-loss, and targets from OHLCV DataFrame.
     exec_price: if provided, anchor SL/targets to this price (actual buy price)
-                instead of the ideal entry derived from S&R. Used by ai_trade()
-                so displayed levels match actual trade risk, not planned entry.
-    """
-    """
-    Shared helper: compute entry, stop-loss, and targets from OHLCV DataFrame.
-    Used by both get_trade_levels() and ai_trade() so values are always consistent.
+                instead of the ideal entry derived from S&R.
     """
     import numpy as np
     c = df['close']; h = df['high']; l = df['low']
@@ -858,6 +856,8 @@ def _compute_levels(df, exec_price: float = None) -> dict:
     t1 = resistances[0] if resistances and (resistances[0] - anchor) >= risk * 1.5 else anchor + risk * 1.5
     t2 = resistances[1] if len(resistances) > 1 and (resistances[1] - anchor) >= risk * 2.5 else anchor + risk * 2.5
     t3 = anchor + risk * 4.0
+    # Guarantee ascending order: T1 nearest target, T3 most ambitious
+    t1, t2, t3 = sorted([t1, t2, t3])
 
     return {
         "entry":      round(entry, 4),
@@ -906,7 +906,6 @@ def get_trade_levels(ticker: str):
         ema20  = float(c.ewm(span=20,  adjust=False).mean().iloc[-1])
         ema50  = float(c.ewm(span=50,  adjust=False).mean().iloc[-1])
         ema200 = float(c.ewm(span=200, adjust=False).mean().iloc[-1])
-        rsi    = lv['atr']  # recalculate rsi separately
         delta  = c.diff()
         gain   = delta.clip(lower=0).rolling(14).mean()
         loss   = (-delta.clip(upper=0)).rolling(14).mean()
@@ -1270,7 +1269,8 @@ def ai_trade():
         avg_vol   = float(v.iloc[-21:-1].mean()) if len(v) > 21 else float(v.mean())
         vol_ratio = float(v.iloc[-1] / avg_vol) if avg_vol > 0 else 1.0
 
-        bars    = min(len(df), 6)
+        # 6 bars = 6 hours for 1h data (intraday VWAP); 20 bars = 20 days for daily fallback
+        bars    = 6 if len(df) > 100 else min(len(df), 20)
         typical = (h.iloc[-bars:] + l.iloc[-bars:] + c.iloc[-bars:]) / 3
         vwap    = float((typical * v.iloc[-bars:]).sum() / v.iloc[-bars:].sum()) if v.iloc[-bars:].sum() > 0 else price
 
@@ -2108,3 +2108,4 @@ def monitor_stream():
     return Response(stream_with_context(_gen()),
                     mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+                    

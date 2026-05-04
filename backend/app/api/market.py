@@ -644,8 +644,10 @@ def get_ohlcv_standalone():
 
         # Map generic interval strings to IndMoney format
         _IV_MAP = {'1m':'1m','5m':'5m','15m':'15m','30m':'30m',
-                   '1h':'1h','60m':'1h','1d':'1d','1D':'1d','day':'1d'}
+                   '1h':'1h','60m':'1h','1d':'1d','1D':'1d','day':'1d',
+                   '1wk':'1d','1mo':'1d'}  # weekly/monthly → daily from IndMoney
         _iv = _IV_MAP.get(interval, '1d')
+        _is_intraday = _iv in ('1m', '5m', '15m', '30m', '1h')
 
         _start = _dt.strptime(start_date, '%Y-%m-%d')
         _end   = _dt.strptime(end_date,   '%Y-%m-%d')
@@ -654,7 +656,8 @@ def get_ohlcv_standalone():
         _raw = _ind_candles(ticker, _iv, days=_days)
         if _raw and len(_raw) > 2:
             ohlcv = [{
-                "date":   c['date'][:10],
+                # Preserve HH:MM for intraday so frontend can plot each bar at its own x
+                "date":   c['date'][:16] if _is_intraday else c['date'][:10],
                 "open":   round(float(c['open']),   4),
                 "high":   round(float(c['high']),   4),
                 "low":    round(float(c['low']),    4),
@@ -675,7 +678,9 @@ def get_ohlcv_standalone():
                 df.columns = df.columns.get_level_values(0)
             df = df.loc[:, ~df.columns.duplicated()]
             df.index = pd.to_datetime(df.index)
-            dates   = [ts.strftime('%Y-%m-%d') for ts in df.index]
+            _yf_intraday = interval in ('1m', '5m', '15m', '30m', '1h', '60m', '2h')
+            _yf_fmt = '%Y-%m-%d %H:%M' if _yf_intraday else '%Y-%m-%d'
+            dates   = [ts.strftime(_yf_fmt) for ts in df.index]
             opens   = df['Open'].to_numpy().flatten().tolist()
             highs   = df['High'].to_numpy().flatten().tolist()
             lows    = df['Low'].to_numpy().flatten().tolist()
@@ -1220,10 +1225,10 @@ def ai_predict(ticker: str):
         pct_from_low  = ta.get('pct_from_52l') or 0.0
 
         n = len(closes)
-        chg_1d = (closes[-1] - closes[-2])  / closes[-2]  * 100 if n >= 2  else 0.0
-        chg_5d = (closes[-1] - closes[-6])  / closes[-6]  * 100 if n >= 6  else 0.0
-        chg_1m = (closes[-1] - closes[-22]) / closes[-22] * 100 if n >= 22 else 0.0
-        chg_3m = (closes[-1] - closes[-63]) / closes[-63] * 100 if n >= 63 else 0.0
+        chg_1d = (closes[-1] - closes[-2])  / closes[-2]  * 100 if (n >= 2  and closes[-2])  else 0.0
+        chg_5d = (closes[-1] - closes[-6])  / closes[-6]  * 100 if (n >= 6  and closes[-6])  else 0.0
+        chg_1m = (closes[-1] - closes[-22]) / closes[-22] * 100 if (n >= 22 and closes[-22]) else 0.0
+        chg_3m = (closes[-1] - closes[-63]) / closes[-63] * 100 if (n >= 63 and closes[-63]) else 0.0
 
         # Composite score — now includes Supertrend + ADX
         rsi_score  = max(0, min(100, (50 - rsi) * 2 + 50))
@@ -1329,7 +1334,7 @@ def ai_predict(ticker: str):
                 if ivix:
                     macro_lines.append(
                         f"India VIX: {ivix:.1f} — "
-                        f"{'HIGH FEAR — cut size 50%' if ivix > 20 else 'ELEVATED' if ivix > 15 else 'CALM'}")
+                        f"{'FEAR — cut size 50%' if ivix >= 22 else 'ELEVATED' if ivix >= 18 else 'NORMAL' if ivix >= 13 else 'CALM'}")
             except Exception:
                 pass
             try:
@@ -3207,6 +3212,129 @@ def _premarket_macro_snapshot() -> dict:
     return out
 
 
+def _fetch_option_chain_summary(ticker: str) -> dict:
+    """
+    Returns PCR, Max Pain, and top OI strikes for an index ticker.
+    Called from _fetch_market_data() to give CIO live options-market context.
+    """
+    try:
+        from .indmoney import _load_instruments, _ind_option_quotes_batch
+        from ..services.option_planner import (
+            _nse_base, _strike_step, _nearest_expiry, _live_spot,
+        )
+        from ..services import broker_utils as bu
+
+        spot = _live_spot(ticker)
+        if not spot:
+            return {}
+        base = _nse_base(ticker)
+        step = _strike_step(base)
+        if not step:
+            return {}
+        exp = _nearest_expiry(base, 'CE', max_dte=35, min_dte=1)
+        if not exp:
+            return {}
+
+        expiry_d   = exp['expiry']
+        dte_d      = (expiry_d - bu.today_ist()).days
+        atm_strike = int(round(spot / step) * step)
+
+        n    = 17
+        half = n // 2
+        target_strikes = [atm_strike + (i - half) * step for i in range(n)]
+        target_set     = set(target_strikes)
+
+        rows_ce: dict = {}
+        rows_pe: dict = {}
+        for inst in _load_instruments('fno'):
+            sym = str(bu._field(inst, 'trading_symbol', '')).strip().upper()
+            if not sym.startswith(base):
+                continue
+            if bu._parse_expiry(bu._field(inst, 'expiry', '')) != expiry_d:
+                continue
+            opt = str(bu._field(inst, 'option_type', '')).strip().upper()
+            try:
+                k = int(float(bu._field(inst, 'strike', 0) or 0))
+            except Exception:
+                continue
+            if k not in target_set:
+                continue
+            exch = str(bu._field(inst, 'exchange', 'NFO')).strip().upper()
+            if 'NFO' in exch or 'NSE' in exch:   exch = 'NFO'
+            elif 'BFO' in exch or 'BSE' in exch: exch = 'BFO'
+            sec_id = str(bu._field(inst, 'security_id', '')).strip()
+            meta   = {'security_id': sec_id, 'exchange': exch, 'strike': k}
+            if opt == 'CE':   rows_ce[k] = meta
+            elif opt == 'PE': rows_pe[k] = meta
+
+        all_codes = []
+        for k in target_strikes:
+            if k in rows_ce and rows_ce[k].get('security_id'):
+                all_codes.append(f"{rows_ce[k]['exchange']}_{rows_ce[k]['security_id']}")
+            if k in rows_pe and rows_pe[k].get('security_id'):
+                all_codes.append(f"{rows_pe[k]['exchange']}_{rows_pe[k]['security_id']}")
+
+        quotes = _ind_option_quotes_batch(all_codes) if all_codes else {}
+
+        def _oi(meta):
+            if not meta: return 0
+            return int(quotes.get(f"{meta['exchange']}_{meta['security_id']}", {}).get('oi') or 0)
+
+        def _vol(meta):
+            if not meta: return 0
+            return int(quotes.get(f"{meta['exchange']}_{meta['security_id']}", {}).get('volume') or 0)
+
+        strikes_data = []
+        for k in target_strikes:
+            ce_oi  = _oi(rows_ce.get(k))
+            pe_oi  = _oi(rows_pe.get(k))
+            ce_vol = _vol(rows_ce.get(k))
+            pe_vol = _vol(rows_pe.get(k))
+            if ce_oi + pe_oi > 0:
+                strikes_data.append({'strike': k, 'ce_oi': ce_oi, 'pe_oi': pe_oi,
+                                     'ce_vol': ce_vol, 'pe_vol': pe_vol})
+
+        total_ce_oi  = sum(s['ce_oi']  for s in strikes_data)
+        total_pe_oi  = sum(s['pe_oi']  for s in strikes_data)
+        total_ce_vol = sum(s['ce_vol'] for s in strikes_data)
+        total_pe_vol = sum(s['pe_vol'] for s in strikes_data)
+        pcr_oi  = round(total_pe_oi  / total_ce_oi,  2) if total_ce_oi  else None
+        pcr_vol = round(total_pe_vol / total_ce_vol, 2) if total_ce_vol else None
+
+        max_pain = None
+        if total_ce_oi + total_pe_oi > 0:
+            scores = []
+            for K_row in strikes_data:
+                K    = K_row['strike']
+                pain = sum(
+                    (K - r['strike']) * r['ce_oi'] if K > r['strike']
+                    else (r['strike'] - K) * r['pe_oi'] if K < r['strike']
+                    else 0
+                    for r in strikes_data
+                )
+                scores.append((pain, K))
+            max_pain = min(scores)[1]
+
+        top_ce = sorted(strikes_data, key=lambda x: x['ce_oi'], reverse=True)[:3]
+        top_pe = sorted(strikes_data, key=lambda x: x['pe_oi'], reverse=True)[:3]
+
+        return {
+            'expiry':            expiry_d.isoformat(),
+            'dte':               dte_d,
+            'atm':               atm_strike,
+            'pcr_oi':            pcr_oi,
+            'pcr_vol':           pcr_vol,
+            'max_pain':          max_pain,
+            'top_ce_oi_strikes': [s['strike'] for s in top_ce],
+            'top_pe_oi_strikes': [s['strike'] for s in top_pe],
+            'total_ce_oi':       total_ce_oi,
+            'total_pe_oi':       total_pe_oi,
+        }
+    except Exception as _e:
+        logger.debug(f"option chain summary failed for {ticker}: {_e}")
+        return {}
+
+
 def _fetch_market_data(ticker: str) -> dict:
     """
     Fetch all market data needed for the analysis pipeline.
@@ -3435,6 +3563,17 @@ def _fetch_market_data(ticker: str) -> dict:
         macro.update(_premarket_macro_snapshot())
     except Exception as _e:
         logger.debug(f"premarket snapshot failed: {_e}")
+
+    # ── Options chain summary (indices only) ──────────────────────────────────
+    # Gives CIO live PCR, Max Pain and top OI strikes — the most direct F&O
+    # sentiment signal available without any external API key.
+    if is_index:
+        try:
+            oc = _fetch_option_chain_summary(ticker)
+            if oc:
+                macro['options_chain'] = oc
+        except Exception as _e:
+            logger.debug(f"options chain summary failed for {ticker}: {_e}")
 
     # ── Reddit ────────────────────────────────────────────────────────────────
     # Reddit: skip for indices (no useful posts for ^NSEI), 2s timeout to not block scanner

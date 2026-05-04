@@ -94,10 +94,11 @@ def _evaluate_position(pos_key: str, pos: dict, opt_price: float,
     if not avg_entry or not opt_price:
         return None
 
-    # Premium-based SL / T1 / T2 (CE/PE only)
-    sl_px  = round(avg_entry * 0.50, 2)
-    t1_px  = round(avg_entry * 2.00, 2)
-    t2_px  = round(avg_entry * 3.00, 2)
+    # Use B-S repriced premium levels from option_planner when stored at open
+    # time. Fall back to entry-multiple heuristics for manual/legacy positions.
+    sl_px  = round(float(pos.get('premium_sl') or avg_entry * 0.50), 2)
+    t1_px  = round(float(pos.get('premium_t1') or avg_entry * 2.00), 2)
+    t2_px  = round(float(pos.get('premium_t2') or avg_entry * 3.00), 2)
 
     # Trailing stop based on premium high-water-mark, after T1 hit
     hwm = _high_water.get(pos_key, opt_price)
@@ -119,7 +120,7 @@ def _evaluate_position(pos_key: str, pos: dict, opt_price: float,
                               f"(premium=₹{opt_price:.2f})"}
     elif opt_price <= sl_px:
         decision = {'action': 'EXIT_FULL',
-                    'reason': f"PREMIUM_SL: ₹{opt_price:.2f} ≤ 50% of entry ₹{avg_entry:.2f}"}
+                    'reason': f"PREMIUM_SL: ₹{opt_price:.2f} ≤ SL ₹{sl_px:.2f}"}
     elif opt_price >= t2_px:
         decision = {'action': 'EXIT_FULL',
                     'reason': f"TARGET_2: ₹{opt_price:.2f} = "
