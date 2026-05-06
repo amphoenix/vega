@@ -136,6 +136,11 @@ def seconds_until_market_open() -> int:
 _FIELD_ALIASES = {
     'trading_symbol': ('TRADING_SYMBOL', 'tradingsymbol', 'tradingSymbol',
                        'symbol', 'SYMBOL', 'TRD_SYMBOL', 'name'),
+    # Broker-supplied human-friendly label, e.g. 'NIFTY 14 MAY 24000 CE'.
+    # Used everywhere we render a card / chart title — matches what the
+    # broker shows in its own UI so users never see two different names.
+    'display_symbol': ('CUSTOM_SYMBOL', 'custom_symbol', 'customSymbol',
+                       'DISPLAY_SYMBOL', 'display_symbol'),
     'security_id':    ('SECURITY_ID', 'security_id', 'securityId',
                        'isin', 'ISIN', 'token', 'TOKEN', 'instrument_token',
                        'INSTRUMENT_TOKEN'),
@@ -145,7 +150,12 @@ _FIELD_ALIASES = {
                        'market_lot', 'LOTSIZE', 'LOT_UNITS', 'lot_units'),
     'strike':         ('STRIKE_PRICE', 'strike_price', 'strikePrice',
                        'STRIKE', 'strike'),
-    'expiry':         ('EXPIRY_DATE', 'expiry_date', 'expiryDate',
+    # Prefer EXPIRY_CODE — IndStocks ships it as unambiguous 'DD MMM YYYY'
+    # ("12 May 2026"). EXPIRY_DATE is MM/DD/YYYY which collides with the
+    # Indian DD/MM/YYYY convention and silently mis-parses dates where both
+    # day and month are <= 12 (e.g. '05/12/2026' → May 12 vs Dec 5).
+    'expiry':         ('EXPIRY_CODE', 'expiry_code',
+                       'EXPIRY_DATE', 'expiry_date', 'expiryDate',
                        'EXPIRY', 'expiry', 'EXPIRY_DT'),
     'option_type':    ('OPTION_TYPE', 'option_type', 'optionType',
                        'OPT_TYPE', 'opt_type', 'instrument_type',
@@ -198,8 +208,13 @@ def _parse_expiry(s) -> Optional[date]:
         s = s.split('T', 1)[0]
     if ' ' in s and ':' in s:
         s = s.split(' ', 1)[0]
-    for fmt in ('%Y-%m-%d', '%d-%b-%Y', '%d-%B-%Y', '%d-%m-%Y', '%d/%m/%Y',
-                '%m/%d/%Y', '%d%b%y', '%d%b%Y', '%Y/%m/%d', '%d %b %Y', '%d %B %Y'):
+    # NOTE: '%m/%d/%Y' must come BEFORE '%d/%m/%Y'. IndStocks ships dates as
+    # MM/DD/YYYY (American). With Indian DD/MM/YYYY first, '05/12/2026' would
+    # silently parse as Dec 5 instead of May 12, dropping all weekly NIFTY
+    # contracts that fall in the first 12 days of any month.
+    for fmt in ('%Y-%m-%d', '%d-%b-%Y', '%d-%B-%Y', '%d %b %Y', '%d %B %Y',
+                '%d-%m-%Y', '%m/%d/%Y', '%d/%m/%Y',
+                '%d%b%y', '%d%b%Y', '%Y/%m/%d'):
         try:
             return datetime.strptime(s.upper(), fmt).date()
         except Exception:
@@ -220,6 +235,7 @@ def fno_meta(trading_symbol: str) -> Optional[dict]:
         'strike':         float,
         'option_type':    'CE' | 'PE' | 'XX',  # XX for futures
         'trading_symbol': str,
+        'display_symbol': str,        # broker's human label, e.g. 'NIFTY 14 MAY 24000 CE'
       }
     or None if not found.
     """
@@ -255,6 +271,7 @@ def fno_meta(trading_symbol: str) -> Optional[dict]:
             'strike':         strike,
             'option_type':    str(_field(inst, 'option_type', 'XX')).strip().upper(),
             'trading_symbol': t_sym,
+            'display_symbol': str(_field(inst, 'display_symbol', '')).strip() or t_sym,
         }
     return None
 

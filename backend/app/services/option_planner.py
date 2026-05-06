@@ -224,6 +224,7 @@ def _resolve_strike(base: str, target_strike: int, expiry_d: date,
             'strike':         float(k),
             'option_type':    opt,
             'trading_symbol': sym,
+            'display_symbol': str(bu._field(inst, 'display_symbol', '')).strip() or sym,
         }
     return None
 
@@ -318,6 +319,7 @@ def plan_option_trade(
         exch = str(bu._field(inst, 'exchange', 'NFO')).strip().upper()
         if 'NFO' in exch or 'NSE' in exch:   exch = 'NFO'
         elif 'BFO' in exch or 'BSE' in exch: exch = 'BFO'
+        ts = str(bu._field(inst, 'trading_symbol', '')).strip().upper()
         meta = {
             'security_id':    str(bu._field(inst, 'security_id', '')).strip(),
             'exchange':       exch,
@@ -325,7 +327,8 @@ def plan_option_trade(
             'expiry':         exp['expiry'],
             'strike':         float(bu._field(inst, 'strike', 0) or 0),
             'option_type':    opt_type,
-            'trading_symbol': str(bu._field(inst, 'trading_symbol', '')).strip().upper(),
+            'trading_symbol': ts,
+            'display_symbol': str(bu._field(inst, 'display_symbol', '')).strip() or ts,
         }
 
     if not meta.get('lot_size'):
@@ -535,6 +538,7 @@ def plan_option_trade(
         'bias':           bias,
         'option_type':    opt_type,
         'trading_symbol': meta['trading_symbol'],
+        'display_symbol': meta.get('display_symbol') or meta['trading_symbol'],
         'security_id':    meta['security_id'],
         'exchange':       meta['exchange'],
         'expiry':         meta['expiry'].isoformat(),

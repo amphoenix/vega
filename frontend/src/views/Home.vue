@@ -12,10 +12,7 @@
               v-model="activeTicker"
               class="ticker-input"
               placeholder="SBIN or State Bank…"
-              @keyup.enter="
-                selectTicker(activeTicker);
-                searchSuggestions = [];
-              "
+              @keyup.enter="submitSearch"
               @input="onSearchInput"
               @blur="hideSuggestionsDelayed"
               autocomplete="off"
@@ -56,10 +53,7 @@
           </div>
           <button
             class="go-btn"
-            @click="
-              selectTicker(activeTicker);
-              searchSuggestions = [];
-            "
+            @click="submitSearch"
           >
             ▶ Load
           </button>
@@ -326,9 +320,9 @@
                 class="wl-watch-btn wl-watch-pin"
                 v-if="chartTicker"
                 @click="pinCurrentTicker"
-                :title="`Pin ${chartTicker} (currently charted) to your watchlist`"
+                :title="`Pin ${displayTicker} (currently charted) to your watchlist`"
               >
-                📌 Pin {{ chartTicker }}
+                📌 Pin {{ displayTicker }}
               </button>
             </div>
             <div
@@ -1017,8 +1011,8 @@ Click a tile to filter the breakdowns below. -->
               >
 
               <!-- Option contract symbol (primary) — always show if available -->
-              <span class="fo-sym fo-sym-option" v-if="ev.option_symbol">{{
-                ev.option_symbol
+              <span class="fo-sym fo-sym-option" v-if="ev.display_symbol || ev.option_symbol">{{
+                ev.display_symbol || ev.option_symbol
               }}</span>
               <span class="fo-sym" v-else>{{
                 (ev.ticker || ev.trading_symbol || ev.underlying || "")
@@ -1253,7 +1247,7 @@ Requires a full ticket (plan_option_trade succeeded). -->
               <span
                 class="lv-ticket-sym"
                 :title="'Contract symbol: ' + liveTicket.trading_symbol"
-                >{{ liveTicket.trading_symbol }}</span
+                >{{ liveTicket.display_symbol || liveTicket.trading_symbol }}</span
               >
               <span
                 :class="[
@@ -1555,7 +1549,7 @@ Requires a full ticket (plan_option_trade succeeded). -->
                 <span :class="'lv-missed-tag lv-missed-' + a.status">{{
                   a.status.replace("_", " ").toUpperCase()
                 }}</span>
-                <span class="lv-missed-sym">{{ a.trading_symbol }}</span>
+                <span class="lv-missed-sym">{{ a.display_symbol || a.trading_symbol }}</span>
                 <span class="lv-missed-msg">{{ a.message }}</span>
                 <span class="lv-missed-time">{{
                   _fmtAlertTime(a.timestamp)
@@ -1569,7 +1563,7 @@ Requires a full ticket (plan_option_trade succeeded). -->
               :class="['lv-watch-card', 'lv-watch-' + card.status]"
             >
               <div class="lv-watch-row">
-                <span class="lv-watch-sym">{{ card.trading_symbol }}</span>
+                <span class="lv-watch-sym">{{ card.display_symbol || card.trading_symbol }}</span>
                 <span :class="['lv-watch-badge', 'lv-watch-' + card.status]">{{
                   card.statusLabel
                 }}</span>
@@ -2227,7 +2221,7 @@ Requires a full ticket (plan_option_trade succeeded). -->
             class="av-graph-empty"
             v-if="!investData && !investLoading && !investError"
           >
-            Click "Run Analysis" to launch {{ chartTicker }} through 20 expert
+            Click "Run Analysis" to launch {{ displayTicker }} through 20 expert
             AI agents
           </div>
           <div
@@ -3059,9 +3053,34 @@ const currencySymbol = computed(() => {
   }
   return "₹";
 });
-// Strip .NS / .BO suffix for display — show "SBIN" not "SBIN.NS"
-const displayTicker = computed(() =>
-  (chartTicker.value || "").replace(/\.(NS|BO)$/i, ""),
+// Friendly contract label for the chart header / title bar.
+// Sourced directly from IND (CUSTOM_SYMBOL for F&O + equity, SEGMENT for
+// indices) via /api/indmoney/tick — never constructed client-side.
+const chartDisplaySymbol = ref("");
+watch(
+  chartTicker,
+  async (sym) => {
+    chartDisplaySymbol.value = "";
+    if (!sym) return;
+    try {
+      const base = import.meta.env.VITE_API_BASE_URL || "https://localhost:47291";
+      const r = await fetch(
+        `${base}/api/indmoney/tick/${encodeURIComponent(sym)}`,
+      ).then((x) => x.json());
+      if (r?.success && r.data?.display_symbol) {
+        chartDisplaySymbol.value = r.data.display_symbol;
+      }
+    } catch {
+      /* leave empty → falls back to the raw ticker */
+    }
+  },
+  { immediate: true },
+);
+
+const displayTicker = computed(
+  () =>
+    chartDisplaySymbol.value ||
+    (chartTicker.value || "").replace(/\.(NS|BO)$/i, ""),
 );
 
 const chartHeaderPrice = computed(() => {
@@ -3735,6 +3754,7 @@ const trackedCards = computed(() => {
     out.push({
       id: rec.id,
       trading_symbol: t.trading_symbol,
+      display_symbol: t.display_symbol || t.trading_symbol,
       option_type: t.option_type, // 'CE' | 'PE'
       strike: t.strike,
       expiry: t.expiry,
@@ -5688,6 +5708,20 @@ function pickSuggestion(s) {
   activeTicker.value = s.symbol.replace(/\.(NS|BO)$/i, "");
   searchSuggestions.value = [];
   selectTicker(s.symbol);
+}
+function submitSearch() {
+  // Enter / Load click: if the user typed a friendly label that the search
+  // already resolved to a broker TRADING_SYMBOL (top suggestion), use that.
+  // Otherwise pass the typed text through (covers raw broker symbols).
+  const typed = (activeTicker.value || "").trim();
+  if (!typed) return;
+  const top = searchSuggestions.value?.[0];
+  if (top && top.symbol && top.symbol.toUpperCase() !== typed.toUpperCase()) {
+    pickSuggestion(top);
+    return;
+  }
+  searchSuggestions.value = [];
+  selectTicker(typed);
 }
 function hideSuggestionsDelayed() {
   setTimeout(() => {

@@ -225,6 +225,7 @@ def _resolve_option_contract(ticker: str, option_type: str, strike: float) -> di
                 'expiry':   exp_d,
                 'expiry_s': expiry_s,
                 'strike':   inst_strike,
+                'display':  (inst.get('CUSTOM_SYMBOL') or '').strip(),
             })
 
         if not candidates:
@@ -239,6 +240,7 @@ def _resolve_option_contract(ticker: str, option_type: str, strike: float) -> di
 
         return {
             'trading_symbol': best['symbol'],
+            'display_symbol': best.get('display') or best['symbol'],
             'security_id':    best['sec_id'],
             'expiry_date':    best['expiry_s'],
             'strike':         best['strike'],
@@ -635,6 +637,7 @@ def _run_scan_cycle(llm_client):
                 cio['expiry']            = ticket['expiry']
                 cio['strike_price']      = ticket['strike']
                 cio['option_symbol']     = ticket['trading_symbol']
+                cio['display_symbol']    = ticket.get('display_symbol') or ticket['trading_symbol']
                 cio['option_ltp']        = ticket['entry']['expected_premium_inr']
                 cio['estimated_premium'] = ticket['entry']['expected_premium_inr']
                 cio['lot_size']          = ticket['lot_size']
@@ -653,10 +656,12 @@ def _run_scan_cycle(llm_client):
                 # Legacy fallback so we still emit *something* on signal
                 option_contract = _resolve_option_contract(ticker, itype, strike)
                 if option_contract:
-                    cio['expiry']        = option_contract['expiry_date']
-                    cio['strike_price']  = option_contract['strike']
-                    cio['option_symbol'] = option_contract['trading_symbol']
-                    cio['option_ltp']    = option_contract['ltp']
+                    cio['expiry']         = option_contract['expiry_date']
+                    cio['strike_price']   = option_contract['strike']
+                    cio['option_symbol']  = option_contract['trading_symbol']
+                    cio['display_symbol'] = option_contract.get('display_symbol') \
+                                            or option_contract['trading_symbol']
+                    cio['option_ltp']     = option_contract['ltp']
 
         signal = {
             'ticker':         ticker,
@@ -675,6 +680,7 @@ def _run_scan_cycle(llm_client):
             'thesis':         cio.get('investment_thesis', '')[:200],
             'source':         source,
             'option_symbol':  cio.get('option_symbol'),
+            'display_symbol': cio.get('display_symbol') or cio.get('option_symbol'),
             'option_ltp':     cio.get('option_ltp'),
             'ticket':         ticket,            # full plan with Greeks + risk
             'timestamp':      datetime.now().isoformat(),

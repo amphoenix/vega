@@ -827,9 +827,11 @@ def search_ticker():
                 if not sym:
                     continue
                 if all(tok in sym for tok in fno_tokens):
+                    # Friendly label straight from IND (e.g. 'NIFTY 28 JUL 23800 CE').
+                    cs = (inst.get('CUSTOM_SYMBOL') or '').strip()
                     results.append({
                         'symbol':   sym,
-                        'name':     sym,
+                        'name':     cs or sym,
                         'exchange': (inst.get('EXCH') or 'NSE').upper(),
                         'type':     'OPTION' if ('CE' in sym or 'PE' in sym) else 'FUTURE',
                         'indian':   True,

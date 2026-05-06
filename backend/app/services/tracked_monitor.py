@@ -166,6 +166,7 @@ def _build_payload(rec: dict, prem: float, status: str, spot: float) -> dict:
         'type'           : 'tracked_alert',
         'id'             : rec.get('id'),
         'trading_symbol' : t.get('trading_symbol'),
+        'display_symbol' : t.get('display_symbol') or t.get('trading_symbol'),
         'underlying'     : t.get('underlying'),
         'status'         : status,
         'message'        : msg_map.get(status, ''),

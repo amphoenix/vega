@@ -115,6 +115,75 @@ def _load_instruments(source: str = 'equity') -> list[dict]:
         return _inst_master.get(cache_key, [])
 
 
+# ── Friendly label cache (broker TRADING_SYMBOL → IND CUSTOM_SYMBOL) ────────
+# Pure passthrough from IndStocks' instrument-master CSV (CUSTOM_SYMBOL column).
+# Not constructed here — we only look up what IND already shipped.
+_display_cache: dict[str, str] = {}
+
+
+def _display_symbol(ticker: str) -> str:
+    """Return IndStocks' friendly label for the given ticker, or '' if absent.
+
+    Source per master (all values come straight from IndStocks):
+      - F&O:    CUSTOM_SYMBOL  (e.g. 'NIFTY 28 JUL 23800 CE')
+      - Equity: CUSTOM_SYMBOL  (e.g. 'RELIANCE INDUSTRIES LTD.')
+      - Index:  SEGMENT        (e.g. 'NIFTY 50', 'SENSEX', 'BANK NIFTY')
+
+    For indices, the yfinance code (^NSEI) is translated to IND's
+    SECURITY_ID via _scrip_code first, then we look up the row's SEGMENT.
+
+    Result is cached (process-local). Misses are NOT cached when the master
+    fetch failed (so transient 503s don't pollute future lookups).
+    """
+    if not ticker:
+        return ''
+    sym = ticker.strip().upper()
+    if sym in _display_cache:
+        return _display_cache[sym]
+
+    is_index = ticker.startswith('^') or sym in (
+        'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX',
+    )
+
+    # ── Index path: SECURITY_ID lookup → SEGMENT field ──────────────────────
+    if is_index:
+        code = _scrip_code(ticker)            # e.g. 'NSE_40000001'
+        idx_rows = _load_instruments('index')
+        if not idx_rows:
+            return ''                          # master fetch failed; don't cache
+        if code:
+            target_sid = code.split('_', 1)[-1]
+            for inst in idx_rows:
+                if str(inst.get('SECURITY_ID', '')).strip() == target_sid:
+                    label = (inst.get('SEGMENT') or '').strip()
+                    _display_cache[sym] = label
+                    return label
+        _display_cache[sym] = ''
+        return ''
+
+    # ── F&O / equity path: TRADING_SYMBOL → CUSTOM_SYMBOL ───────────────────
+    candidates = {sym, sym.replace('.NS', '').replace('.BO', '')}
+    any_loaded = False
+    for source in ('fno', 'equity'):
+        try:
+            rows = _load_instruments(source)
+        except Exception:
+            continue
+        if rows:
+            any_loaded = True
+        for inst in rows:
+            t_sym = (inst.get('TRADING_SYMBOL') or inst.get('tradingsymbol') or '').strip().upper()
+            if t_sym and t_sym in candidates:
+                cs = (inst.get('CUSTOM_SYMBOL') or inst.get('custom_symbol') or '').strip()
+                _display_cache[sym] = cs
+                return cs
+
+    # Only cache the miss if we actually managed to read at least one master.
+    if any_loaded:
+        _display_cache[sym] = ''
+    return ''
+
+
 def _scrip_code(ticker: str, source: str = 'equity') -> str | None:
     """
     Convert Yahoo-style ticker (SBIN.NS, SBIN.BO, ^NSEI) → IndStocks scrip code.
@@ -1364,6 +1433,9 @@ def tick(ticker: str):
         return jsonify({"success": False, "error": "INDMONEY_ACCESS_TOKEN not set"}), 401
 
     code = _scrip_code(ticker)
+    # display_symbol = IndStocks' CUSTOM_SYMBOL for this contract, looked up
+    # from the cached instrument master. '' if not in the master.
+    disp = _display_symbol(ticker)
 
     # WebSocket cache hit (fastest)
     if code:
@@ -1371,25 +1443,27 @@ def tick(ticker: str):
             cached = _tick_cache.get(code)
         if cached:
             return jsonify({"success": True, "source": "websocket", "data": {
-                "symbol":      ticker,
-                "price":       cached.get('ltp') or cached.get('last_price'),
-                "open":        cached.get('open'),
-                "high":        cached.get('high'),
-                "low":         cached.get('low'),
-                "close":       cached.get('close') or cached.get('prev_close'),
-                "volume":      cached.get('volume'),
-                "change":      cached.get('net_change') or cached.get('change'),
-                "change_pct":  cached.get('change_percent'),
-                "timestamp":   datetime.now().isoformat(),
+                "symbol":         ticker,
+                "display_symbol": disp,
+                "price":          cached.get('ltp') or cached.get('last_price'),
+                "open":           cached.get('open'),
+                "high":           cached.get('high'),
+                "low":            cached.get('low'),
+                "close":          cached.get('close') or cached.get('prev_close'),
+                "volume":         cached.get('volume'),
+                "change":         cached.get('net_change') or cached.get('change'),
+                "change_pct":     cached.get('change_percent'),
+                "timestamp":      datetime.now().isoformat(),
             }})
 
     # REST fallback — delegate to _ind_ltp (handles new scrip format + response shape).
     try:
         price = _ind_ltp(ticker)
         return jsonify({"success": True, "source": "rest", "data": {
-            "symbol":    ticker,
-            "price":     price,
-            "timestamp": datetime.now().isoformat(),
+            "symbol":         ticker,
+            "display_symbol": disp,
+            "price":          price,
+            "timestamp":      datetime.now().isoformat(),
         }})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
