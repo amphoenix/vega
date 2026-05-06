@@ -111,12 +111,26 @@ class LLMClient:
             response_format={"type": "json_object"},
         )
         cleaned = response.strip()
+        # Strip reasoning/thought envelopes some models emit before the JSON
+        # (Gemini: <thought>…</thought>, Claude: <thinking>…</thinking>, etc.).
+        cleaned = re.sub(
+            r'<\s*(thought|thinking|reasoning|reflection|scratchpad)\s*>.*?<\s*/\s*\1\s*>',
+            '', cleaned, flags=re.IGNORECASE | re.DOTALL,
+        ).strip()
         cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'\n?```\s*$', '', cleaned).strip()
+        # Last-resort fallback: extract the outermost {...} JSON object if the
+        # model wrapped it in extra prose.
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
-            raise ValueError(f"LLM returned invalid JSON: {cleaned}")
+            m = re.search(r'\{.*\}', cleaned, flags=re.DOTALL)
+            if m:
+                try:
+                    return json.loads(m.group(0))
+                except json.JSONDecodeError:
+                    pass
+            raise ValueError(f"LLM returned invalid JSON: {cleaned[:500]}")
 
     # ── internals ─────────────────────────────────────────────────────────────
 

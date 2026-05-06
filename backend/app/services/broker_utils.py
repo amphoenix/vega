@@ -347,9 +347,3 @@ def compute_fees(
         'stamp':     round(stamp, 2),
         'total':     total,
     }
-
-
-# ── Mode flag ────────────────────────────────────────────────────────────────
-def is_live_mode() -> bool:
-    """LIVE TRADING ONLY. Paper mode is permanently disabled."""
-    return True

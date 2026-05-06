@@ -76,7 +76,6 @@ UNDERLYING_MAP = {
 }  # For stocks, underlying == ticker
 
 SCAN_INTERVAL_SECONDS = int(os.environ.get('FO_SCAN_INTERVAL_SEC', '0'))
-MAX_OPEN_POSITIONS    = int(os.environ.get('FO_MAX_POSITIONS', '3'))
 MIN_CONFIDENCE        = int(os.environ.get('FO_MIN_CONFIDENCE', '70'))
 MIN_AGENT_AGREEMENT   = int(os.environ.get('FO_MIN_AGENTS', '3'))  # of 5 agents
 SIGNAL_MIN_DTE        = int(os.environ.get('FO_SIGNAL_MIN_DTE', '1'))  # 0 = allow all days
@@ -94,7 +93,6 @@ _state = {
     'next_scan':     None,
     'scanned':       [],        # tickers scanned this cycle
     'signals':       [],        # all CIO verdicts this cycle
-    'trades_placed': [],        # trades executed this session
     'errors':        [],
     # Latest signal per underlying — survives scan-cycle boundaries so SSE
     # subscribers reconnecting after a browser refresh get the most recent
@@ -157,73 +155,10 @@ def get_state() -> dict:
     s['interval_seconds'] = SCAN_INTERVAL_SECONDS or 300
     s['universe']         = list(FO_UNIVERSE)
     s['min_confidence']   = MIN_CONFIDENCE
-    s['max_positions']    = MAX_OPEN_POSITIONS
     return s
 
 
-# ── Safety gates ──────────────────────────────────────────────────────────────
-
-def _passes_safety_gates(ticker: str, cio: dict, wallet: dict) -> tuple[bool, str]:
-    """Returns (pass, reason_if_fail)."""
-    if not bu.is_safe_hours():
-        return False, "Outside safe trading hours (IST 09:20-15:00) or NSE holiday"
-
-    # Daily kill-switch (set by position_monitor when realised loss exceeds threshold)
-    if wallet.get('kill_switch'):
-        return False, f"Kill-switch active: {wallet.get('kill_reason', 'daily loss limit')}"
-
-    confidence = int(cio.get('confidence_to_trade', 0))
-    if confidence < MIN_CONFIDENCE:
-        return False, f"Confidence {confidence} < {MIN_CONFIDENCE}"
-
-    # Accept BUY NOW (long) OR SELL NOW (short/PE)
-    action  = cio.get('short_term_action', '')
-    verdict = cio.get('final_verdict', 'HOLD')
-    itype   = cio.get('instrument_type', 'EQ')
-
-    if action not in ('BUY NOW', 'SELL NOW'):
-        return False, f"action={action} — need BUY NOW or SELL NOW"
-
-    if verdict == 'HOLD':
-        return False, "CIO says HOLD"
-
-    bull_count = int(cio.get('bull_count', 0))
-    bear_count = int(cio.get('bear_count', 0))
-
-    # For bullish trades (CE/FUT long): need MIN_AGENT_AGREEMENT bulls
-    # For bearish trades (PE/FUT short): need MIN_AGENT_AGREEMENT bears
-    # Use MIN_AGENTS-1 (i.e. 2) when instrument is clearly directional
-    threshold = MIN_AGENT_AGREEMENT - 1 if itype in ('PE', 'CE') else MIN_AGENT_AGREEMENT
-
-    if verdict in ('STRONG BUY', 'BUY') and bull_count < threshold:
-        return False, f"Only {bull_count}/{threshold} agents bullish for {itype}"
-
-    if verdict in ('STRONG SELL', 'SELL') and bear_count < threshold:
-        return False, f"Only {bear_count}/{threshold} agents bearish for {itype}"
-
-    # Block FUT shorts unless explicitly enabled — needs full SPAN-margin path
-    allow_fut_short = os.environ.get('ALLOW_FUT_SHORT', '').lower() in ('1', 'true', 'yes')
-    if itype == 'FUT' and action == 'SELL NOW' and not allow_fut_short:
-        return False, "FUT short disabled (set ALLOW_FUT_SHORT=1 + verify SPAN margin)"
-    # EQ shorts on MIS only — block carry-forward shorts
-    if itype == 'EQ' and action == 'SELL NOW':
-        return False, "EQ short via this scanner is not supported (use intraday CE/PE instead)"
-
-    # Check max open positions
-    open_positions = wallet.get('positions', {})
-    if len(open_positions) >= MAX_OPEN_POSITIONS:
-        return False, f"Max {MAX_OPEN_POSITIONS} open positions reached"
-
-    # Check not already in this underlying
-    underlying = UNDERLYING_MAP.get(ticker, ticker)
-    for pos in open_positions.values():
-        if pos.get('underlying') == underlying:
-            return False, f"Already holding position in {underlying}"
-
-    return True, ""
-
-
-# ── Trade builder from CIO output ─────────────────────────────────────────────
+# ── Signal builder from CIO output ────────────────────────────────────────────
 
 def _nse_base(ticker: str) -> str:
     """Strip .NS/.BO/^ and map index tickers to NSE base names."""
@@ -339,151 +274,6 @@ def _build_trading_symbol(ticker: str, cio: dict, price: float) -> str:
         return f"{base}{expiry}{strike_int}{itype}" if expiry else f"{base}{strike_int}{itype}"
 
     return base
-
-
-def _execute_scan_trade(ticker: str, price: float, cio: dict, wallet: dict) -> Optional[dict]:
-    """Build position from CIO output and open it."""
-    from .position_monitor import open_position
-
-    itype  = cio.get('instrument_type', 'EQ')
-    strike = float(cio.get('strike_price', 0) or 0)
-
-    # ── Resolve real broker contract from instrument master (CE/PE only) ─────
-    trading_symbol = None
-    sec_id, exch   = '', ''
-    expiry_iso     = ''
-    lot_size       = None
-    premium        = float(cio.get('estimated_premium', 0) or 0)
-
-    if itype in ('CE', 'PE'):
-        # Prefer already-resolved symbol from plan_option_trade ticket
-        trading_symbol = cio.get('option_symbol') or None
-        contract = None
-        if not trading_symbol:
-            contract = _resolve_option_contract(ticker, itype, strike)
-            if not contract:
-                logger.warning(f"Scanner: cannot resolve {itype} contract for {ticker} @ strike {strike}")
-                return None
-            trading_symbol = contract['trading_symbol']
-            if contract.get('ltp'):
-                premium = float(contract['ltp'])
-        meta = bu.fno_meta(trading_symbol)
-        if not meta or not meta.get('lot_size'):
-            logger.warning(f"Scanner: missing lot_size for {trading_symbol} in master")
-            return None
-        lot_size  = meta['lot_size']
-        sec_id    = meta['security_id']
-        exch      = meta['exchange']
-        expiry_iso = meta['expiry'].isoformat() if meta.get('expiry') else ''
-        # Skip expiry-day entries past 13:00 IST (theta zone) entirely
-        if meta.get('expiry') == bu.today_ist() and bu.now_ist().time() >= bu.THETA_EXIT:
-            logger.info(f"Scanner: skip {trading_symbol} — in theta-exit zone")
-            return None
-        if contract and contract.get('ltp'):
-            premium = float(contract['ltp'])
-        strike = float(meta.get('strike') or strike)
-
-        # Liquidity gate: reject if bid-ask spread is too wide for a market order
-        try:
-            from ..api.indmoney import _ind_option_quote
-            q = _ind_option_quote(trading_symbol)
-            if q and q['bid'] > 0 and q['ask'] > 0:
-                mid = (q['bid'] + q['ask']) / 2.0
-                spread_pct = (q['ask'] - q['bid']) / mid * 100.0 if mid else 999.0
-                max_spread = float(os.environ.get('FO_MAX_SPREAD_PCT', '3'))
-                if spread_pct > max_spread:
-                    logger.info(f"Scanner: skip {trading_symbol} — spread "
-                                f"{spread_pct:.2f}% > {max_spread:.2f}%")
-                    return None
-                min_oi = int(os.environ.get('FO_MIN_OI', '0'))
-                if min_oi and q.get('oi', 0) < min_oi:
-                    logger.info(f"Scanner: skip {trading_symbol} — OI {q['oi']} < {min_oi}")
-                    return None
-        except Exception:
-            pass    # broker quote unavailable — don't block, just log
-
-    elif itype == 'FUT':
-        lot_size = _lot_size_for(ticker)
-        if not lot_size:
-            logger.warning(f"Scanner: no lot_size for FUT {ticker}")
-            return None
-        # FUT trading-symbol resolution is broker-specific; defer to legacy builder
-        trading_symbol = _build_trading_symbol(ticker, cio, price)
-        premium = price
-
-    else:    # EQ
-        lot_size = 1
-        trading_symbol = _build_trading_symbol(ticker, cio, price)
-        premium = price
-
-    if not premium or premium <= 0:
-        logger.warning(f"Scanner: invalid premium {premium} for {trading_symbol}")
-        return None
-
-    stop_loss  = float(cio.get('stop_loss', round(price * 0.97, 2)))
-    target_1   = float(cio.get('target_1',  round(price * 1.03, 2)))
-    target_2   = float(cio.get('target_2',  round(price * 1.06, 2)))
-    premium_sl = float(cio.get('premium_sl') or 0)
-    premium_t1 = float(cio.get('premium_t1') or 0)
-    premium_t2 = float(cio.get('premium_t2') or 0)
-
-    cash         = wallet.get('cash', 0)
-    position_pct = min(float(cio.get('position_size_pct', 2)), 10) / 100.0
-    budget       = cash * position_pct
-    cost_per_lot = premium * lot_size
-    if cost_per_lot <= 0:
-        return None
-    if cost_per_lot > cash:
-        logger.warning(f"Insufficient cash ₹{cash:.0f} for 1 lot of "
-                       f"{trading_symbol} @ ₹{cost_per_lot:.0f}")
-        return None
-
-    qty = max(1, int(budget // cost_per_lot))
-    underlying = UNDERLYING_MAP.get(ticker, ticker)
-    live       = bu.is_live_mode()
-
-    reason = (f"Scanner: {cio.get('final_verdict')} conf={cio.get('confidence_to_trade')}% | "
-              f"{cio.get('short_term_reason', '')} | {cio.get('investment_thesis', '')[:100]}")
-
-    result = open_position(
-        pos_key=trading_symbol,
-        underlying=underlying,
-        instrument_type=itype,
-        qty=qty,
-        lot_size=lot_size,
-        avg_entry=premium,
-        stop_loss=stop_loss,
-        target_1=target_1,
-        target_2=target_2,
-        premium_sl=premium_sl,
-        premium_t1=premium_t1,
-        premium_t2=premium_t2,
-        strike_price=strike,
-        expiry=expiry_iso,
-        security_id=sec_id,
-        exchange=exch,
-        reason=reason,
-        live=live,
-    )
-    return {
-        'ticker':          ticker,
-        'trading_symbol':  trading_symbol,
-        'instrument_type': itype,
-        'strike':          strike,
-        'expiry':          cio.get('expiry'),
-        'qty':             qty,
-        'lot_size':        lot_size,
-        'premium':         premium,
-        'cost':            round(cost_per_lot * qty, 2),
-        'stop_loss':       stop_loss,
-        'target_1':        target_1,
-        'target_2':        target_2,
-        'verdict':         cio.get('final_verdict'),
-        'confidence':      cio.get('confidence_to_trade'),
-        'order_status':    result.get('status'),
-        'mode':            'live' if live else 'paper',
-        'timestamp':       datetime.now().isoformat(),
-    }
 
 
 # ── Stage 1: pure technical pre-filter (no LLM) ──────────────────────────────
@@ -741,8 +531,6 @@ def _run_scan_cycle(llm_client):
     so nesting executors causes RuntimeError in Python 3.12.
     Results flow back via a queue.Queue as each ticker completes.
     """
-    from .position_monitor import _load_wallet
-
     with _scan_lock:
         _state['last_scan'] = datetime.now().isoformat()
         _state['scanned']   = []
@@ -905,23 +693,6 @@ def _run_scan_cycle(llm_client):
         _broadcast({'type': 'scan_signal', **signal})
         logger.info(f"Scanner [{source}] {ticker} {verdict} conf={conf}% "
                     f"instrument={cio.get('instrument_type')} action={cio.get('short_term_action')}")
-
-        # Attempt trade
-        wallet = _load_wallet()
-        passes, gate_reason = _passes_safety_gates(ticker, cio, wallet)
-        if passes:
-            trade = _execute_scan_trade(ticker, price, cio, wallet)
-            if trade:
-                with _scan_lock:
-                    _state['trades_placed'].append(trade)
-                _broadcast({'type': 'scan_trade', **trade})
-                logger.info(f"Scanner TRADE: {trade['trading_symbol']} "
-                            f"qty={trade['qty']} cost=₹{trade['cost']:.0f} "
-                            f"mode={trade['mode']}")
-        else:
-            logger.info(f"Scanner: {ticker} skipped — {gate_reason}")
-            _broadcast({'type': 'scan_skip', 'ticker': ticker, 'reason': gate_reason,
-                        'verdict': verdict, 'confidence': conf})
 
     _broadcast({'type': 'scan_complete', 'signals': len(signals),
                 'timestamp': datetime.now().isoformat()})

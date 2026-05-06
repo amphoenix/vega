@@ -46,15 +46,8 @@ def create_app(config_class=Config):
     if should_log_startup:
         logger.info("Simulation process cleanup registered")
 
-    # Start background position monitor (watches SL/targets, auto-exits positions)
-    from .services.position_monitor import start as _start_monitor
-    _start_monitor()
-    if should_log_startup:
-        logger.info("Position monitor started")
-
     # Auto-start the F&O scanner — runs continuously for as long as the
-    # backend is up. User has explicitly asked for "always on" behaviour;
-    # the manual start/stop toggle is no longer in the UI.
+    # backend is up. Emits scan_signal SSE events; does not place orders.
     try:
         from .services.fo_scanner import start as _start_fo_scanner
         _start_fo_scanner()

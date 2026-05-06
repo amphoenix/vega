@@ -101,24 +101,6 @@ export const getTradeLevels = (ticker) => {
   return service.get(`/api/trade/levels/${ticker}`)
 }
 
-// Paper wallet state
-export const getWallet = () => service.get('/api/trade/wallet')
-
-// AI auto-trade decision + execution against paper wallet
-export const aiTrade = (ticker, capitalPct = 0.1) => {
-  return service.post('/api/trade/wallet/ai-trade', { ticker, capital_pct: capitalPct })
-}
-
-// Reset paper wallet
-export const resetWallet = (cash = 10000) => {
-  return service.post('/api/trade/wallet/reset', { cash })
-}
-
-// Manual paper trade (BUY or SELL at live price)
-export const manualTrade = (ticker, action, qty) => {
-  return service.post('/api/trade/wallet/trade', { ticker, action, qty })
-}
-
 // Fast intraday signal — pure technical, no LLM, < 1s
 export const getIntradaySignal = (ticker) => {
   return service.get(`/api/trade/intraday-signal/${ticker}`)
@@ -169,11 +151,6 @@ export const getFoScannerStatus = () => service.get('/api/trade/fo-scanner/statu
 export const createFoScannerStream = () => {
   const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
   return new EventSource(`${base}/api/trade/fo-scanner/stream`)
-}
-
-export const createMonitorStream = () => {
-  const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
-  return new EventSource(`${base}/api/trade/monitor/stream`)
 }
 
 // ── LLM token budget / cost tracking ──────────────────────────────────────────

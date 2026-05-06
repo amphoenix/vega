@@ -1,25 +1,24 @@
 # PhoenixTrade
 
-**AI-Powered F&O Intraday Trading Terminal**
+**AI-Powered F&O Intraday Monitoring Terminal**
 
-A professional-grade trading terminal combining real-time IndStocks broker WebSocket data, full-stack technical analysis with pure-Python indicators, multi-agent Cerebrum investment research, a two-stage F&O scanner, browser-side Black-Scholes option pricing (live chain ladder + per-ticket repricing), paper wallet with F&O P&L, and live broker execution — all in a single browser-based interface.
+A professional-grade monitoring terminal combining real-time IndStocks broker WebSocket data, full-stack technical analysis with pure-Python indicators, multi-agent Cerebrum investment research, a two-stage F&O signal scanner, browser-side Black-Scholes option pricing (live chain ladder + per-ticket repricing) — all in a single browser-based interface. **The system places no orders. All trades are entered manually by the user at their broker.**
 
 ---
 
 ## What it does
 
-PhoenixTrade gives you a complete research-to-execution workflow for F&O intraday trading:
+PhoenixTrade gives you a complete research-to-decision workflow for F&O intraday trading:
 
 1. **Watch** live candlestick charts — broker WebSocket 5-min candles, zero delay; mouse-wheel zoom + reset controls
-2. **Scan** the index F&O universe (NIFTY 50, SENSEX, BANKNIFTY) every cycle — two-stage pipeline (pure-Python prefilter + Cerebrum LLM) decides BUY/SELL CE/PE — auto-executes paper trades when confidence ≥ 70
+2. **Scan** the index F&O universe (NIFTY 50, SENSEX, BANKNIFTY) every cycle — two-stage pipeline (pure-Python prefilter + Cerebrum LLM) emits BUY/SELL CE/PE signals when confidence ≥ 70 to the UI; you decide which to act on
 3. **Analyse** any ticker with multi-agent Cerebrum pipeline — 5 domain experts (Technical, Fundamental, Macro, Sentiment, Risk) + Bull/Bear debate + CIO final verdict with full F&O instrument selection
 4. **Reprice live in the browser** — option chain ladder (ATM ± 5 strikes) and per-position ticket cards re-priced on every spot tick via JS Black-Scholes (delta, theta, vega, premium) — zero server round-trip per tick
 5. **Decide which strike** with built-in buy-quality tags — CONSERVATIVE / BALANCED / AGGRESSIVE / LOTTERY / EXPENSIVE — derived from |Δ| so you instantly see whether a strike fits your risk profile
 6. **Signal** intraday with pure-Python indicators: Supertrend, ADX, Bollinger Bands, RSI, EMA stack, MACD, VWAP, Donchian — plus candlestick pattern detection (Engulfing, Morning Star, Doji, Hammer, Three Soldiers, etc.)
-7. **Monitor** positions in real-time — 5s polling, broker price feed, force-exit at 15:00, premium-based SL for options (50% of premium), expiry-day theta exit at 13:00
-8. **Trade** via F&O-aware paper wallet — auto-deducts premium × lots, tracks unrealised P&L, T1 partial exit, trailing stop
-9. **Backtest** with vectorbt multi-strategy (RSI, EMA cross, Bollinger, MACD)
-10. **Stream** live prices via the IndStocks broker WebSocket — tick cache → REST quote → yfinance fallback chain
+7. **Track** the trades you take manually — pin entered tickets via "I entered" so the server-side watcher fires SL / T1 / T2 / theta-zone / 15:00 exit alerts via SSE even if your tab is hidden
+8. **Backtest** with vectorbt multi-strategy (RSI, EMA cross, Bollinger, MACD)
+9. **Stream** live prices via the IndStocks broker WebSocket — tick cache → REST quote → yfinance fallback chain
 
 ---
 
@@ -66,9 +65,9 @@ Pre-computed by `ta_utils.detect_patterns()` on last 5 bars — passed to Techni
 
 Each pattern is labeled with F&O action hint (e.g. `Morning Star (STRONG BULLISH REVERSAL — buy CE/long FUT)`).
 
-### F&O Auto-Scanner
+### F&O Signal Scanner
 
-Background service that cycles through the F&O universe and auto-executes paper trades. Two-stage pipeline avoids LLM cost on ranging markets and keeps the LLM as a confirmation layer only.
+Background service that cycles through the F&O universe and emits trade signals to the UI. **Signals only — no orders are placed.** You watch the scanner feed and execute manually at your broker. Two-stage pipeline avoids LLM cost on ranging markets and keeps the LLM as a confirmation layer only.
 
 **Universe (3 indices, F&O-active):**
 `^NSEI` (NIFTY 50), `^BSESN` (SENSEX), `^NSEBANK` (BANKNIFTY)
@@ -86,20 +85,7 @@ Background service that cycles through the F&O universe and auto-executes paper 
    - Stage-1 trust override: if Cerebrum waters a strong technical signal down to HOLD, the deterministic Stage-1 verdict wins (LLM is systematically over-cautious)
 4. CIO decides: `instrument_type` (CE/PE), `expiry`, `strike_price`, `lot_size`, `estimated_premium`, `confidence_to_trade`
 5. Option ticket built via `option_planner.plan_option_trade()` — delta-targeted strike, BS-derived premium SL/T1/T2, full Greeks
-6. Safety gates — ALL must pass before trade executes
-7. Auto-open paper position if all gates pass
-
-**Safety gates:**
-| Gate | Rule |
-|---|---|
-| Market hours | 09:15 – 15:00 IST only |
-| Confidence | `confidence_to_trade` ≥ 70 |
-| Action | `short_term_action` == "BUY NOW" |
-| Agent agreement | ≥ 3 of 5 agents bullish (or bearish for PE) |
-| No duplicate underlying | No existing position in same underlying |
-| Cash check | Cash must cover cost of at least 1 lot |
-| Max positions | Max 3 open positions at a time |
-| Expiry day | No buying CE/PE on Tuesday morning (weekly expiry theta risk) |
+6. Signal broadcast to the UI via SSE — `scan_signal` carries the full ticket (verdict, confidence, strike, expiry, SL, T1, T2, Greeks)
 
 **Strike selection — `option_planner.plan_option_trade()`:**
 - Default `target_delta = 0.50` (ATM) — best gamma:theta tradeoff (overridable via `FO_TARGET_DELTA`)
@@ -108,28 +94,21 @@ Background service that cycles through the F&O universe and auto-executes paper 
 - Full Greeks attached to every ticket: Δ, Γ, θ/day, vega, IV
 
 **SSE events streamed to frontend:**
-`scan_start` → `scan_progress` → `scan_signal` → `scan_trade` / `scan_skip` → `scan_complete`
+`scan_start` → `scan_progress` → `scan_signal` → `scan_complete`
 
-### Position Monitor
+### Manual Position Tracker
 
-Background daemon polling every 5 seconds. Price chain: Kite WS cache → Kite REST → yfinance.
-
-**Exit triggers (evaluated in priority order):**
+For trades you take manually at your broker, click "I entered" on a LIVE ticket card. The position is pinned server-side at `/api/trade/tracked` and survives browser refreshes. The frontend reprices on every spot tick (Black-Scholes), and a server-side watcher (`tracked_monitor`) fires SSE alerts even when your browser tab is hidden:
 
 | Trigger | Condition |
 |---|---|
-| **Force exit** | `time >= 15:00` — all positions, every type, before 15:20 broker auto-square-off |
-| **Theta exit** | CE/PE after 13:00 on their expiry date (theta acceleration destroys premium) |
-| **Premium SL** | CE/PE: unrealised loss ≥ 50% of premium paid — exits regardless of underlying level |
-| **Underlying SL** | CE: underlying drops to/below SL level; PE: underlying rises to/above SL level; FUT/EQ: standard |
-| **Target 1** | 50% partial exit — raises SL to breakeven, enables trailing stop |
-| **Target 2** | Full exit |
+| **SL hit** | underlying breaches SL (CE: ≤; PE: ≥) or option premium ≤ 50% of entry |
+| **T1 hit** | underlying reaches T1 (suggest taking partial, raise SL to breakeven) |
+| **T2 hit** | underlying reaches T2 (suggest full exit) |
+| **Theta zone** | CE/PE after 13:00 IST on expiry day |
+| **Time exit** | 15:00 IST (warn before broker auto-square-off at 15:20) |
 
-**F&O P&L formulas:**
-- FUT: `(current_underlying − avg_entry) × qty × lot_size`
-- CE: `(max(0, underlying − strike) − premium) × qty × lot_size`
-- PE: `(max(0, strike − underlying) − premium) × qty × lot_size`
-- EQ: `(price − avg_entry) × qty`
+The watcher only emits alerts. You exit at your broker. No orders are placed by PhoenixTrade.
 
 ### Cerebrum — Multi-Agent Analysis Pipeline
 
@@ -172,29 +151,17 @@ short_term_action    · short_term_reason   · investment_thesis
 position_size_pct    · time_horizon        · key_risks[]
 ```
 
-### F&O Paper Wallet
-
-| Feature | Detail |
-|---|---|
-| **F&O P&L** | Correct premium × lot-based calculation for CE/PE/FUT |
-| **Position schema** | `instrument_type`, `lot_size`, `expiry`, `strike_price`, `underlying`, `avg_entry` (premium for options) |
-| **Cost deduction** | `premium × qty × lot_size` deducted from cash on entry |
-| **Instrument tags** | FUT / CE / PE / EQ color-coded in UI |
-| **Wallet starting cash** | ₹5,00,000 default |
-| **Trade history** | Every buy/sell/partial-exit logged with P&L |
-| **Stats** | Win rate, total P&L, best trade, total trades |
-
 ### Right Sidebar Layout
 
-Responsive width — `clamp(340px, 24vw, 460px)` — adapts to monitor size. Five panels:
+Responsive width — `clamp(340px, 24vw, 460px)` — adapts to monitor size. Panels:
 
-1. **SIGNAL & LEVELS** — intraday technical signal + entry/SL/T1/T2 levels, AI Predict button, manual BUY/SELL
-2. **F&O SCANNER** — pulse dot (running/stopped), ▶ Start / ■ Stop / ⚡ Trigger buttons, live SSE feed with TRADE/SIG/SKIP badges per index
+1. **SIGNAL & LEVELS** — intraday technical signal + entry/SL/T1/T2 levels, AI Predict button
+2. **F&O SCANNER** — pulse dot (running/stopped), ▶ Start / ■ Stop / ⚡ Trigger buttons, live SSE feed with SIGNAL badges per index
 3. **⚡ LIVE** — tick-driven, real-time:
-   - **Trade ticket cards** — one card per index that produced a tradeable signal, each card re-priced independently on its own broker SSE stream (premium, %change, ladder of SL→now→T1→T2, full Greeks, ITM/OTM status, theta-burn warning)
+   - **Trade ticket cards** — one card per index that produced a tradeable signal, each card re-priced independently on its own broker SSE stream (premium, %change, ladder of SL→now→T1→T2, full Greeks, ITM/OTM status, theta-burn warning). Click "I entered" to pin the position into the manual tracker for ongoing alerts.
    - **📊 OPTION CHAIN** — ladder of ATM ± 5 strikes for the selected underlying (NIFTY 50 / BANKNIFTY / SENSEX). Every CE and PE premium re-priced via JS Black-Scholes on every spot tick. Cells flash green/red on each up/down tick. Each row tagged `CONSERVATIVE / BALANCED / AGGRESSIVE / LOTTERY / EXPENSIVE` based on |Δ| with cost/lot and breakeven shown. AI-picked strike highlighted with ★ and gold ring. Optional `BUY-only` filter hides deep-OTM lottery strikes. Live pulse dot + tick-age counter prove stream health.
-   - **Per-position cards** — per-symbol P&L, premium ladder, decision flash on exit triggers
-4. **PAPER WALLET** — F&O-aware positions with itype tags + expiry, SL/T1 levels, recent trades
+   - **Per-position cards** — per-pinned-symbol P&L, premium ladder, decision flash on alert triggers
+4. **WATCHING** — pinned manual positions with SL/T1/T2 levels and live alert status
 5. **BACKTEST** — collapsed by default, vectorbt multi-strategy results
 
 ### Data Sources — Priority Chain
@@ -220,8 +187,8 @@ The **JS Black-Scholes engine** (`frontend/src/utils/blackScholes.js`) computes 
 ```
 frontend/                         Vue 3 + Vite (port 3000)
   src/
-    views/Home.vue                main terminal — 5-panel right sidebar, F&O scanner, LIVE panel
-                                  with ticket cards + option chain ladder, wallet, chart zoom
+    views/Home.vue                main terminal — right sidebar, F&O signal scanner, LIVE panel
+                                  with ticket cards + option chain ladder, chart zoom
     api/market.js                 all API calls + SSE stream factories
     utils/blackScholes.js         pure-JS Black-Scholes engine — premium + Greeks (Δ Γ Θ vega)
                                   + IV solver. Used to reprice option chain & ticket cards on
@@ -231,9 +198,8 @@ backend/                          Flask (port 5001)
   app/
     api/
       market.py                   OHLCV, signals, AI predict, invest-analysis SSE, _fetch_market_data()
-      trade.py                    indicators, levels, wallet (F&O-aware), AI trade, backtest
+      trade.py                    indicators, levels, backtest, manual position tracker
                                   F&O scanner endpoints: /fo-scanner/start|stop|trigger|status|stream
-                                  Position monitor stream: /monitor/stream
       kite.py                     Kite Connect — KiteTicker WS + REST fallback + _tick_cache
       graph.py                    D3 entity graph
       simulation.py               OASIS simulation runner
@@ -241,15 +207,16 @@ backend/                          Flask (port 5001)
     services/
       ta_utils.py                 Pure-Python indicators — Supertrend, ADX, ATR, RSI, EMA, MACD,
                                   Bollinger, Donchian, VWAP, BB rating, candlestick pattern detection
-      fo_scanner.py               F&O auto-scanner — 3 indices, two-stage pipeline
+      fo_scanner.py               F&O signal scanner — 3 indices, two-stage pipeline
                                   (technical prefilter + Cerebrum confirmation), Stage-1 trust
-                                  override, safety gates, ticket build via option_planner,
-                                  auto-open via position_monitor.open_position()
+                                  override, ticket build via option_planner, broadcasts
+                                  scan_signal SSE events (no order placement)
       option_planner.py           plan_option_trade() — delta-targeted strike resolution against
                                   broker F&O master, BS-derived premium SL/T1/T2 from spot
                                   targets, ATM IV back-solve, full Greeks on every ticket
-      position_monitor.py         Background position daemon — 5s polling, Kite price chain,
-                                  force-exit 15:00, theta exit, premium SL, T1 partial, trailing stop
+      tracked_monitor.py          Manual-position alert watcher — server-side reprice on
+                                  spot ticks for pinned positions; SSE alerts for SL / T1 /
+                                  T2 / theta zone / 15:00 time exit (alerts only, no orders)
       cerebrum/
         agent.py                  AgentInput / AgentOutput dataclasses, Agent ABC, AgentRegistry
         runner.py                 AnalysisRunner — all phases + SSE emit
@@ -297,14 +264,14 @@ backend/                          Flask (port 5001)
 | **JSON mode** | All LLM calls return structured JSON — no markdown parsing |
 | **Budget tracking** | Every llm_client.complete() records prompt + completion tokens per agent |
 
-### F&O Auto-Trading Flow
+### F&O Signal Flow (no order placement)
 
 ```
-FOScanner thread (every 15 min)
+FOScanner thread (every cycle)
   └─ _scan_one(ticker)
        └─ _fetch_market_data(ticker)
-            ├─ Kite 5-min candles (last 7 days, 75+ bars)  ← PRIMARY
-            ├─ Kite daily candles (200 days fallback)
+            ├─ IndStocks 5-min candles (last 7 days, 75+ bars)  ← PRIMARY
+            ├─ IndStocks daily candles (200 days fallback)
             └─ yfinance fundamentals (stocks only, indices skipped)
        └─ ta_utils.compute_all(candles)
             └─ Supertrend + ADX + RSI + EMA + MACD + BB + patterns → technicals dict
@@ -312,22 +279,14 @@ FOScanner thread (every 15 min)
             ├─ 5 agents parallel (Technical gets patterns + 75 OHLCV bars)
             ├─ Bull vs Bear debate
             └─ CIO → instrument_type, strike, expiry, premium, confidence_to_trade
-  └─ _passes_safety_gates()  ← 8 gates including market hours 09:15-15:00
-  └─ _execute_scan_trade()
-       └─ position_monitor.open_position()
-            └─ deducts premium × lots from cash
-            └─ writes position to paper_wallet.json
-            └─ broadcasts position_open SSE event
+       └─ option_planner.plan_option_trade()  ← BS-derived SL/T1/T2 + Greeks
+       └─ broadcast scan_signal SSE event with full ticket
+  ⇒ user reads the signal in the UI and places the trade manually at their broker
 
-PositionMonitor thread (every 5s)
-  └─ for each open position:
-       ├─ _live_price() → Kite WS → Kite REST → yfinance
-       ├─ _fo_pnl() → correct CE/PE/FUT formula
-       ├─ Check force_exit (time >= 15:00)         → exit all
-       ├─ Check theta zone (expiry day after 13:00) → exit CE/PE
-       ├─ Check premium SL (loss >= 50% of premium) → exit CE/PE
-       ├─ Check underlying SL / Target 2            → full exit
-       └─ Check Target 1                            → 50% partial exit + raise SL to breakeven
+User clicks "I entered" on a LIVE ticket card
+  └─ POST /api/trade/tracked  ← pin position
+  └─ tracked_monitor watches it server-side; emits SL/T1/T2/theta/time-exit SSE alerts
+       (alerts only — user exits manually at broker)
 ```
 
 ### Investment Analysis Pipeline
@@ -764,16 +723,16 @@ Exposes port `53847` (Vite) and `47291` (nginx HTTPS+HTTP/2). Flask runs on inte
 | GET | `/indicators/<ticker>` | RSI, MACD, Bollinger, EMA |
 | GET | `/levels/<ticker>` | Entry, stop loss, T1/T2/T3 |
 | GET | `/vbt-backtest/<ticker>` | vectorbt multi-strategy backtest |
-| GET | `/wallet` | Paper wallet — cash, F&O positions, trades, stats |
-| POST | `/wallet/trade` | Manual BUY or SELL |
-| POST | `/wallet/ai-trade` | AI auto-trade — market-hours + holiday gated |
-| POST | `/wallet/reset` | Reset wallet to starting cash |
-| POST | `/fo-scanner/start` | Start F&O auto-scanner background thread |
-| POST | `/fo-scanner/stop` | Stop F&O auto-scanner |
+| POST | `/fo-scanner/start` | Start F&O signal scanner background thread |
+| POST | `/fo-scanner/stop` | Stop F&O signal scanner |
 | POST | `/fo-scanner/trigger` | Force immediate scan cycle |
-| GET | `/fo-scanner/status` | Scanner state — running, last scan, signals, trades |
-| GET | `/fo-scanner/stream` | SSE — live scan events (scan_signal, scan_trade, scan_skip) |
-| GET | `/monitor/stream` | SSE — live position monitor events (position_open, position_exit) |
+| GET | `/fo-scanner/status` | Scanner state — running, last scan, signals |
+| GET | `/fo-scanner/stream` | SSE — live scan events (scan_signal, scan_complete) |
+| GET | `/tracked` | List manually-pinned positions |
+| POST | `/tracked` | Pin a position (when user clicks "I entered" on a ticket) |
+| DELETE | `/tracked/<id>` | Unpin a position |
+| GET | `/tracked/alerts/stream` | SSE — server-side SL/T1/T2/theta/time-exit alerts for pinned positions |
+| GET | `/tracked/alerts/state` | Latest alert state per pinned position |
 | GET | `/option-plan` | Build a single executable option ticket — delta-targeted strike, Greeks, BS premium SL/T1/T2 |
 | GET | `/option-chain` | Return ATM ± N strikes around current spot with broker contract metadata (security_id, lot_size, expiry) so the browser can BS-reprice the entire chain on every tick. Query: `underlying`, `strikes` (default 11), `min_dte`, `max_dte`. |
 | GET | `/live-status` | Per-position decision snapshot from the last evaluated tick |
@@ -794,12 +753,12 @@ Exposes port `53847` (Vite) and `47291` (nginx HTTPS+HTTP/2). Flask runs on inte
 
 | Window | Time (IST) | Purpose |
 |---|---|---|
-| Market open | 09:15 | NSE market open — trading starts immediately |
-| Safe trading open | 09:15 | Scanner + auto-trade enabled from market open |
-| Theta danger zone | 13:00 (expiry day) | CE/PE positions force-exited on their expiry date |
-| Force exit | 15:00 | ALL positions force-exited — 20 min before broker auto-square-off |
+| Market open | 09:15 | NSE market open |
+| Safe trading open | 09:15 | Scanner emits signals from market open |
+| Theta danger zone | 13:00 (expiry day) | tracked_monitor fires `theta_zone` alert on pinned CE/PE positions on their expiry date |
+| Time-exit alert | 15:00 | tracked_monitor fires `time_exit` alert — 20 min before broker auto-square-off |
 | Market close | 15:30 | NSE close |
-| Broker auto-square-off | 15:20 | Zerodha MIS auto-square-off — we exit by 15:00 to avoid this |
+| Broker auto-square-off | 15:20 | Zerodha MIS auto-square-off — exit by 15:00 to avoid this |
 
 **Tuesday rule:** No buying CE/PE on Tuesday morning — weekly NIFTY expiry, theta destroys premium by afternoon.
 
@@ -811,11 +770,11 @@ The CIO agent is trained (via prompt) on these rules:
 
 - **Delta 0.30–0.45** — slightly OTM for best risk/reward (CE: +1–3%, PE: −1–3% from current price)
 - **Deep OTM avoid** — delta < 0.15 = lottery ticket, avoid unless very high conviction
-- **Premium SL** — 40–50% of premium paid; position monitor enforces 50% hard exit
+- **Premium SL** — 40–50% of premium paid; tracked_monitor flags this as an alert
 - **FUT SL** — ATR-based, underlying price level
 - **VIX guard** — avoid new longs if VIX > 20 unless it's a PE hedge
 - **Expiry selection** — weekly if move expected in 2–3 days, monthly otherwise
-- **Force exit 15:00** — no exception; position monitor enforces this hardware
+- **Time exit 15:00** — alert fires before broker auto-square-off
 - **Tuesday expiry** — no CE/PE buying on Tuesday morning
 
 ---

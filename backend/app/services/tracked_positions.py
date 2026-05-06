@@ -1,5 +1,5 @@
 """
-Manual position tracker — independent of any paper-wallet logic.
+Manual position tracker — pinned positions the user has entered at their broker.
 
 When the user clicks "I entered" on a LIVE ticket card, the full ticket payload
 is pinned here. The frontend continues to live-reprice the contract and fires

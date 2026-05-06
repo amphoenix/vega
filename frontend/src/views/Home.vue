@@ -894,65 +894,6 @@ Click a tile to filter the breakdowns below. -->
               }}{{ levels.capital_at_risk }}
             </div>
           </div>
-          <div v-if="lastTradeMsg">
-            <div
-              :class="[
-                'rs-result',
-                lastTradeAction === 'BUY'
-                  ? 'rs-res-buy'
-                  : lastTradeAction === 'SELL'
-                    ? 'rs-res-sell'
-                    : 'rs-res-hold',
-              ]"
-            >
-              <div class="rs-res-top">
-                <b class="rs-res-action">{{ lastTradeAction }}</b>
-                <span class="rs-res-conf" v-if="lastTradeConf"
-                  >{{ lastTradeConf }}%</span
-                >
-              </div>
-              <div class="rs-res-reason">{{ lastTradeReason }}</div>
-              <div class="rs-res-levels" v-if="lastTradeSL || lastTradeT1">
-                <span v-if="lastTradeSL" class="rrl-sl"
-                  >SL {{ currencySymbol }}{{ fmtPrice(lastTradeSL) }}</span
-                >
-                <span v-if="lastTradeT1" class="rrl-t1"
-                  >T1 {{ currencySymbol }}{{ fmtPrice(lastTradeT1) }}</span
-                >
-              </div>
-              <div class="rs-res-signals" v-if="lastTradeSignals.length">
-                <span
-                  v-for="s in lastTradeSignals.slice(0, 4)"
-                  :key="s"
-                  class="rs-sig-tag"
-                  >{{ s }}</span
-                >
-              </div>
-              <div
-                v-if="lastTradeExecuted"
-                class="rs-trade-status rs-trade-done"
-              >
-                <span v-if="lastTradeExecuted.action === 'BUY'"
-                  >✅ Bought {{ lastTradeExecuted.qty }} @ {{ currencySymbol
-                  }}{{ fmtPrice(lastTradeExecuted.price) }}</span
-                >
-                <span v-else
-                  >✅ Sold
-                  <b :class="lastTradeExecuted.pnl >= 0 ? 'up' : 'dn'"
-                    >{{ lastTradeExecuted.pnl >= 0 ? "+" : ""
-                    }}{{ currencySymbol
-                    }}{{ lastTradeExecuted.pnl?.toFixed(0) }}</b
-                  ></span
-                >
-              </div>
-              <div
-                v-else-if="lastTradeSkipped"
-                class="rs-trade-status rs-trade-skip"
-              >
-                ⏸ {{ lastTradeSkipped }}
-              </div>
-            </div>
-          </div>
         </div>
 
         <!-- Panel 2: F&O SCANNER -->
@@ -1073,14 +1014,6 @@ Click a tile to filter the breakdowns below. -->
                 v-else-if="ev.type === 'scan_skip'"
                 class="fo-evt-badge fo-badge-scan_skip"
                 >SKIP</span
-              >
-              <span
-                v-else-if="ev.type === 'position_exit'"
-                :class="[
-                  'fo-evt-badge',
-                  (ev.pnl || 0) >= 0 ? 'fo-badge-win' : 'fo-badge-loss',
-                ]"
-                >{{ (ev.pnl || 0) >= 0 ? "WIN" : "LOSS" }}</span
               >
 
               <!-- Option contract symbol (primary) — always show if available -->
@@ -2105,14 +2038,6 @@ Requires a full ticket (plan_option_trade succeeded). -->
             </div>
           </div>
 
-          <!-- ═ AI Commentary ticker -->
-          <div class="lv-commentary" v-if="latestCommentary">
-            <div class="lv-comm-head">
-              🗨 AI commentary
-              <span class="lv-comm-ts">{{ fmtTime(latestCommentary.ts) }}</span>
-            </div>
-            <div class="lv-comm-text">{{ latestCommentary.text }}</div>
-          </div>
         </div>
 
         <!-- Panel 4: BACKTEST (collapsible, collapsed by default) -->
@@ -3192,10 +3117,6 @@ const investGraphSvg = ref(null);
 const levels = ref(null);
 const levelsLoading = ref(false);
 
-// ── Trade UI state (no wallet — live broker mode) ────────────────────────────────────
-const aiTradeLoading = ref(false);
-const lastTradeMsg = ref("");
-const lastTradeAction = ref("");
 
 // Market open status — computed client-side with holiday awareness.
 // IMPORTANT: this computed depends on the wall clock, but `new Date()` is
@@ -3365,13 +3286,6 @@ const marketStatus = computed(() => {
   };
 });
 const marketOpen = computed(() => marketStatus.value.open);
-const lastTradeReason = ref("");
-const lastTradeSignals = ref([]);
-const lastTradeConf = ref(null);
-const lastTradeSL = ref(null);
-const lastTradeT1 = ref(null);
-const lastTradeExecuted = ref(null);
-const lastTradeSkipped = ref(null);
 const btLoading = ref(false);
 const btResult = ref(null);
 const btError = ref("");
@@ -3547,7 +3461,7 @@ function _closeAllTicketStreams() {
 
 // ── Manual position tracker — "I entered this trade" pins ───────────────────
 // Persisted server-side at /api/trade/tracked. Survives refreshes. Live-repriced
-// on every spot tick. Independent of any paper-wallet logic.
+// on every spot tick.
 const trackedPositions = ref([]); // [{ id, ticket, qty, notes, entered_at }]
 
 async function _loadTracked() {
@@ -4087,7 +4001,6 @@ const liveTicketCards = computed(() => {
   );
 });
 const liveClock = ref("");
-let _liveES = null;
 let _liveClockTimer = null;
 
 // ── Server-side tracked-position watcher (SSE) ──────────────────────────────
@@ -4270,7 +4183,6 @@ function ladderPct(s, which) {
   return "0%";
 }
 let _foScannerES = null;
-let _monitorES = null;
 
 function shortVerdict(v) {
   if (!v) return "SIG";
@@ -4450,61 +4362,6 @@ function _openFoScannerStream() {
   _foScannerES.onerror = () => {
     scannerRunning.value = false;
     foAnalysing.value = null;
-  };
-}
-
-function _openLiveFeed() {
-  if (_liveES) return;
-  const base = import.meta.env.VITE_API_BASE_URL || "http://localhost:5001";
-  _liveES = _registerSingletonStream(
-    "liveES",
-    new EventSource(`${base}/api/trade/live-feed`),
-  );
-  _liveES.onopen = () => {
-    liveConnected.value = true;
-  };
-  _liveES.onerror = () => {
-    liveConnected.value = false;
-  };
-  _liveES.onmessage = (e) => {
-    try {
-      const ev = JSON.parse(e.data);
-      if (ev.type === "tick_update") {
-        liveStatus.value = { ...liveStatus.value, [ev.pos_key]: ev };
-      } else if (ev.type === "exit_full") {
-        const next = { ...liveStatus.value };
-        delete next[ev.pos_key];
-        liveStatus.value = next;
-      } else if (ev.type === "exit_partial") {
-        // live broker pushes the partial fill via its own stream
-      } else if (ev.type === "commentary") {
-        latestCommentary.value = { text: ev.text, ts: ev.ts };
-      }
-    } catch {}
-  };
-  // Also fetch initial snapshot so cards render immediately on page reload
-  fetch(`${base}/api/trade/live-status`)
-    .then((r) => r.json())
-    .then((j) => {
-      if (j?.success && j.data) liveStatus.value = j.data;
-    })
-    .catch(() => {});
-}
-
-function _openMonitorStream() {
-  if (_monitorES) return;
-  const base = import.meta.env.VITE_API_BASE_URL || "http://localhost:5001";
-  _monitorES = _registerSingletonStream(
-    "monitorES",
-    new EventSource(`${base}/api/trade/monitor/stream`),
-  );
-  _monitorES.onmessage = (e) => {
-    try {
-      const ev = JSON.parse(e.data);
-      if (ev.type === "heartbeat") return;
-      foFeed.value.unshift(ev);
-      if (foFeed.value.length > 100) foFeed.value.splice(100);
-    } catch {}
   };
 }
 
@@ -5884,8 +5741,6 @@ async function runBacktest() {
   }
 }
 
-// doManualTrade removed — wallet/manual-trade concept eliminated.
-
 // ── Kite Connect ──────────────────────────────────────────────────────────────
 // Direct real-time chart redraw on every tick.
 function scheduleDrawChart() {
@@ -5971,8 +5826,6 @@ async function runIntradaySignal() {
     signalLoading.value = false;
   }
 }
-
-// confirmReset removed — wallet concept eliminated in live mode.
 
 // ── D3 Chart ──────────────────────────────────────────────────────────────────
 const GREEN = "#00d4a8";
@@ -7046,8 +6899,6 @@ function _drawChartImpl() {
 let ro = null;
 onMounted(async () => {
   loadIndices(); // background — sidebar populates when ready
-  _openMonitorStream(); // live position exit events
-  _openLiveFeed(); // tick-driven SSE: tickets, decisions, commentary
   _openFoScannerStream(); // scanner SSE + replay latest signal/ticket on load
   _loadTracked(); // restore manually-tracked positions from server
   _loadMissedAlerts(); // restore alerts that fired while tab was closed
@@ -7110,12 +6961,8 @@ onMounted(async () => {
   watch(
     () => {
       // Open per-underlying tick streams only for things the UI actually
-      // renders tick-by-tick:
-      // - tracked WATCHING positions (premium → SL/T1/T2 progress)
-      // - the currently charted ticker
-      // Tick data for non-watched/non-charted underlyings flows via
-      // /api/trade/live-feed already; opening a duplicate stream just
-      // wastes backend resources.
+      // renders tick-by-tick: tracked WATCHING positions (premium →
+      // SL/T1/T2 progress) and the currently charted ticker.
       const set = new Set();
       for (const rec of trackedPositions.value || []) {
         const u = rec?.ticket?.underlying;
@@ -7177,12 +7024,14 @@ onMounted(async () => {
   });
   if (chartWrap.value) ro.observe(chartWrap.value);
 
-  setTimeout(() => {
-    runAiPredict();
-    aiPredTimer = setInterval(() => {
-      if (chartTicker.value) runAiPredict();
-    }, 60000);
-  }, 5000);
+  // Auto-fire of AI Predict (initial 5s delay + 60s polling) is disabled.
+  // The button still works on user click; remove this comment + restore to re-enable.
+  // setTimeout(() => {
+  //   runAiPredict();
+  //   aiPredTimer = setInterval(() => {
+  //     if (chartTicker.value) runAiPredict();
+  //   }, 60000);
+  // }, 5000);
 });
 
 onUnmounted(() => {
@@ -7204,14 +7053,6 @@ onUnmounted(() => {
     _foScannerES.close();
     _foScannerES = null;
   }
-  if (_monitorES) {
-    _monitorES.close();
-    _monitorES = null;
-  }
-  if (_liveES) {
-    _liveES.close();
-    _liveES = null;
-  }
   if (_alertsES) {
     _alertsES.close();
     _alertsES = null;
@@ -7224,8 +7065,6 @@ onUnmounted(() => {
 if (typeof window !== "undefined") {
   for (const k of [
     "foScannerES",
-    "monitorES",
-    "liveES",
     "alertsES",
     "investStream",
   ]) {
@@ -9296,10 +9135,6 @@ Scanner is always-on now; this just shows current state. */
 .fo-evt-scan_skip {
   background: #0d0f13;
   opacity: 0.8;
-}
-.fo-evt-position_exit {
-  background: #1a1500;
-  border: 1px solid #fbbf2433;
 }
 
 /* Verdict-coloured signal rows */

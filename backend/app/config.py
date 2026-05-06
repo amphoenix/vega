@@ -43,10 +43,6 @@ class Config:
     # Zep
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
 
-    # OpenAlgo (unified Indian broker API — Zerodha, Angel, Fyers, Upstox…)
-    OPENALGO_API_KEY = os.environ.get('OPENALGO_API_KEY', '')
-    OPENALGO_HOST    = os.environ.get('OPENALGO_HOST', 'http://127.0.0.1:5000')
-
     # File uploads
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB
     UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), '../uploads')
