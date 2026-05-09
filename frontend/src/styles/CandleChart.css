@@ -1,0 +1,199 @@
+.candle-chart-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #fff;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* ── Config bar ─────────────────────────────────────────────────────────────── */
+.chart-config-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #EAEAEA;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.ticker-input {
+  width: 220px;
+  text-transform: uppercase;
+}
+
+.date-input {
+  width: 130px;
+}
+
+.date-sep {
+  color: #AAA;
+  font-size: 12px;
+}
+
+.interval-select {
+  width: 56px;
+  padding: 4px 4px;
+}
+
+.ticker-input,
+.date-input,
+.interval-select {
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid #DCDFE6;
+  border-radius: 4px;
+  font-size: 12px;
+  background: #fff;
+  color: #333;
+  outline: none;
+}
+
+.ticker-input:focus,
+.date-input:focus,
+.interval-select:focus {
+  border-color: #1A936F;
+}
+
+.load-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 12px;
+  background: #1A936F;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.load-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.load-btn:not(:disabled):hover {
+  background: #157a5c;
+}
+
+.chart-error {
+  font-size: 11px;
+  color: #C5283D;
+}
+
+.chart-info {
+  font-size: 11px;
+  color: #AAA;
+  margin-left: 4px;
+}
+
+@keyframes spin { to { transform: rotate(360deg) } }
+.spin {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(255,255,255,0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* ── Chart container ────────────────────────────────────────────────────────── */
+.chart-container {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.lw-host {
+  position: absolute;
+  inset: 0;
+}
+
+/* ── Empty state ────────────────────────────────────────────────────────────── */
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #AAA;
+  font-size: 13px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.empty-icon {
+  font-size: 32px;
+  margin-bottom: 4px;
+}
+
+.empty-sub {
+  font-size: 11px;
+  color: #CCC;
+}
+
+/* ── Tooltip ────────────────────────────────────────────────────────────────── */
+.chart-tooltip {
+  position: absolute;
+  background: rgba(17, 17, 17, 0.93);
+  color: #F0F0F0;
+  padding: 8px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  pointer-events: none;
+  z-index: 50;
+  min-width: 148px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  backdrop-filter: blur(2px);
+}
+
+.tt-date {
+  font-size: 10px;
+  color: #888;
+  margin-bottom: 4px;
+  letter-spacing: 0.5px;
+}
+
+.tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  line-height: 1.6;
+}
+
+.tt-row span:first-child {
+  color: #777;
+  font-size: 10px;
+}
+
+.tt-close { font-weight: 600; }
+.up  { color: #1A936F; }
+.dn  { color: #C5283D; }
+
+.tt-divider {
+  border-top: 1px solid #2a2a2a;
+  margin: 4px 0;
+}
+
+.tt-posts {
+  margin-top: 4px;
+  border-top: 1px solid #2a2a2a;
+  padding-top: 4px;
+}
+
+.tt-post {
+  font-size: 10px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+  line-height: 1.4;
+}

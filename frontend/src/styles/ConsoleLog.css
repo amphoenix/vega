@@ -1,0 +1,42 @@
+.console-logs {
+  background: #000;
+  color: #DDD;
+  padding: 16px;
+  font-family: 'JetBrains Mono', monospace;
+  border-top: 1px solid #222;
+  flex-shrink: 0;
+}
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid #333;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  font-size: 10px;
+  color: #666;
+}
+.log-title {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.log-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  height: 100px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.log-content::-webkit-scrollbar { width: 4px; }
+.log-content::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+.log-line {
+  font-size: 11px;
+  line-height: 1.5;
+}
+.log-msg {
+  color: #BBB;
+  word-break: break-all;
+}
+.log-msg.error { color: #EF5350; }
+.log-msg.warning { color: #FFA726; }
+.log-msg.success { color: #66BB6A; }

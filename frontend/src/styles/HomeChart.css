@@ -1,0 +1,129 @@
+.chart-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: #0d1117;
+}
+.lw-host {
+  position: absolute;
+  inset: 0;
+}
+.chart-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #333;
+  font-size: 13px;
+  gap: 8px;
+  background: inherit;
+  pointer-events: none;
+}
+.chart-legend {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  z-index: 4;
+  display: flex;
+  gap: 10px;
+  pointer-events: none;
+}
+.legend-item {
+  font-size: 10px;
+  font-family: monospace;
+  font-weight: 700;
+  opacity: 0.85;
+  cursor: help;
+  pointer-events: all;
+}
+.chart-zoom-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(13, 17, 23, 0.85);
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 2px 4px;
+  backdrop-filter: blur(4px);
+  font-family: monospace;
+  font-size: 11px;
+}
+.chart-zoom-controls button {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #adbac7;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 7px;
+  cursor: pointer;
+  border-radius: 3px;
+  min-width: 22px;
+}
+.chart-zoom-controls button:hover {
+  background: #21262d;
+  border-color: #444c56;
+  color: #e6edf3;
+}
+.chart-zoom-info {
+  color: #6e7681;
+  font-size: 10px;
+  padding: 0 4px;
+}
+.c-tooltip {
+  position: absolute;
+  background: #1c2128;
+  border: 1px solid #3a404a;
+  padding: 6px 9px;
+  border-radius: 4px;
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 9999;
+  min-width: 150px;
+  max-width: 210px;
+}
+.tt-date {
+  font-size: 10px;
+  color: #7d8590;
+  margin-bottom: 2px;
+  font-family: monospace;
+}
+.tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: #adbac7;
+  line-height: 1.4;
+}
+.tt-row span:last-child {
+  color: #cdd9e5;
+  font-family: monospace;
+}
+.tt-pattern {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid #2a2a2a;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tt-pat-name { font-size: 12px; font-weight: 700; }
+.tt-pat-desc { font-size: 11px; color: #94a3b8; line-height: 1.4; white-space: normal; }
+.up { color: #2dd4bf; }
+.dn { color: #f85149; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #2a2a2a;
+  border-top-color: #2dd4bf;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}

@@ -10,12 +10,12 @@ A professional-grade monitoring terminal combining real-time IndStocks broker We
 
 PhoenixTrade gives you a complete research-to-decision workflow for F&O intraday trading:
 
-1. **Watch** live candlestick charts — broker WebSocket 5-min candles, zero delay; mouse-wheel zoom + reset controls
+1. **Watch** live candlestick charts — broker WebSocket candles across 6 intervals (5M/30M/1H/1D/1W/1Y), default 5M; Y-axis on left, price-level labels on right; mouse-wheel zoom + reset controls
 2. **Scan** the index F&O universe (NIFTY 50, SENSEX, BANKNIFTY) every cycle — two-stage pipeline (pure-Python prefilter + Cerebrum LLM) emits BUY/SELL CE/PE signals when confidence ≥ 70 to the UI; you decide which to act on
 3. **Analyse** any ticker with multi-agent Cerebrum pipeline — 5 domain experts (Technical, Fundamental, Macro, Sentiment, Risk) + Bull/Bear debate + CIO final verdict with full F&O instrument selection
 4. **Reprice live in the browser** — option chain ladder (ATM ± 5 strikes) and per-position ticket cards re-priced on every spot tick via JS Black-Scholes (delta, theta, vega, premium) — zero server round-trip per tick
 5. **Decide which strike** with built-in buy-quality tags — CONSERVATIVE / BALANCED / AGGRESSIVE / LOTTERY / EXPENSIVE — derived from |Δ| so you instantly see whether a strike fits your risk profile
-6. **Signal** intraday with pure-Python indicators: Supertrend, ADX, Bollinger Bands, RSI, EMA stack, MACD, VWAP, Donchian — plus candlestick pattern detection (Engulfing, Morning Star, Doji, Hammer, Three Soldiers, etc.)
+6. **Signal** intraday with pure-Python indicators: Supertrend, ADX, Bollinger Bands, RSI, EMA stack, MACD, VWAP, Donchian — plus candlestick pattern detection (Engulfing, Morning Star, Doji, Hammer, Three Soldiers, etc.); S/R levels derived from Standard Floor Pivot Points (Zerodha/Groww formula)
 7. **Track** the trades you take manually — pin entered tickets via "I entered" so the server-side watcher fires SL / T1 / T2 / theta-zone / 15:00 exit alerts via SSE even if your tab is hidden
 8. **Backtest** with vectorbt multi-strategy (RSI, EMA cross, Bollinger, MACD)
 9. **Stream** live prices via the IndStocks broker WebSocket — tick cache → REST quote → yfinance fallback chain
@@ -28,7 +28,7 @@ PhoenixTrade gives you a complete research-to-decision workflow for F&O intraday
 
 | Feature | Detail |
 |---|---|
-| **OHLCV Charts** | Candlestick + volume bars, multiple intervals |
+| **OHLCV Charts** | Candlestick + volume bars; intervals: 5M (default), 30M, 1H, 1D, 1W, 1Y; Y-axis left, price-line label boxes right |
 | **Real-time Price** | Kite WebSocket tick cache → Kite REST quote → yfinance fallback |
 | **Intraday Candles** | 5-minute Kite historical candles (last 7 days = 75+ bars per analysis) |
 | **Daily Candles** | 200-day Kite historical candles for trend/EMA200 (fallback if 5-min unavailable) |
@@ -721,7 +721,7 @@ Exposes port `53847` (Vite) and `47291` (nginx HTTPS+HTTP/2). Flask runs on inte
 |--------|------|-------------|
 | GET | `/intraday-signal/<ticker>` | Fast technical signal — all ta_utils indicators, no LLM |
 | GET | `/indicators/<ticker>` | RSI, MACD, Bollinger, EMA |
-| GET | `/levels/<ticker>` | Entry, stop loss, T1/T2/T3 |
+| GET | `/levels/<ticker>` | Entry, stop loss, T1/T2/T3; S/R via Standard Floor Pivot Points (PP, R1–R3, S1–S3) from previous session H/L/C |
 | GET | `/vbt-backtest/<ticker>` | vectorbt multi-strategy backtest |
 | POST | `/fo-scanner/start` | Start F&O signal scanner background thread |
 | POST | `/fo-scanner/stop` | Stop F&O signal scanner |
