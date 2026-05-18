@@ -38,6 +38,7 @@ import GraphPanel from '../components/chart/GraphPanel.vue'
 import Step2EnvSetup from '../components/simulation/Step2EnvSetup.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation, stopSimulation, getEnvStatus, closeSimulationEnv } from '../api/simulation'
+import { fmtTime } from '../utils/formatters'
 
 const route = useRoute()
 const router = useRouter()
@@ -60,7 +61,7 @@ const statusText = computed(() => {
 })
 
 const addLog = (msg) => {
-  const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '.' + new Date().getMilliseconds().toString().padStart(3, '0')
+  const time = fmtTime(new Date(), { ms: true })
   systemLogs.value.push({ time, msg })
   if (systemLogs.value.length > 100) systemLogs.value.shift()
 }

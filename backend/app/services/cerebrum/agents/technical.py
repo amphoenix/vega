@@ -55,6 +55,7 @@ Apply this framework in order:
    - Identify the nearest Order Block (last bearish candle before a bullish impulse, or vice versa)
 
 3. KEY LEVELS
+   - CPR: PP={technicals.get('cpr_pp','N/A')} BC={technicals.get('cpr_bc','N/A')} TC={technicals.get('cpr_tc','N/A')} ({technicals.get('cpr_type','N/A')}, width={technicals.get('cpr_width_pct','N/A')}%) — narrow CPR (<0.5%) = trending day expected; wide = choppy/range-bound. Price above TC = bullish; below BC = bearish; inside = accumulation.
    - VWAP: is price above (institutional buy bias) or below (sell bias)?
    - 52-week high/low proximity: within 3% = extreme level with high reaction probability
    - ATR({technicals.get('atr', 'N/A')}): set stop-loss 1.5×ATR from entry, target 2.5×ATR (minimum 2.5R)

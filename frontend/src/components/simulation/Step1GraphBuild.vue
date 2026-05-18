@@ -190,6 +190,7 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { createSimulation } from '../../api/simulation'
+import { fmtTime } from '../../utils/formatters'
 
 const router = useRouter()
 
@@ -254,11 +255,7 @@ const graphStats = computed(() => {
   return { nodes, edges, types }
 })
 
-const formatDate = (dateStr) => {
-  if (!dateStr) return '--:--:--'
-  const d = new Date(dateStr)
-  return d.toLocaleTimeString('en-US', { hour12: false }) + '.' + d.getMilliseconds()
-}
+const formatDate = (dateStr) => dateStr ? fmtTime(dateStr, { ms: true }) : '--:--:--'
 
 // Auto-scroll logs
 watch(() => props.systemLogs.length, () => {

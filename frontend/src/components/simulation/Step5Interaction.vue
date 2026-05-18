@@ -414,6 +414,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { chatWithReport, getReport, getAgentLog } from '../../api/report'
 import { interviewAgents, getSimulationProfilesRealtime } from '../../api/simulation'
+import { fmtTime } from '../../utils/formatters'
 
 const props = defineProps({
   reportId: String,
@@ -538,18 +539,7 @@ const selectAgent = (agent, idx) => {
   addLog(`Selected chat target: ${agent.username}`)
 }
 
-const formatTime = (timestamp) => {
-  if (!timestamp) return ''
-  try {
-    return new Date(timestamp).toLocaleTimeString('en-US', { 
-      hour12: false, 
-      hour: '2-digit', 
-      minute: '2-digit'
-    })
-  } catch {
-    return ''
-  }
-}
+const formatTime = (timestamp) => fmtTime(timestamp, { seconds: false })
 
 const renderMarkdown = (content) => {
   if (!content) return ''

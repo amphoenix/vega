@@ -1110,16 +1110,7 @@ function clearMissedAlerts() {
   _saveMissedAlerts()
 }
 
-function _fmtAlertTime(iso) {
-  if (!iso) return ''
-  try {
-    return new Date(iso).toLocaleTimeString('en-IN', {
-      hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
-    })
-  } catch {
-    return ''
-  }
-}
+const _fmtAlertTime = (iso) => fmtTime(iso, { seconds: false })
 
 // ── Desktop notifications ──────────────────────────────────────────────────
 async function requestNotifPermission() {
@@ -1451,10 +1442,7 @@ onMounted(() => {
   _openTrackedAlertsStream()
 
   const tickClock = () => {
-    liveClock.value = new Intl.DateTimeFormat('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-    }).format(new Date()) + ' IST'
+    liveClock.value = fmtTime(new Date()) + ' IST'
   }
   tickClock()
   _liveClockTimer = setInterval(tickClock, 1000)

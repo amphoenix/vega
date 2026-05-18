@@ -90,20 +90,30 @@ def intraday_signal(ticker: str):
     """
     ticker = _resolve_ticker(ticker)
     try:
-        import yfinance as yf
         import numpy as np
+        import pandas as pd
+        from .indmoney import _ind_ltp, _ind_candles, ACCESS_TOKEN
 
-        # ── Live price ────────────────────────────────────────────────────────
-        yf_ticker = yf.Ticker(ticker)
-        try:
-            info  = yf_ticker.fast_info
-            live  = getattr(info, 'last_price', None) or getattr(info, 'regularMarketPrice', None)
-            price = float(live) if live else None
-        except Exception:
-            price = None
+        # ── Live price — IndMoney WebSocket/REST (real-time) ──────────────────
+        price = None
+        if ACCESS_TOKEN:
+            try:
+                p = _ind_ltp(ticker)
+                price = float(p) if p else None
+            except Exception:
+                pass
 
-        # ── 1h OHLCV (last 30 days) ───────────────────────────────────────────
-        df = _fetch_ohlcv(ticker, days=30, interval='1h')
+        # ── 1h OHLCV — IndMoney real-time (14-day max), yfinance fallback ─────
+        df = None
+        if ACCESS_TOKEN:
+            rows = _ind_candles(ticker, interval='1h', days=14)
+            if rows and len(rows) >= 20:
+                df = pd.DataFrame(rows)
+                df['date'] = pd.to_datetime(df['date'])
+                df = df.set_index('date')
+                df = df[['open', 'high', 'low', 'close', 'volume']]
+        if df is None or len(df) < 20:
+            df = _fetch_ohlcv(ticker, days=30, interval='1h')
         if df is None or len(df) < 20:
             return jsonify({"success": False, "error": f"Not enough intraday data for {ticker}"}), 404
 
@@ -143,6 +153,16 @@ def intraday_signal(ticker: str):
         tr  = np.maximum(h - l, np.maximum(abs(h - c.shift()), abs(l - c.shift())))
         atr = float(tr.rolling(14).mean().iloc[-1])
 
+        # ── CPR from previous trading day (group 1h bars by date) ────────────
+        _daily = df.resample('D').agg({'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
+        cpr_data = None
+        if len(_daily) >= 2:
+            cpr_data = _cpr(
+                float(_daily['high'].iloc[-2]),
+                float(_daily['low'].iloc[-2]),
+                float(_daily['close'].iloc[-2]),
+            )
+
         # ── Score (0–100) ─────────────────────────────────────────────────────
         rsi_score  = max(0, min(100, (50 - rsi) * 2 + 50))      # low RSI → high score
         ema_score  = 80 if ema_cross else 20
@@ -157,6 +177,12 @@ def intraday_signal(ticker: str):
             vwap_score * 0.20 +
             vol_score  * 0.15 +
             mom_score  * 0.15, 1)
+
+        if cpr_data:
+            if cpr_data['type'] == 'narrow':
+                score = round(min(100.0, score + 3), 1)
+            else:
+                score = round(max(0.0, score - 3), 1)
 
         # ── Action ────────────────────────────────────────────────────────────
         if score >= 63:
@@ -186,6 +212,12 @@ def intraday_signal(ticker: str):
         elif vol_ratio <= 0.6:
             reasons.append(f"Low volume {vol_ratio:.1f}x avg — weak move")
 
+        if cpr_data:
+            if cpr_data['type'] == 'narrow':
+                reasons.append(f"Narrow CPR ({cpr_data['width_pct']}%) — trending day, momentum trade favoured")
+            else:
+                reasons.append(f"Wide CPR ({cpr_data['width_pct']}%) — choppy day expected, tighter targets")
+
         # ── Levels ────────────────────────────────────────────────────────────
         entry = round(price, 2)
         sl    = round(price - atr * 1.2, 2)
@@ -210,6 +242,10 @@ def intraday_signal(ticker: str):
                 "sl":          sl,
                 "t1":          t1,
                 "t2":          t2,
+                "cpr_type":    cpr_data['type']              if cpr_data else None,
+                "cpr_pp":      round(cpr_data['pp'], 2)      if cpr_data else None,
+                "cpr_bc":      round(cpr_data['bc'], 2)      if cpr_data else None,
+                "cpr_tc":      round(cpr_data['tc'], 2)      if cpr_data else None,
                 "reasons":     reasons,
                 "interval":    "1h",
             }
@@ -679,39 +715,98 @@ def rank_tickers():
     return jsonify({"success": True, "data": results})
 
 
+def _pivot_levels(h: float, l: float, c: float):
+    """Standard Floor Pivot Points — Zerodha Kite / Groww formula."""
+    pp = (h + l + c) / 3
+    r1 = 2 * pp - l
+    s1 = 2 * pp - h
+    r2 = pp + (h - l)
+    s2 = pp - (h - l)
+    r3 = pp + 2 * (h - l)
+    s3 = pp - 2 * (h - l)
+    return {"pp": pp, "r1": r1, "r2": r2, "r3": r3, "s1": s1, "s2": s2, "s3": s3}
+
+
+def _cpr(h: float, l: float, c: float):
+    """Central Pivot Range — Zerodha Kite / Groww formula.
+    PP = (H+L+C)/3, BC = (H+L)/2, TC = 2*PP - BC
+    Narrow CPR (<0.5% width) = trending day; wide = choppy.
+    """
+    pp = (h + l + c) / 3
+    bc = (h + l) / 2
+    tc = 2 * pp - bc
+    width_pct = abs(tc - bc) / pp * 100
+    return {
+        "pp": pp, "bc": bc, "tc": tc,
+        "width_pct": round(width_pct, 3),
+        "type": "narrow" if width_pct < 0.5 else "wide",
+    }
+
+
 def _compute_levels(df, exec_price: float = None) -> dict:
     """
     Compute entry, stop-loss, and targets from OHLCV DataFrame.
-    exec_price: if provided, anchor SL/targets to this price (actual buy price)
-                instead of the ideal entry derived from S&R.
+
+    Support/resistance: Standard Floor Pivot Points (same method as Groww / Zerodha Kite).
+      - Daily pivots: previous session H/L/C
+      - Weekly pivots: previous week H/L/C
+    exec_price: if provided, anchor SL/targets to this price (actual buy price).
     """
     import numpy as np
-    c = df['close']; h = df['high']; l = df['low']
-    price = float(c.iloc[-1])
+    c_ser = df['close']; h_ser = df['high']; l_ser = df['low']
+    price = float(c_ser.iloc[-1])
 
-    tr  = np.maximum(h - l, np.maximum(abs(h - c.shift()), abs(l - c.shift())))
+    tr  = np.maximum(h_ser - l_ser, np.maximum(abs(h_ser - c_ser.shift()), abs(l_ser - c_ser.shift())))
     atr = float(tr.rolling(14).mean().iloc[-1])
 
-    delta = c.diff()
+    delta = c_ser.diff()
     gain  = delta.clip(lower=0).rolling(14).mean()
     loss  = (-delta.clip(upper=0)).rolling(14).mean()
     rsi   = float((100 - (100 / (1 + gain / loss.replace(0, np.nan)))).iloc[-1])
 
-    ema20  = float(c.ewm(span=20,  adjust=False).mean().iloc[-1])
-    ema50  = float(c.ewm(span=50,  adjust=False).mean().iloc[-1])
+    ema20 = float(c_ser.ewm(span=20, adjust=False).mean().iloc[-1])
+    ema50 = float(c_ser.ewm(span=50, adjust=False).mean().iloc[-1])
 
-    window = 5
-    prices = c.tolist()
-    highs, lows = [], []
-    for i in range(window, len(prices) - window):
-        if prices[i] == max(prices[i-window:i+window+1]):
-            highs.append(prices[i])
-        if prices[i] == min(prices[i-window:i+window+1]):
-            lows.append(prices[i])
+    # ── Daily pivots + CPR from yesterday's candle ──────────────────────────
+    # Use the last COMPLETED session (second-to-last row if market is live,
+    # or last row on a closed day). We always use index [-2] to ensure the
+    # session is fully closed; for a weekend/holiday query the diff is negligible.
+    prev_idx = -2 if len(df) >= 2 else -1
+    prev_h = float(h_ser.iloc[prev_idx])
+    prev_l = float(l_ser.iloc[prev_idx])
+    prev_c = float(c_ser.iloc[prev_idx])
+    d_piv = _pivot_levels(prev_h, prev_l, prev_c)
+    cpr   = _cpr(prev_h, prev_l, prev_c)
 
-    supports    = sorted([v for v in lows  if v < price], reverse=True)
-    resistances = sorted([v for v in highs if v > price])
+    # ── Weekly pivots from previous complete week ────────────────────────────
+    import pandas as pd
+    weekly = df.resample('W').agg({'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
+    if len(weekly) >= 2:
+        w_piv = _pivot_levels(
+            float(weekly['high'].iloc[-2]),
+            float(weekly['low'].iloc[-2]),
+            float(weekly['close'].iloc[-2]),
+        )
+    else:
+        w_piv = d_piv  # fallback
 
+    # Combine daily + weekly S/R; deduplicate values within 0.1% of each other
+    raw_supports    = sorted([d_piv['s1'], d_piv['s2'], d_piv['s3'],
+                               w_piv['s1'], w_piv['s2']], reverse=True)
+    raw_resistances = sorted([d_piv['r1'], d_piv['r2'], d_piv['r3'],
+                               w_piv['r1'], w_piv['r2']])
+
+    def _dedup(vals, tol=0.001):
+        out = []
+        for v in vals:
+            if not out or abs(v - out[-1]) / max(abs(out[-1]), 1) > tol:
+                out.append(v)
+        return out
+
+    supports    = _dedup([v for v in raw_supports    if v < price])[:3]
+    resistances = _dedup([v for v in raw_resistances if v > price])[:3]
+
+    # ── Entry / SL / Targets ────────────────────────────────────────────────
     if rsi < 40:
         entry = supports[0] if supports and (price - supports[0]) / price < 0.03 else price
     elif price > ema20 > ema50:
@@ -721,20 +816,15 @@ def _compute_levels(df, exec_price: float = None) -> dict:
     else:
         entry = price
 
-    # If we have an actual execution price, anchor SL/targets from there
-    anchor = exec_price if exec_price else entry
-
-    sl_atr     = anchor - atr * 1.5
-    # Place SL just below nearest support below anchor (+ 0.5 ATR buffer)
-    supports_below_anchor = sorted([v for v in supports if v < anchor], reverse=True)
-    sl_support = (supports_below_anchor[0] - atr * 0.5) if supports_below_anchor else sl_atr
-    stop_loss  = max(sl_atr, sl_support)
-    risk       = max(anchor - stop_loss, atr * 0.5)   # floor to avoid zero risk
+    anchor    = exec_price if exec_price else entry
+    sl_atr    = anchor - atr * 1.5
+    sl_sup    = (supports[0] - atr * 0.3) if supports and supports[0] < anchor else sl_atr
+    stop_loss = max(sl_atr, sl_sup)
+    risk      = max(anchor - stop_loss, atr * 0.5)
 
     t1 = resistances[0] if resistances and (resistances[0] - anchor) >= risk * 1.5 else anchor + risk * 1.5
     t2 = resistances[1] if len(resistances) > 1 and (resistances[1] - anchor) >= risk * 2.5 else anchor + risk * 2.5
     t3 = anchor + risk * 4.0
-    # Guarantee ascending order: T1 nearest target, T3 most ambitious
     t1, t2, t3 = sorted([t1, t2, t3])
 
     return {
@@ -745,8 +835,15 @@ def _compute_levels(df, exec_price: float = None) -> dict:
         "target_3":   round(t3, 4),
         "risk":       round(risk, 4),
         "atr":        round(atr, 4),
-        "supports":   [round(v, 4) for v in supports[:3]],
-        "resistances":[round(v, 4) for v in resistances[:3]],
+        "rsi":        round(rsi, 1),
+        "pivot":      round(d_piv['pp'], 4),
+        "supports":   [round(v, 4) for v in supports],
+        "resistances":[round(v, 4) for v in resistances],
+        "cpr_pp":     round(cpr['pp'], 4),
+        "cpr_bc":     round(cpr['bc'], 4),
+        "cpr_tc":     round(cpr['tc'], 4),
+        "cpr_width_pct": cpr['width_pct'],
+        "cpr_type":   cpr['type'],
     }
 
 
@@ -756,11 +853,11 @@ def get_trade_levels(ticker: str):
     Compute precise entry price, target price, and stop loss for a ticker.
 
     Method:
-    - Support/resistance from recent swing highs/lows
-    - Entry: nearest support above 200d low or RSI-oversold zone
-    - Stop loss: entry - 1.5 * ATR (below nearest support)
-    - Target 1: nearest resistance (1.5:1 R/R minimum)
-    - Target 2: next resistance (2.5:1 R/R)
+    - Support/resistance: Standard Floor Pivot Points (Groww / Kite method)
+      Daily pivots from previous session + weekly pivots from previous week
+    - Entry: S1 reversal zone, EMA20 pullback, or current price
+    - Stop loss: below S1 pivot (+ ATR buffer)
+    - Target 1/2: R1/R2 pivot resistances (min 1.5:1 R/R)
     - Target 3: extended move (4:1 R/R)
     """
     ticker  = _resolve_ticker(ticker.upper().strip())
@@ -778,27 +875,22 @@ def get_trade_levels(ticker: str):
         if df is None or len(df) < 5:
             return jsonify({"success": False, "error": f"Not enough data for {ticker}"}), 404
 
-        lv = _compute_levels(df)
+        lv     = _compute_levels(df)
         price  = float(df['close'].iloc[-1])
         c      = df['close']
         ema20  = float(c.ewm(span=20,  adjust=False).mean().iloc[-1])
         ema50  = float(c.ewm(span=50,  adjust=False).mean().iloc[-1])
         ema200 = float(c.ewm(span=200, adjust=False).mean().iloc[-1])
-        delta  = c.diff()
-        gain   = delta.clip(lower=0).rolling(14).mean()
-        loss   = (-delta.clip(upper=0)).rolling(14).mean()
-        import numpy as _np
-        rsi    = float((100 - (100 / (1 + gain / loss.replace(0, _np.nan)))).iloc[-1])
-
-        entry = lv['entry']
-        risk  = lv['risk']
+        rsi    = lv['rsi']
+        entry  = lv['entry']
+        risk   = lv['risk']
 
         if rsi < 40:
-            reason = f"RSI oversold ({rsi:.1f}) — momentum reversal entry"
+            reason = f"RSI oversold ({rsi:.1f}) — pivot S1/S2 reversal zone"
         elif price > ema20 > ema50:
             reason = f"Uptrend intact (EMA20 > EMA50) — buy pullback to EMA20"
         elif lv['supports']:
-            reason = "Entry at nearest support level"
+            reason = f"Near pivot support S1 ({lv['supports'][0]:,.2f})"
         else:
             reason = "Entry at current market price"
 
@@ -824,12 +916,18 @@ def get_trade_levels(ticker: str):
             "rr_t2":            round((lv['target_2'] - entry) / risk, 2) if risk > 0 else None,
             "atr":              lv['atr'],
             "rsi":              round(rsi, 1),
+            "pivot":            lv.get('pivot'),
             "ema20":            round(ema20, 4),
             "ema50":            round(ema50, 4),
             "ema200":           round(ema200, 4),
             "entry_reason":     reason,
             "supports":         lv['supports'],
             "resistances":      lv['resistances'],
+            "cpr_pp":           lv.get('cpr_pp'),
+            "cpr_bc":           lv.get('cpr_bc'),
+            "cpr_tc":           lv.get('cpr_tc'),
+            "cpr_width_pct":    lv.get('cpr_width_pct'),
+            "cpr_type":         lv.get('cpr_type'),
         }
         _cache_set(levels_key, levels_data, ttl=300)
         return jsonify({"success": True, "data": levels_data})

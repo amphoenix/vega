@@ -33,6 +33,16 @@ class Config:
     LLM_API_KEY     = os.environ.get('LLM_API_KEY')
     LLM_BASE_URL    = os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
     LLM_MODEL_NAME  = os.environ.get('LLM_MODEL_NAME', 'gpt-4o-mini')
+    LLM_API_KEY_2   = os.environ.get('LLM_API_KEY_2')
+    LLM_API_KEY_3   = os.environ.get('LLM_API_KEY_3')
+
+    # OpenAI-compatible key pool (Bedrock path bypasses).
+    # Round-robin across LLM_API_KEY[, _2, _3]; on 429 the offending key cools
+    # for 60s while traffic rotates to the others.
+    LLM_ACQUIRE_TIMEOUT_SEC = float(os.environ.get('LLM_ACQUIRE_TIMEOUT_SEC', '5'))
+    # Per-HTTP-call timeout. Gemma typically responds in 2–5s; 30s cuts off
+    # hanging connections fast enough that scanner cycles still complete.
+    LLM_REQUEST_TIMEOUT_SEC = float(os.environ.get('LLM_REQUEST_TIMEOUT_SEC', '30'))
 
     # AWS Bedrock (used when LLM_PROVIDER=bedrock)
     AWS_ACCESS_KEY_ID     = os.environ.get('AWS_ACCESS_KEY_ID')
@@ -42,6 +52,10 @@ class Config:
 
     # Zep
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
+
+    # OpenAlgo (unified Indian broker API — Zerodha, Angel, Fyers, Upstox…)
+    OPENALGO_API_KEY = os.environ.get('OPENALGO_API_KEY', '')
+    OPENALGO_HOST    = os.environ.get('OPENALGO_HOST', 'http://127.0.0.1:5000')
 
     # File uploads
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB

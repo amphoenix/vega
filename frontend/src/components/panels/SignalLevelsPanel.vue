@@ -59,14 +59,27 @@
         {{ levels.bias }} · RSI {{ levels.rsi }}
       </div>
       <div class="rs-lv-rows">
+        <div v-for="(r, i) in (levels.resistances || [])" :key="'r'+i" class="rs-lv res">
+          <span>R{{ i + 1 }}</span><span>{{ fmtPrice(r) }}</span>
+        </div>
         <div class="rs-lv t3"><span>T3</span><span>{{ fmtPrice(levels.target_3) }}</span></div>
         <div class="rs-lv t2"><span>T2</span><span>{{ fmtPrice(levels.target_2) }}</span></div>
-        <div class="rs-lv t1"><span>T1</span><span>{{ fmtPrice(levels.target_1) }}</span></div>
+        <div class="rs-lv t1">
+          <span>T1</span>
+          <span>{{ fmtPrice(levels.target_1) }}<span v-if="levels.rr_t1" class="rs-rr"> {{ levels.rr_t1 }}R</span></span>
+        </div>
         <div class="rs-lv en"><span>ENTRY</span><span>{{ fmtPrice(levels.entry) }}</span></div>
         <div class="rs-lv sl"><span>SL</span><span>{{ fmtPrice(levels.stop_loss) }}</span></div>
+        <div v-for="(s, i) in (levels.supports || [])" :key="'s'+i" class="rs-lv sup">
+          <span>S{{ i + 1 }}</span><span>{{ fmtPrice(s) }}</span>
+        </div>
       </div>
       <div class="rs-lv-foot">
-        Qty {{ levels.recommended_qty }} · Risk {{ currencySymbol }}{{ levels.capital_at_risk }}
+        ATR {{ fmtPrice(levels.atr) }} · R/R T1 {{ levels.rr_t1 }} · T2 {{ levels.rr_t2 }}
+      </div>
+      <div v-if="levels.cpr_tc" class="rs-cpr" :class="levels.cpr_type">
+        <span class="rs-cpr-label">CPR <span class="rs-cpr-type">{{ levels.cpr_type }}</span></span>
+        <span class="rs-cpr-vals">Top {{ fmtPrice(levels.cpr_tc) }} · Pivot {{ fmtPrice(levels.cpr_pp) }} · Bottom {{ fmtPrice(levels.cpr_bc) }}</span>
       </div>
     </div>
   </div>

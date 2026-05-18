@@ -78,14 +78,47 @@
   font-size: 12px;
   font-family: monospace;
 }
+.rs-lv.res { color: #ef4444; background: #2d101011; opacity: 0.75; font-size: 11px; }
 .rs-lv.t3,
 .rs-lv.t2,
 .rs-lv.t1 { color: #26a69a; background: #0d2a1e11; }
 .rs-lv.en  { color: #cdd9e5; background: #21262d; font-weight: 700; }
 .rs-lv.sl  { color: #ef5350; background: #2d101011; }
+.rs-lv.sup { color: #22c55e; background: #0d2a1e11; opacity: 0.75; font-size: 11px; }
+.rs-rr { font-size: 10px; opacity: 0.65; margin-left: 4px; }
 .rs-lv-foot {
   padding: 4px 12px 10px;
   font-size: 11px;
   color: #8b949e;
   font-family: monospace;
 }
+
+.rs-cpr {
+  margin: 4px 8px 8px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  border: 1px solid #f9731633;
+  background: #1a110500;
+  font-size: 11px;
+  font-family: monospace;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rs-cpr-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #f97316;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.rs-cpr-type {
+  font-weight: 400;
+  opacity: 0.75;
+}
+.rs-cpr-vals {
+  color: #cdd9e5;
+  font-size: 11px;
+}
+.rs-cpr.narrow { border-color: #f9731688; background: #f9731611; }
+.rs-cpr.wide   { border-color: #f9731633; }

@@ -47,6 +47,19 @@ logger = get_logger('phoenixtrade.api.market')
 # ── Ticker resolver: auto-append .NS / .BO for bare Indian symbols ────────────
 _resolved_cache: dict = {}
 
+# Caret-prefixed misnomers users type → canonical Yahoo/IndMoney symbol.
+# Yahoo's actual symbols are non-obvious (Bank Nifty is ^NSEBANK not ^BANKNIFTY,
+# Sensex is ^BSESN not ^SENSEX), so we accept the intuitive forms.
+_INDEX_ALIASES = {
+    '^BANKNIFTY':  '^NSEBANK',
+    '^NIFTY':      '^NSEI',
+    '^NIFTY50':    '^NSEI',
+    '^FINNIFTY':   '^CNXFIN',
+    '^SENSEX':     '^BSESN',
+    '^MIDCPNIFTY': '^NSEMDCP50',
+}
+
+
 def _resolve_ticker(ticker: str) -> str:
     """Return the correct Yahoo Finance symbol for a ticker.
     For bare symbols (no dot, no ^) that fail to fetch data, tries .NS then .BO.
@@ -55,6 +68,11 @@ def _resolve_ticker(ticker: str) -> str:
     t = ticker.upper().strip()
     if t in _resolved_cache:
         return _resolved_cache[t]
+    if t in _INDEX_ALIASES:
+        canonical = _INDEX_ALIASES[t]
+        _resolved_cache[t] = canonical
+        logger.info(f"Resolved {t} → {canonical} (alias)")
+        return canonical
     # Already has exchange suffix or is an index — use as-is
     if '.' in t or t.startswith('^'):
         _resolved_cache[t] = t

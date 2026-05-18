@@ -467,7 +467,6 @@ function _openFoScannerStream() {
     })
     .catch(() => {})
 
-  if (typeof window !== 'undefined') window.__phoenix_foScannerES = _foScannerES
   _foScannerES = new EventSource(`${base}/api/trade/fo-scanner/stream`)
   if (typeof window !== 'undefined') window.__phoenix_foScannerES = _foScannerES
 
@@ -548,6 +547,7 @@ onMounted(() => {
 onUnmounted(() => {
   clearInterval(_clockTimer)
   if (_foScannerES) { _foScannerES.close(); _foScannerES = null }
+  if (typeof window !== 'undefined') window.__phoenix_foScannerES = null
 })
 </script>
 

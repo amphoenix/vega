@@ -25,15 +25,39 @@ export function fmtIndian(n) {
   return v.toLocaleString('en-IN')
 }
 
-export function fmtTime(iso) {
-  if (!iso) return ''
-  try {
-    return new Date(iso).toLocaleTimeString('en-IN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-  } catch {
-    return iso
+// Single IST formatter for all date/time display across the app.
+// Always renders in Asia/Kolkata regardless of browser TZ.
+//
+//   fmtTime(iso)                              → 'HH:MM:SS'          (default)
+//   fmtTime(iso, { seconds: false })          → 'HH:MM'
+//   fmtTime(iso, { ms: true })                → 'HH:MM:SS.mmm'
+//   fmtTime(iso, { mode: 'date' })            → 'DD/MM/YYYY'
+//   fmtTime(iso, { mode: 'datetime' })        → 'DD/MM/YYYY, HH:MM:SS'
+//
+// Accepts: ISO string, Date, epoch ms, or null/undefined (returns '').
+export function fmtTime(value, opts = {}) {
+  if (value == null || value === '') return ''
+  const d = value instanceof Date ? value : new Date(value)
+  if (isNaN(d.getTime())) return String(value)
+
+  const mode = opts.mode || 'time'  // 'time' | 'date' | 'datetime'
+  const seconds = opts.seconds !== false  // default true
+
+  const fmt = { timeZone: 'Asia/Kolkata', hour12: false }
+  if (mode === 'time' || mode === 'datetime') {
+    fmt.hour = '2-digit'
+    fmt.minute = '2-digit'
+    if (seconds) fmt.second = '2-digit'
   }
+  if (mode === 'date' || mode === 'datetime') {
+    fmt.year = 'numeric'
+    fmt.month = '2-digit'
+    fmt.day = '2-digit'
+  }
+
+  let s = new Intl.DateTimeFormat('en-IN', fmt).format(d)
+  if (opts.ms && (mode === 'time' || mode === 'datetime')) {
+    s += '.' + String(d.getMilliseconds()).padStart(3, '0')
+  }
+  return s
 }

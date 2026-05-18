@@ -384,6 +384,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } f
 import { useRouter } from 'vue-router'
 import { getAgentLog } from '../../api/report'
 import ConsoleLog from './ConsoleLog.vue'
+import { fmtTime } from '../../utils/formatters'
 
 const router = useRouter()
 
@@ -1796,19 +1797,7 @@ const isSectionCompleted = (sectionIndex) => {
   return !!generatedSections.value[sectionIndex]
 }
 
-const formatTime = (timestamp) => {
-  if (!timestamp) return ''
-  try {
-    return new Date(timestamp).toLocaleTimeString('en-US', { 
-      hour12: false, 
-      hour: '2-digit', 
-      minute: '2-digit', 
-      second: '2-digit' 
-    })
-  } catch {
-    return ''
-  }
-}
+const formatTime = (timestamp) => fmtTime(timestamp)
 
 const formatParams = (params) => {
   if (!params) return ''

@@ -130,6 +130,7 @@ import {
   getInvestAnalysis,
   getIntradaySignal,
   getIndmoneyStatus,
+  getIndmoneyTick,
 } from "../api/market";
 import PortfolioAllocator from "../components/panels/PortfolioAllocator.vue";
 import InvestmentAnalysis from "../components/panels/InvestmentAnalysis.vue";
@@ -142,28 +143,25 @@ import TopBar from "../components/panels/TopBar.vue"
 import ChartHeader from "../components/panels/ChartHeader.vue"
 import SignalLevelsPanel from "../components/panels/SignalLevelsPanel.vue"
 import LiveTradingPanel from "../components/panels/LiveTradingPanel.vue"
+import { fmtTime } from "../utils/formatters";
 
 // ── State ─────────────────────────────────────────────────────────────────────
-const { activeTicker, chartTicker, interval, searchSuggestions } = storeToRefs(useMarketStore());
+// Pulled from useMarketStore so child components (e.g. InvestmentAnalysis)
+// reading via storeToRefs see the same data Home writes here.
+const {
+  activeTicker, chartTicker, interval, searchSuggestions,
+  tickerStats, fomoScore,
+  feedItems, signalsLoading,
+  signal, signalLoading, signalError,
+  levels, levelsLoading,
+  aiPredLoading,
+  activeSimId, simRound, simRunning, simAgents,
+} = storeToRefs(useMarketStore());
 const { indmoneyConnected, indmoneyAvailable, indmoneyLivePrice, indmoneyName } = storeToRefs(useLiveTradingStore());
-const tickerStats = ref({});
-const fomoScore = ref(null);
 const redditSent = ref(null);
 
-const feedItems = ref([]);
-const signalsLoading = ref(false);
-
-let refreshTimer = null;
-let aiPredTimer = null;
 let simPollTimer = null;
-let chartTimer = null;
 let feedIdCounter = 0;
-let liveDrawPending = false; // unused — kept for safety
-
-const activeSimId = ref(null);
-const simRound = ref(0);
-const simRunning = ref(false);
-const simAgents = ref(0);
 
 // ── Graph state ───────────────────────────────────────────────────────────────
 const graphNodes = ref([]);
@@ -232,13 +230,9 @@ watch(
     chartDisplaySymbol.value = "";
     if (!sym) return;
     try {
-      const base = import.meta.env.VITE_API_BASE_URL || "https://localhost:47291";
-      const r = await fetch(
-        `${base}/api/indmoney/tick/${encodeURIComponent(sym)}`,
-      ).then((x) => x.json());
-      if (r?.success && r.data?.display_symbol) {
-        chartDisplaySymbol.value = r.data.display_symbol;
-      }
+      const res = await getIndmoneyTick(encodeURIComponent(sym));
+      const d = res?.data?.data || res?.data;
+      if (d?.display_symbol) chartDisplaySymbol.value = d.display_symbol;
     } catch {
       /* leave empty → falls back to the raw ticker */
     }
@@ -286,11 +280,6 @@ function toggleSidebar() {
     sidebarCollapsed.value ? "1" : "0",
   );
 }
-
-// ── Trade levels state ────────────────────────────────────────────────────────
-const levels = ref(null);
-const levelsLoading = ref(false);
-
 
 const marketStatus = computed(() => {
   const ticker = chartTicker.value || "";
@@ -400,14 +389,7 @@ const marketStatus = computed(() => {
     reason: inHours ? "" : "After hours",
   };
 });
-const signalError = ref("");
 const lightMode = ref(localStorage.getItem("theme") === "light");
-
-// ── Intraday signal state ─────────────────────────────────────────────────────
-const signal = ref(null);
-const signalLoading = ref(false);
-
-
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
@@ -465,7 +447,7 @@ async function loadSignals() {
         id: feedIdCounter++,
         type: "news",
         title: n.title,
-        meta: `${n.source || "News"} · ${n.pub_date ? new Date(n.pub_date).toLocaleDateString() : ""}`,
+        meta: `${n.source || "News"} · ${fmtTime(n.pub_date, { mode: 'date' })}`,
         sentiment: undefined,
       });
     }
@@ -488,7 +470,7 @@ async function loadSignals() {
         id: feedIdCounter++,
         type: "twitter",
         title: s.title,
-        meta: `${s.author} · ${s.source} · ${s.pub_date ? new Date(s.pub_date).toLocaleDateString() : ""}`,
+        meta: `${s.author} · ${s.source} · ${fmtTime(s.pub_date, { mode: 'date' })}`,
         sentiment: undefined,
       });
     }
@@ -518,8 +500,6 @@ async function loadSignals() {
 }
 
 // ── AI auto-prediction ────────────────────────────────────────────────────────
-const aiPredLoading = ref(false);
-
 async function runAiPredict() {
   if (!chartTicker.value || aiPredLoading.value) return;
   // Skip option contracts — AI predict needs news/fundamentals which don't
@@ -862,10 +842,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer);
-  if (aiPredTimer) clearInterval(aiPredTimer);
   if (simPollTimer) clearInterval(simPollTimer);
-  if (chartTimer) clearInterval(chartTimer);
 });
 
 // On every module evaluation (including Vue SFC HMR), close any

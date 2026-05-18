@@ -161,22 +161,36 @@ def _display_symbol(ticker: str) -> str:
         _display_cache[sym] = ''
         return ''
 
-    # ── F&O / equity path: TRADING_SYMBOL → CUSTOM_SYMBOL ───────────────────
+    # ── F&O path: same disambiguation rule as everywhere else ───────────────
+    # Multiple weekly contracts share a TRADING_SYMBOL (e.g. NIFTY-May2026-
+    # 24350-CE matches 12-May, 19-May and 26-May rows). _resolve_fo_instrument
+    # picks the soonest future expiry — keep display in sync with that so the
+    # chart title matches the price + scrip code.
+    # Not cached: the "soonest future" answer changes after each weekly expiry.
+    if any(tok in sym for tok in ('-CE', '-PE', '-FUT')):
+        try:
+            inst = _resolve_fo_instrument(sym)
+        except Exception:
+            inst = None
+        if inst:
+            return (inst.get('CUSTOM_SYMBOL') or inst.get('custom_symbol') or '').strip()
+        return ''
+
+    # ── Equity path: TRADING_SYMBOL → CUSTOM_SYMBOL ─────────────────────────
     candidates = {sym, sym.replace('.NS', '').replace('.BO', '')}
     any_loaded = False
-    for source in ('fno', 'equity'):
-        try:
-            rows = _load_instruments(source)
-        except Exception:
-            continue
-        if rows:
-            any_loaded = True
-        for inst in rows:
-            t_sym = (inst.get('TRADING_SYMBOL') or inst.get('tradingsymbol') or '').strip().upper()
-            if t_sym and t_sym in candidates:
-                cs = (inst.get('CUSTOM_SYMBOL') or inst.get('custom_symbol') or '').strip()
-                _display_cache[sym] = cs
-                return cs
+    try:
+        rows = _load_instruments('equity')
+    except Exception:
+        rows = []
+    if rows:
+        any_loaded = True
+    for inst in rows:
+        t_sym = (inst.get('TRADING_SYMBOL') or inst.get('tradingsymbol') or '').strip().upper()
+        if t_sym and t_sym in candidates:
+            cs = (inst.get('CUSTOM_SYMBOL') or inst.get('custom_symbol') or '').strip()
+            _display_cache[sym] = cs
+            return cs
 
     # Only cache the miss if we actually managed to read at least one master.
     if any_loaded:
@@ -190,6 +204,9 @@ def _scrip_code(ticker: str, source: str = 'equity') -> str | None:
     Returns "NSE_3045" format (exchange_security_id), or None if not found.
     Index tickers (^NSEI, ^NSEBANK) auto-switch to source='index'.
     """
+    # Normalize common caret-prefixed misnomers (^BANKNIFTY → ^NSEBANK)
+    from .market import _INDEX_ALIASES
+    ticker = _INDEX_ALIASES.get(ticker.upper().strip(), ticker)
     is_index = ticker.startswith('^') or ticker.upper() in (
         'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX'
     )
@@ -429,6 +446,7 @@ def _ws_on_message(ws, message):
             for t in ticks:
                 code = t['_normalised_code']
                 _tick_cache[code] = t
+                _ws_last_tick_at_per_code[code] = now
 
         # Fan out to registered tick callbacks (synchronous, fast handlers only).
         with _callback_lock:
@@ -506,14 +524,40 @@ def _ws_on_error(ws, error):
         logger.error(f"INDmoney WebSocket error: {error}")
 
 
+def _to_ws_format(code: str) -> str:
+    """Translate an internal REST-format scrip code (NSE_3045 / BSE_500325 /
+    NFO_<id> / BFO_<id>) into the IndStocks WebSocket subscribe format
+    (NSE:3045 / NIDX:40000001 / BIDX:40000006 / NFO:<id> / BFO:<id>).
+
+    Indices use a different segment prefix on WS (NIDX/BIDX) than equities
+    (NSE/BSE). Detected by ID range: IndStocks index IDs start at 40000000;
+    equity IDs are well below that. See api-docs.indstocks.com/Websockets.
+    """
+    if ':' in code:
+        return code            # already in WS format
+    if '_' not in code:
+        return code            # bare ID — leave as-is
+    seg, sid = code.split('_', 1)
+    seg = seg.upper()
+    # Index range — IndStocks reserves IDs ≥ 40000000 for indices.
+    is_index = sid.isdigit() and int(sid) >= 40000000
+    if seg == 'NSE':
+        return f"{'NIDX' if is_index else 'NSE'}:{sid}"
+    if seg == 'BSE':
+        return f"{'BIDX' if is_index else 'BSE'}:{sid}"
+    # NFO / BFO / others: just swap the separator.
+    return f"{seg}:{sid}"
+
+
 def _ws_subscribe(codes: list[str]):
-    """Send subscribe message for a list of scrip codes."""
+    """Send subscribe message for a list of scrip codes (REST format).
+    Codes are translated to IndStocks WS format (SEGMENT:TOKEN) before send.
+    """
     with _ws_lock:
         ws = _ws_instance
     if not ws:
         return
-    # INDstocks WS expects underscore-format codes (e.g. NSE_3045) — same as REST.
-    instruments = list(codes)
+    instruments = [_to_ws_format(c) for c in codes]
     try:
         ws.send(json.dumps({
             "action":      "subscribe",
@@ -529,7 +573,7 @@ def _ws_unsubscribe(codes: list[str]):
         ws = _ws_instance
     if not ws:
         return
-    instruments = list(codes)
+    instruments = [_to_ws_format(c) for c in codes]
     try:
         ws.send(json.dumps({"action": "unsubscribe", "instruments": instruments}))
     except Exception:
@@ -541,6 +585,11 @@ _ws_last_tick_at: float = 0.0
 # Last tick timestamp — WS ONLY. Used by REST-poll's suspend check so it
 # doesn't mistake its own ingested ticks as "WS resumed".
 _ws_last_real_tick_at: float = 0.0
+# Per-code last WS tick — lets REST-poll selectively cover codes whose WS
+# feed has gone silent (e.g. BSE indices) while NSE codes keep ticking.
+# Without this, the global liveness flag stays true on NSE traffic and
+# silent BSE codes never get a REST refresh.
+_ws_last_tick_at_per_code: dict[str, float] = {}
 # Track auth-failure reconnect attempts so we can back off and finally give up
 # instead of hammering IndStocks (and triggering Cloudflare ratelimits) forever.
 _ws_auth_failures: int = 0
@@ -699,31 +748,35 @@ def _start_rest_poll():
                 if not tok:
                     _rest_poll_active = False; continue
 
-                # Activate only when WS is not actively delivering ticks.
-                # If the WS came back to life, REST poll silently steps aside
-                # to avoid double-counting and wasted bandwidth.
-                if _ws_is_delivering():
+                with _sub_lock:
+                    all_codes = list(_subscribers.keys())
+                if not all_codes:
+                    _rest_poll_active = False; continue
+
+                # Per-code liveness: only poll codes whose WS feed has been
+                # silent for ≥30s. Codes still ticking over WS are skipped so
+                # we don't double-count or waste quota. NSE indices keep
+                # streaming; BSE indices that go quiet get covered here.
+                now = time.time()
+                codes = [c for c in all_codes
+                         if (now - _ws_last_tick_at_per_code.get(c, 0)) >= 30]
+
+                if not codes:
                     if _rest_poll_active:
-                        logger.info("WS resumed delivering ticks — REST poll suspended")
+                        logger.info("WS delivering ticks for all subscribed codes — REST poll suspended")
                     _rest_poll_active = False
                     continue
 
-                with _sub_lock:
-                    codes = list(_subscribers.keys())
-                if not codes:
-                    _rest_poll_active = False; continue
-
                 if not _rest_poll_active:
                     logger.info(
-                        f"WS silent — REST poll fallback ACTIVE "
-                        f"({len(codes)} symbols, polling every 2s)"
+                        f"WS silent for {len(codes)}/{len(all_codes)} codes — "
+                        f"REST poll fallback ACTIVE on those (every 2s)"
                     )
                     _rest_poll_active = True
 
                 # Throttled log: re-announce every 5 min that fallback is on
-                now = time.time()
                 if now - _rest_poll_log_at > 300:
-                    logger.info(f"REST poll active for {len(codes)} symbols")
+                    logger.info(f"REST poll active for {len(codes)}/{len(all_codes)} codes (WS-silent only)")
                     _rest_poll_log_at = now
 
                 # IndStocks REST rejects batch requests (`scrip-codes=A,B`) so

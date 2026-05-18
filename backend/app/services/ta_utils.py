@@ -410,6 +410,19 @@ def compute_all(candles: list[dict]) -> dict:
     # Candlestick patterns on last 5 bars
     patterns = detect_patterns(candles[-5:] if len(candles) >= 5 else candles)
 
+    # CPR (Central Pivot Range) — Zerodha Kite / Groww formula using prev session
+    if n >= 2:
+        ph, pl, pc = h[-2], l[-2], c[-2]
+        cpr_pp = (ph + pl + pc) / 3
+        cpr_bc = (ph + pl) / 2
+        cpr_tc = 2 * cpr_pp - cpr_bc
+        cpr_width_pct = round(abs(cpr_tc - cpr_bc) / cpr_pp * 100, 3)
+        cpr_type = 'narrow' if cpr_width_pct < 0.5 else 'wide'
+    else:
+        cpr_pp = cpr_bc = cpr_tc = None
+        cpr_width_pct = None
+        cpr_type = None
+
     return {
         "price":        round(price, 4),
         "rsi":          round(rsi_vals[-1], 2) if rsi_vals[-1] else None,
@@ -443,4 +456,9 @@ def compute_all(candles: list[dict]) -> dict:
         "pct_from_52h": round((price - w52h) / w52h * 100, 2),
         "pct_from_52l": round((price - w52l) / w52l * 100, 2),
         "candle_patterns": patterns,  # list of detected pattern strings
+        "cpr_pp":          round(cpr_pp, 4) if cpr_pp else None,
+        "cpr_bc":          round(cpr_bc, 4) if cpr_bc else None,
+        "cpr_tc":          round(cpr_tc, 4) if cpr_tc else None,
+        "cpr_width_pct":   cpr_width_pct,
+        "cpr_type":        cpr_type,
     }

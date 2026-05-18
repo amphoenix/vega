@@ -37,6 +37,7 @@ import Step5Interaction from '../components/simulation/Step5Interaction.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation } from '../api/simulation'
 import { getReport } from '../api/report'
+import { fmtTime } from '../utils/formatters'
 
 const route = useRoute()
 const router = useRouter()
@@ -61,7 +62,7 @@ const statusText = computed(() => {
 })
 
 const addLog = (msg) => {
-  const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '.' + new Date().getMilliseconds().toString().padStart(3, '0')
+  const time = fmtTime(new Date(), { ms: true })
   systemLogs.value.push({ time, msg })
   if (systemLogs.value.length > 200) systemLogs.value.shift()
 }

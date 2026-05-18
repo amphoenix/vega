@@ -304,6 +304,7 @@ import {
   getRunStatusDetail
 } from '../../api/simulation'
 import { generateReport } from '../../api/report'
+import { fmtTime } from '../../utils/formatters'
 
 const props = defineProps({
   simulationId: String,
@@ -638,14 +639,7 @@ const truncateContent = (content, maxLength = 100) => {
   return content
 }
 
-const formatActionTime = (timestamp) => {
-  if (!timestamp) return ''
-  try {
-    return new Date(timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  } catch {
-    return ''
-  }
-}
+const formatActionTime = (timestamp) => fmtTime(timestamp)
 
 const handleNextStep = async () => {
   if (!props.simulationId) {

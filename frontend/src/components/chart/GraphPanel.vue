@@ -238,6 +238,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import * as d3 from 'd3'
+import { fmtTime } from '../../utils/formatters'
 
 const props = defineProps({
   graphData: Object,
@@ -298,23 +299,8 @@ const entityTypes = computed(() => {
   return Object.values(typeMap)
 })
 
-// Format time
-const formatDateTime = (dateStr) => {
-  if (!dateStr) return ''
-  try {
-    const date = new Date(dateStr)
-    return date.toLocaleString('en-US', { 
-      month: 'short', 
-      day: 'numeric', 
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true 
-    })
-  } catch {
-    return dateStr
-  }
-}
+// Format time (IST, via shared formatter)
+const formatDateTime = (dateStr) => fmtTime(dateStr, { mode: 'datetime', seconds: false })
 
 const closeDetailPanel = () => {
   selectedItem.value = null

@@ -330,6 +330,17 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
         ema_score = 5 if price < ema20 else 0
         ema50_bonus = 3 if price < ema50 else 0
     conf = int(round(50 + trend_score + rsi_score + ema_score + ema50_bonus))
+
+    # CPR adjustment (+3 narrow = trending day, -3 wide = choppy day)
+    cpr_type = ta.get('cpr_type')
+    cpr_width = ta.get('cpr_width_pct') or 0
+    cpr_tc = ta.get('cpr_tc') or 0
+    cpr_bc = ta.get('cpr_bc') or 0
+    if cpr_type == 'narrow':
+        conf += 3
+    elif cpr_type == 'wide':
+        conf -= 3
+
     conf = _clamp(conf, 50, 95)
 
     # Verdict tier from confidence band
@@ -575,9 +586,12 @@ def _run_scan_cycle(llm_client):
             th.start()
             active.append(th)
 
-        # Wait for one result
+        # Wait for one result. 300s budget covers: 8 parallel agents per
+        # ticker x up to 90s per agent on full LLM hang (3 retries x 30s
+        # request timeout) + debate + CIO. Fits 3 tickers in parallel via
+        # MAX_PARALLEL with comfortable margin.
         try:
-            ticker, cio = result_q.get(timeout=120)
+            ticker, cio = result_q.get(timeout=300)
         except queue.Empty:
             break
 

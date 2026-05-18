@@ -157,8 +157,12 @@ const activeEmaLegend = computed(() =>
 function toTime(dateStr) {
   if (!dateStr) return 0
   if (dateStr.length > 10) {
-    // intraday 'YYYY-MM-DD HH:MM' — parse as local time (matches browser TZ)
-    return Math.floor(new Date(dateStr.replace(' ', 'T')).getTime() / 1000)
+    // Backend returns 'YYYY-MM-DD HH:MM' in IST. lightweight-charts renders
+    // the time-axis in UTC. Append 'Z' so the IST string is treated AS IF it
+    // were UTC — the rendered axis label then matches IST regardless of
+    // browser TZ. Side effect: timestamps passed to lightweight-charts are
+    // 5:30h ahead of real time; only matters if external code reverses toTime.
+    return Math.floor(new Date(dateStr.replace(' ', 'T') + 'Z').getTime() / 1000)
   }
   // daily 'YYYY-MM-DD' — midnight UTC
   return Math.floor(new Date(dateStr + 'T00:00:00.000Z').getTime() / 1000)
@@ -324,8 +328,8 @@ function _setupChart() {
     height: h,
     ..._chartTheme(),
     crosshair: { mode: CrosshairMode.Normal },
-    leftPriceScale:  { visible: true, borderColor: '#30363d' },
-    rightPriceScale: { visible: true, borderColor: '#30363d', textColor: 'rgba(0,0,0,0)', ticksVisible: false },
+    leftPriceScale:  { visible: false },
+    rightPriceScale: { visible: true, borderColor: '#30363d' },
     timeScale: {
       borderColor: '#30363d',
       timeVisible: true,
@@ -344,7 +348,7 @@ function _setupChart() {
     wickUpColor: GREEN,
     wickDownColor: RED,
     priceLineVisible: false,
-    priceScaleId: 'left',
+    priceScaleId: 'right',
   })
 
 
@@ -368,7 +372,7 @@ function _setupChart() {
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
-      priceScaleId: 'left',
+      priceScaleId: 'right',
     }),
   }))
 
@@ -489,7 +493,7 @@ function _updateLevels() {
       color: isUp ? '#26a69a' : '#ef5350',
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
-      axisLabelVisible: true,
+      axisLabelVisible: false,
       title: fmtPrice(livePrice),
     })
   }
@@ -499,6 +503,9 @@ function _updateLevels() {
     const lines = [
       ...(lv.supports || []).slice(0, 3).map((p, i) => ({ p, label: `S${i + 1}`, color: '#22c55e', style: LineStyle.Dashed })),
       ...(lv.resistances || []).slice(0, 3).map((p, i) => ({ p, label: `R${i + 1}`, color: '#ef4444', style: LineStyle.Dashed })),
+      lv.cpr_tc    ? { p: lv.cpr_tc,    label: 'CPR-TC', color: '#f97316', style: LineStyle.Solid  } : null,
+      lv.cpr_pp    ? { p: lv.cpr_pp,    label: 'CPR-PP', color: '#f97316', style: LineStyle.Dashed } : null,
+      lv.cpr_bc    ? { p: lv.cpr_bc,    label: 'CPR-BC', color: '#f97316', style: LineStyle.Solid  } : null,
       lv.entry     ? { p: lv.entry,     label: 'ENTRY', color: '#16a34a', style: LineStyle.Dotted } : null,
       lv.stop_loss ? { p: lv.stop_loss, label: 'SL',    color: '#dc2626', style: LineStyle.Dotted } : null,
       lv.target_1  ? { p: lv.target_1,  label: 'T1',    color: '#06b6d4', style: LineStyle.Dashed } : null,
@@ -508,7 +515,7 @@ function _updateLevels() {
     lines.forEach(({ p, label, color, style }) => {
       _addPriceLine(_labelSeries, {
         price: p, color, lineWidth: 1, lineStyle: style,
-        axisLabelVisible: true,
+        axisLabelVisible: false,
         title: `${label} ${fmtPrice(p)}`,
       })
     })
@@ -536,7 +543,7 @@ function _updateLevels() {
         ].forEach(({ price, label, color }) => {
           _addPriceLine(_labelSeries, {
             price, color, lineWidth: 1, lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true, title: `${label} ${fmtPrice(price)}`,
+            axisLabelVisible: false, title: `${label} ${fmtPrice(price)}`,
           })
         })
       }
