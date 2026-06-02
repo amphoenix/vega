@@ -173,6 +173,33 @@
   font-family: monospace;
   font-weight: 600;
 }
+.ind-cash {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #0a1a12;
+  border: 1px solid #22c55e33;
+  border-radius: 6px;
+  padding: 3px 10px;
+  margin-left: 4px;
+}
+.ind-cash-label {
+  font-size: 9px;
+  color: #6ee7b7;
+  font-family: monospace;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.ind-cash-val {
+  font-size: 12px;
+  color: #22c55e;
+  font-family: monospace;
+  font-weight: 700;
+}
+.ind-cash-low {
+  color: #ef4444;
+}
 .ind-btn {
   height: 28px;
   padding: 0 12px;
@@ -239,3 +266,7 @@
 .light .search-suggestions { background: var(--bg1) !important; border-color: var(--bd1) !important; }
 .light .ss-item          { background: var(--bg1); border-color: var(--bd1); }
 .light .ss-item:hover    { background: var(--bg2) !important; }
+.light .ind-cash         { background: #f0fdf4 !important; border-color: #bbf7d0 !important; }
+.light .ind-cash-label   { color: #166534 !important; }
+.light .ind-cash-val     { color: #15803d !important; }
+.light .ind-cash-low     { color: #dc2626 !important; }

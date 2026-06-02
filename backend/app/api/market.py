@@ -3250,7 +3250,7 @@ def _fetch_market_data(ticker: str) -> dict:
             'High':   c['high'],   'Low':   c['low'],
             'Volume': c['volume'],
         } for c in ind_hist],
-        index=_pd.to_datetime([c['date'] for c in ind_hist]))
+        index=_pd.to_datetime([c['date'] for c in ind_hist])).sort_index()
     else:
         hist = yf_ticker.history(period='200d', interval='1d')
 

@@ -7,6 +7,7 @@ export const useLiveTradingStore = defineStore('liveTrading', () => {
   const indmoneyAvailable = ref(false)
   const indmoneyLivePrice = ref(null)
   const indmoneyName = ref('')
+  const indmoneyAvailableCash = ref(null)
 
   // Per-underlying live spot prices from SSE tick streams
   // Key: symbol (e.g. "^NSEI"), Value: latest price
@@ -53,7 +54,7 @@ export const useLiveTradingStore = defineStore('liveTrading', () => {
   const portfolioRound = ref(0)
 
   return {
-    indmoneyConnected, indmoneyAvailable, indmoneyLivePrice, indmoneyName,
+    indmoneyConnected, indmoneyAvailable, indmoneyLivePrice, indmoneyName, indmoneyAvailableCash,
     liveSpots, liveSpotTickAt, liveTickAges,
     liveTickets, liveStatus,
     trackedPositions, latestCommentary, liveConnected,

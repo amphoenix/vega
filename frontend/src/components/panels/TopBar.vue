@@ -67,8 +67,12 @@
         <span class="ind-label">{{ indmoneyName || 'INDmoney' }}</span>
         <span class="ind-price" v-if="indmoneyLivePrice">₹{{ fmtPrice(indmoneyLivePrice) }}</span>
       </div>
+      <div class="ind-cash" v-if="indmoneyConnected && indmoneyAvailableCash != null" :title="'Available cash in your INDmoney account'">
+        <span class="ind-cash-label">Cash</span>
+        <span class="ind-cash-val" :class="{ 'ind-cash-low': indmoneyAvailableCash < 1000 }">₹{{ fmtCash(indmoneyAvailableCash) }}</span>
+      </div>
       <button
-        v-else
+        v-if="!indmoneyConnected"
         class="ind-btn"
         @click="$emit('indmoney-open')"
         :class="{ configured: indmoneyAvailable }"
@@ -103,6 +107,13 @@ import { useMarketStore } from '../../stores/useMarketStore'
 import { searchTicker } from '../../api/market'
 import { fmtPrice } from '../../utils/formatters'
 
+function fmtCash(v) {
+  if (v == null) return '—'
+  if (v >= 100000) return (v / 100000).toFixed(1) + 'L'
+  if (v >= 1000) return (v / 1000).toFixed(1) + 'K'
+  return v.toFixed(0)
+}
+
 const props = defineProps({
   viewMode: { type: String, default: 'chart' },
   simRunning: { type: Boolean, default: false },
@@ -111,6 +122,7 @@ const props = defineProps({
   indmoneyName: { type: String, default: '' },
   indmoneyLivePrice: { type: Number, default: null },
   indmoneyAvailable: { type: Boolean, default: false },
+  indmoneyAvailableCash: { type: Number, default: null },
 })
 
 const emit = defineEmits(['update:viewMode', 'toggle-theme', 'indmoney-open', 'simulate', 'select-ticker'])

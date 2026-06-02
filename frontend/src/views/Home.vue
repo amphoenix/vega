@@ -9,6 +9,7 @@
       :indmoneyName="indmoneyName"
       :indmoneyLivePrice="indmoneyLivePrice"
       :indmoneyAvailable="indmoneyAvailable"
+      :indmoneyAvailableCash="indmoneyAvailableCash"
       @toggle-theme="toggleTheme"
       @indmoney-open="indmoneyOpen"
       @simulate="startQuickSim"
@@ -45,15 +46,16 @@
           :currencySymbol="currencySymbol"
         />
 
-        <HomeChart
-          v-model:chartTicker="chartTicker"
-          v-model:activeTicker="activeTicker"
+        <ChartGrid
+          :chartTicker="chartTicker"
+          :displayTicker="displayTicker"
           :interval="interval"
-          :indmoneyLivePrice="indmoneyLivePrice"
           :levels="levels"
           :lightMode="lightMode"
-          :currencySymbol="currencySymbol"
           :marketOpen="marketStatus.open"
+          @update:chartTicker="chartTicker = $event"
+          @update:activeTicker="activeTicker = $event"
+          @close-third="selectTicker('^NSEI')"
         />
 
         <!-- Feed panel below chart -->
@@ -136,7 +138,7 @@ import PortfolioAllocator from "../components/panels/PortfolioAllocator.vue";
 import InvestmentAnalysis from "../components/panels/InvestmentAnalysis.vue";
 import BacktestPanel from "../components/panels/BacktestPanel.vue";
 import FoScannerPanel from "../components/panels/FoScannerPanel.vue";
-import HomeChart from "../components/chart/HomeChart.vue";
+import ChartGrid from "../components/chart/ChartGrid.vue";
 import AssetListPanel from "../components/panels/AssetListPanel.vue"
 import IntelFeedPanel from "../components/panels/IntelFeedPanel.vue"
 import TopBar from "../components/panels/TopBar.vue"
@@ -157,7 +159,7 @@ const {
   aiPredLoading,
   activeSimId, simRound, simRunning, simAgents,
 } = storeToRefs(useMarketStore());
-const { indmoneyConnected, indmoneyAvailable, indmoneyLivePrice, indmoneyName } = storeToRefs(useLiveTradingStore());
+const { indmoneyConnected, indmoneyAvailable, indmoneyLivePrice, indmoneyName, indmoneyAvailableCash } = storeToRefs(useLiveTradingStore());
 const redditSent = ref(null);
 
 let simPollTimer = null;
@@ -786,6 +788,7 @@ async function checkIndmoneyStatus() {
     indmoneyAvailable.value = d.token_configured || false;
     indmoneyConnected.value = d.connected || false;
     indmoneyName.value = d.name || "";
+    indmoneyAvailableCash.value = d.available_cash ?? null;
   } catch (e) {
     indmoneyConnected.value = false;
   }

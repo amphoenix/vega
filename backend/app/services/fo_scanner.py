@@ -79,6 +79,7 @@ SCAN_INTERVAL_SECONDS = int(os.environ.get('FO_SCAN_INTERVAL_SEC', '0'))
 MIN_CONFIDENCE        = int(os.environ.get('FO_MIN_CONFIDENCE', '70'))
 MIN_AGENT_AGREEMENT   = int(os.environ.get('FO_MIN_AGENTS', '3'))  # of 5 agents
 SIGNAL_MIN_DTE        = int(os.environ.get('FO_SIGNAL_MIN_DTE', '1'))  # 0 = allow all days
+MAX_RISK_PCT          = float(os.environ.get('FO_MAX_RISK_PCT', '2.0'))  # max loss per trade as % of available capital
 
 _scanner_thread: Optional[threading.Thread] = None
 _stop_event     = threading.Event()
@@ -283,15 +284,16 @@ def _build_trading_symbol(ticker: str, cio: dict, price: float) -> str:
 def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
     """
     Build a CIO-compatible dict purely from ta_utils indicators — zero LLM calls.
-    Returns a tradeable signal if Supertrend + ADX + RSI all agree on direction.
-    Returns None if market is ranging / weak trend.
+    Returns a tradeable signal with confidence penalised when leading indicators
+    (+DI/-DI crossover and MACD) contradict Supertrend.
+    Returns None only if market is ranging (ADX < 15) or Supertrend is neutral.
 
-    Signal rules:
-      STRONG BUY  : Supertrend BULLISH + ADX > 25 + RSI > 55 + price > EMA20
-      BUY         : Supertrend BULLISH + ADX > 20 + RSI > 50
-      STRONG SELL : Supertrend BEARISH + ADX > 25 + RSI < 45 + price < EMA20
-      SELL        : Supertrend BEARISH + ADX > 20 + RSI < 50
-      None        : ADX < 20 (ranging) or Supertrend neutral
+    Signal flow:
+      1. Supertrend direction decides candidate CE (bullish) or PE (bearish)
+      2. Leading indicators confirm/contradict → confidence adjusted (+5/−8 each)
+      3. Confidence (50-95) scored from ADX, RSI, EMA alignment, DI/MACD
+      4. Verdict tier: ≥80 STRONG, ≥60 actionable, <60 WAIT
+      None : ADX < 15 (ranging) or Supertrend neutral
     """
     ta      = raw.get('technicals', {})
     price   = float(raw.get('price', 0))
@@ -304,6 +306,13 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
     ema50   = ta.get('ema50') or price
     atr     = ta.get('atr') or price * 0.01
 
+    # Leading indicators — used to CONFIRM Supertrend direction and
+    # reject stale/lagging signals when the trend is already reversing.
+    plus_di    = ta.get('adx_plus_di') or 0
+    minus_di   = ta.get('adx_minus_di') or 0
+    macd_cross = ta.get('macd_cross', 'NONE')   # 'BULLISH' | 'BEARISH' | 'NONE'
+    macd_hist  = ta.get('macd_hist') or 0
+
     # Need at least Supertrend direction; ADX threshold lowered to 15 so we
     # still emit option tickets in low-vol regimes (e.g. NIFTY ADX 15-20).
     if adx < 15 or st_dir is None:
@@ -312,6 +321,27 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
     bullish = st_dir == 1
     bearish = st_dir == -1
 
+    # ── Leading indicator confirmation ────────────────────────────────────
+    # +DI > -DI = bullish momentum; MACD histogram > 0 = bullish momentum.
+    # If BOTH contradict Supertrend → heavy confidence penalty (−16 pts).
+    # Signal still emits but with WAIT action if confidence drops below 60.
+    di_bullish  = plus_di > minus_di
+    di_bearish  = minus_di > plus_di
+    macd_bull   = macd_cross == 'BULLISH' or macd_hist > 0
+    macd_bear   = macd_cross == 'BEARISH' or macd_hist < 0
+
+    if bullish:
+        confirms    = int(di_bullish) + int(macd_bull)
+        contradicts = int(di_bearish) + int(macd_bear)
+    else:
+        confirms    = int(di_bearish) + int(macd_bear)
+        contradicts = int(di_bullish) + int(macd_bull)
+
+    if contradicts == 2 and confirms == 0:
+        logger.info(f"Scanner: {ticker} Supertrend {'BULL' if bullish else 'BEAR'} "
+                    f"WEAK — both +DI/-DI and MACD contradict "
+                    f"(+DI={plus_di:.1f} -DI={minus_di:.1f} MACD_hist={macd_hist:.2f})")
+
     # ── Continuous confidence (50-95) so each ticker gets a distinct score
     # based on actual indicator strength, not a 3-bucket lookup.
     # Components (max points):
@@ -319,6 +349,7 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
     #   trend strength (ADX)       +30  (linear 15→45 ADX → 0→30 pts)
     #   momentum (RSI distance)    +10  (|RSI-50| → 0→10 pts)
     #   price-EMA alignment        +5   (price on the trend side of EMA20)
+    #   leading confirmation       +5/−8 per confirming/contradicting indicator
     def _clamp(v, lo, hi): return max(lo, min(hi, v))
     trend_score = _clamp((adx - 15) * 1.0, 0, 30)
     if bullish:
@@ -331,11 +362,12 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
         ema50_bonus = 3 if price < ema50 else 0
     conf = int(round(50 + trend_score + rsi_score + ema_score + ema50_bonus))
 
+    # Leading indicator adjustment: +5 per confirming, −8 per contradicting
+    conf += confirms * 5
+    conf -= contradicts * 8
+
     # CPR adjustment (+3 narrow = trending day, -3 wide = choppy day)
     cpr_type = ta.get('cpr_type')
-    cpr_width = ta.get('cpr_width_pct') or 0
-    cpr_tc = ta.get('cpr_tc') or 0
-    cpr_bc = ta.get('cpr_bc') or 0
     if cpr_type == 'narrow':
         conf += 3
     elif cpr_type == 'wide':
@@ -388,8 +420,11 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
     est_premium = round(price * 0.006, 2)
 
     patterns = ta.get('candle_patterns', [])
+    _conf_tag = (f"+DI={'>' if di_bullish else '<'}-DI "
+                f"MACD_hist={'↑' if macd_bull else '↓' if macd_bear else '—'} "
+                f"({confirms}/2 confirm)")
     thesis = (f"Technical: Supertrend {'BULLISH' if bullish else 'BEARISH'}, "
-              f"ADX={adx:.1f} (strong trend), RSI={rsi:.1f}. "
+              f"ADX={adx:.1f}, RSI={rsi:.1f}, {_conf_tag}. "
               f"Pattern: {patterns[0] if patterns else 'N/A'}.")
 
     return {
@@ -666,6 +701,67 @@ def _run_scan_cycle(llm_client):
                             f"DTE={ticket['days_to_expiry']}d "
                             f"SL=₹{ticket['exit']['stop_loss_inr']} "
                             f"T1=₹{ticket['exit']['target_1_inr']}")
+
+                # ── Capital-aware risk gate ────────────────────────────────
+                # Fetch live available cash from broker and reject trades
+                # where max_loss exceeds MAX_RISK_PCT of capital (default 2%).
+                # This prevents a single trade from wiping out the account.
+                # If capital cannot be fetched or is ≤ 0 → block the trade
+                # (fail-safe: never trade blind on unknown capital).
+                try:
+                    from ..api.indmoney import _ind_available_cash
+                    avail = _ind_available_cash()
+                    max_loss = float(ticket.get('risk', {}).get('max_loss_inr', 0))
+
+                    if avail is None:
+                        logger.warning(
+                            f"Scanner: {ticker} REJECTED by capital gate — "
+                            f"could not fetch available cash from broker")
+                        cio['short_term_action'] = 'AVOID'
+                        cio['confidence_to_trade'] = min(conf, 40)
+                        cio['_risk_rejected'] = True
+                        cio['_risk_reason'] = "Could not fetch available capital from broker"
+                        ticket['risk']['capital_warning'] = cio['_risk_reason']
+                        conf = cio['confidence_to_trade']
+                    elif avail <= 0:
+                        logger.warning(
+                            f"Scanner: {ticker} REJECTED by capital gate — "
+                            f"available cash ₹{avail:.0f} (zero or negative)")
+                        cio['short_term_action'] = 'AVOID'
+                        cio['confidence_to_trade'] = min(conf, 40)
+                        cio['_risk_rejected'] = True
+                        cio['_risk_reason'] = f"Available capital ₹{avail:.0f} — insufficient"
+                        ticket['risk']['capital_warning'] = cio['_risk_reason']
+                        conf = cio['confidence_to_trade']
+                    else:
+                        risk_limit = avail * (MAX_RISK_PCT / 100.0)
+                        if max_loss > risk_limit:
+                            logger.warning(
+                                f"Scanner: {ticker} REJECTED by capital gate — "
+                                f"max_loss ₹{max_loss:.0f} > {MAX_RISK_PCT}% of "
+                                f"₹{avail:.0f} (limit ₹{risk_limit:.0f})")
+                            cio['short_term_action'] = 'AVOID'
+                            cio['confidence_to_trade'] = min(conf, 40)
+                            cio['_risk_rejected'] = True
+                            cio['_risk_reason'] = (
+                                f"Max loss ₹{max_loss:.0f} exceeds {MAX_RISK_PCT}% "
+                                f"of available capital ₹{avail:.0f} "
+                                f"(limit ₹{risk_limit:.0f})")
+                            ticket['risk']['capital_warning'] = cio['_risk_reason']
+                            conf = cio['confidence_to_trade']
+                        else:
+                            logger.info(
+                                f"Scanner: {ticker} capital gate OK — "
+                                f"max_loss ₹{max_loss:.0f} ≤ {MAX_RISK_PCT}% of "
+                                f"₹{avail:.0f} (limit ₹{risk_limit:.0f})")
+                except Exception as e:
+                    logger.warning(f"Capital gate check failed for {ticker}: {e}")
+                    cio['short_term_action'] = 'AVOID'
+                    cio['confidence_to_trade'] = min(conf, 40)
+                    cio['_risk_rejected'] = True
+                    cio['_risk_reason'] = f"Capital gate error: {e}"
+                    conf = cio['confidence_to_trade']
+
             else:
                 # Legacy fallback so we still emit *something* on signal
                 option_contract = _resolve_option_contract(ticker, itype, strike)

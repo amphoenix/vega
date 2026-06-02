@@ -843,6 +843,47 @@ def _norm(ticker: str) -> str:
 
 # ── Public helper functions (importable by market.py, position_monitor.py) ───
 
+def _ind_available_cash() -> float | None:
+    """
+    Fetch available cash (free margin) from IndMoney /funds API.
+    Returns the available balance in ₹, or None if unavailable.
+    Cached for 60s to avoid hammering the API on every scan cycle.
+    """
+    if not _access_token():
+        return None
+    # Simple time-based cache
+    import time as _t
+    now = _t.time()
+    prev = getattr(_ind_available_cash, '_cache', None)
+    if prev and now - prev[0] < 60:
+        return prev[1]
+    try:
+        r = _requests.get(f'{BASE_URL}/funds', headers=_headers(), timeout=5)
+        if not r.ok:
+            logger.warning(f"IndMoney /funds API returned {r.status_code}")
+            return None
+        data = r.json().get('data') or {}
+        # IndStocks /funds response structure:
+        #   sod_balance, funds_added, withdrawal_balance,
+        #   detailed_avl_balance: { eq_cnc, option_buy, future, ... }
+        # For F&O option buying, the usable cash is option_buy from
+        # detailed_avl_balance. Fallback: sod_balance + funds_added.
+        avl = data.get('detailed_avl_balance') or {}
+        cash = avl.get('option_buy')
+        if cash is None or float(cash) == 0:
+            # Fallback: total available = SOD + added - withdrawn
+            sod   = float(data.get('sod_balance', 0) or 0)
+            added = float(data.get('funds_added', 0) or 0)
+            drawn = float(data.get('funds_withdrawn', 0) or 0)
+            cash  = sod + added - drawn
+        cash = float(cash)
+        _ind_available_cash._cache = (now, cash)
+        return cash
+    except Exception as e:
+        logger.warning(f"IndMoney /funds error: {e}")
+        return None
+
+
 def _ind_ltp(ticker: str) -> float | None:
     """
     Get live last-traded-price for any NSE/BSE symbol.
@@ -1004,6 +1045,13 @@ def _ind_candles(ticker: str, interval: str = '5m', days: int = 7) -> list[dict]
             dt_str = _dt.fromtimestamp(ts_s).strftime('%Y-%m-%d %H:%M:%S')  # ts is seconds
             candles.append({'date': dt_str, 'open': o, 'high': h, 'low': l, 'close': cls, 'volume': vol})
 
+        # Ensure oldest→newest order — some IndMoney endpoints return
+        # newest-first which inverts every downstream indicator (Supertrend,
+        # MACD, RSI) and causes CE/PE signal inversion.
+        if len(candles) >= 2 and candles[0]['date'] > candles[-1]['date']:
+            logger.warning(f"IndMoney candles {ticker} {interval}: API returned NEWEST-FIRST — reversing to fix indicator direction")
+        candles.sort(key=lambda x: x['date'])
+
         logger.debug(f"IndMoney candles {ticker} {interval}: {len(candles)} bars")
         return candles
     except Exception as e:
@@ -1014,9 +1062,10 @@ def _ind_candles(ticker: str, interval: str = '5m', days: int = 7) -> list[dict]
 def _resolve_fo_instrument(symbol: str) -> dict | None:
     """
     Resolve an F&O trading symbol to a single instrument-master row.
-    Multiple weekly contracts share the same TRADING_SYMBOL — pick the
-    one whose EXPIRY_DATE is the soonest still in the future.
-    Returns the master row dict, or None.
+    Matches by TRADING_SYMBOL first, then CUSTOM_SYMBOL (display name like
+    'NIFTY 9 JUN 23500 CE').  Multiple weekly contracts share the same
+    TRADING_SYMBOL — pick the one whose EXPIRY_DATE is the soonest still
+    in the future.  Returns the master row dict, or None.
     """
     sym = symbol.upper()
     from datetime import datetime as _dt
@@ -1024,7 +1073,8 @@ def _resolve_fo_instrument(symbol: str) -> dict | None:
     candidates = []
     for inst in _load_instruments('fno'):
         t_sym = (inst.get('TRADING_SYMBOL') or inst.get('tradingsymbol') or '').strip().upper()
-        if t_sym != sym:
+        c_sym = (inst.get('CUSTOM_SYMBOL') or inst.get('custom_symbol') or '').strip().upper()
+        if t_sym != sym and c_sym != sym:
             continue
         # Parse expiry; master format "05/26/2026 14:00"
         exp_raw = (inst.get('EXPIRY_DATE') or '').strip()
@@ -1041,7 +1091,8 @@ def _resolve_fo_instrument(symbol: str) -> dict | None:
         # Fall back: any match with parseable expiry, even if past (settlement day)
         for inst in _load_instruments('fno'):
             t_sym = (inst.get('TRADING_SYMBOL') or '').strip().upper()
-            if t_sym == sym:
+            c_sym = (inst.get('CUSTOM_SYMBOL') or '').strip().upper()
+            if t_sym == sym or c_sym == sym:
                 return inst
         return None
     candidates.sort(key=lambda x: x[0])
@@ -1446,6 +1497,7 @@ def status():
             "name":              f"{profile.get('first_name', '')} {profile.get('last_name', '')}".strip(),
             "email":             profile.get('email'),
             "demat_id":          profile.get('demat_id'),
+            "available_cash":    _ind_available_cash(),
         }})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

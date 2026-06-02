@@ -879,7 +879,7 @@ const { foAnalysing, foScannerState } = storeToRefs(useFoScannerStore())
 
 const ltStore = useLiveTradingStore()
 const {
-  indmoneyConnected, indmoneyLivePrice,
+  indmoneyConnected, indmoneyLivePrice, indmoneyAvailableCash,
   liveSpots, liveSpotTickAt, liveTickAges,
   liveTickets, liveStatus, liveConnected,
   trackedPositions, alertsConnected, missedAlerts,
@@ -1185,6 +1185,7 @@ function _openTrackedAlertsStream() {
       const m = JSON.parse(e.data)
       if (m.type === 'alerts_connected') { alertsConnected.value = true; return }
       if (m.type === 'heartbeat') return
+      if (m.type === 'funds_update') { indmoneyAvailableCash.value = m.available_cash ?? null; return }
       if (m.type === 'tracked_alert') _onTrackedAlert(m)
     } catch (err) {
       console.warn('alerts SSE parse', err)
@@ -1467,7 +1468,7 @@ onMounted(() => {
   // Subscribe to tick streams for all underlyings we care about
   watch(
     () => {
-      const set = new Set()
+      const set = new Set(['^NSEI', '^BSESN'])
       for (const rec of trackedPositions.value || []) {
         const u = rec?.ticket?.underlying
         const opt = rec?.ticket?.trading_symbol

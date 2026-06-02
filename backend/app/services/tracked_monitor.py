@@ -186,7 +186,7 @@ def _build_payload(rec: dict, prem: float, status: str, spot: float) -> dict:
 # uses). 3s × 2 underlyings = 0.7 req/s — negligible. ─────────────────────────
 def _poll_once() -> None:
     """One iteration: fetch spots, reprice all positions, emit transitions."""
-    from ..api.indmoney import _ind_ltp
+    from ..api.indmoney import _ind_ltp, _ind_option_ltp
 
     positions = tp.list_tracked()
     if not positions:
@@ -204,11 +204,29 @@ def _poll_once() -> None:
             continue
         for rec in recs:
             t    = rec.get('ticket') or {}
-            prem = _reprice(t, spot)
+            # Prefer live option LTP over BS model — BS can diverge wildly
+            # from real market prices, causing false SL/T1 alerts.
+            opt_sym = t.get('trading_symbol') or t.get('display_symbol')
+            prem = None
+            prem_source = 'none'
+            if opt_sym:
+                try:
+                    prem = _ind_option_ltp(opt_sym)
+                    if prem is not None:
+                        prem_source = 'live_ltp'
+                except Exception as e:
+                    logger.debug(f"[tracked_monitor] live LTP failed for {opt_sym}: {e}")
+            if prem is None:
+                prem = _reprice(t, spot)
+                if prem is not None:
+                    prem_source = 'bs_model'
             if prem is None:
                 continue
             new_status = _classify(prem, t)
             pid        = rec.get('id')
+            logger.debug(f"[tracked_monitor] {opt_sym} prem=₹{prem:.2f} "
+                         f"src={prem_source} status={new_status} "
+                         f"SL=₹{(t.get('exit') or {}).get('stop_loss_inr', 0)}")
             with _status_lock:
                 prev = _last_status.get(pid)
                 _last_status[pid] = new_status
@@ -218,15 +236,39 @@ def _poll_once() -> None:
                 else:
                     payload = None
             if payload:
-                logger.info(f"[tracked_monitor] {t.get('trading_symbol')} "
-                            f"{prev or 'init'} → {new_status} @ ₹{prem:.2f}")
+                logger.info(f"[tracked_monitor] {opt_sym} "
+                            f"{prev or 'init'} → {new_status} @ ₹{prem:.2f} "
+                            f"(src={prem_source})")
                 _broadcast(payload)
+
+
+_funds_last_push: float = 0.0
+_FUNDS_PUSH_INTERVAL: float = 60.0  # push funds update every 60s
+
+def _push_funds_update() -> None:
+    """Periodically broadcast available cash so the frontend stays in sync."""
+    global _funds_last_push
+    now = time.time()
+    if now - _funds_last_push < _FUNDS_PUSH_INTERVAL:
+        return
+    _funds_last_push = now
+    try:
+        from ..api.indmoney import _ind_available_cash
+        cash = _ind_available_cash()
+        _broadcast({
+            'type': 'funds_update',
+            'available_cash': cash,
+            'timestamp': datetime.now().isoformat(),
+        })
+    except Exception as e:
+        logger.debug(f"funds_update broadcast failed: {e}")
 
 
 def _poll_loop() -> None:
     logger.info(f"tracked_monitor poller started (interval={POLL_INTERVAL_S}s)")
     while not _poller_stop.is_set():
         try:
+            _push_funds_update()
             if bu.is_market_hours():
                 _poll_once()
         except Exception as e:
