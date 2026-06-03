@@ -36,7 +36,8 @@
       </span>
     </div>
 
-    <div class="feed-carousel" ref="feedRef">
+    <!-- ── Feed carousel (default tabs) ── -->
+    <div v-if="intelTab !== 'ORDERS'" class="feed-carousel" ref="feedRef">
       <TransitionGroup name="feed" tag="div" class="feed-cards-inner">
         <div
           v-for="item in visibleFeed"
@@ -64,7 +65,77 @@
       </div>
     </div>
 
-    <div class="pred-bar" v-if="prediction.ready">
+    <!-- ── ORDERS tab content ── -->
+    <div v-if="intelTab === 'ORDERS'" class="orders-tab">
+      <div class="orders-toolbar">
+        <button class="orders-refresh-btn" @click="fetchOrders" :disabled="ordersLoading">
+          <span v-if="ordersLoading" class="spinner"></span>
+          <span v-else>↻</span> Refresh
+        </button>
+        <span class="orders-count" v-if="orderRows.length">{{ orderRows.length }} orders</span>
+        <span class="orders-count" v-if="positionRows.length"> · {{ positionRows.length }} positions</span>
+      </div>
+
+      <!-- Orders -->
+      <div class="orders-section" v-if="orderRows.length">
+        <div class="orders-section-title">ORDER BOOK</div>
+        <div class="orders-table">
+          <div class="orders-row orders-hdr">
+            <span class="o-col o-sym">Symbol</span>
+            <span class="o-col o-side">Side</span>
+            <span class="o-col o-qty">Qty</span>
+            <span class="o-col o-price">Price</span>
+            <span class="o-col o-status">Status</span>
+            <span class="o-col o-time">Time</span>
+          </div>
+          <div
+            v-for="o in orderRows"
+            :key="o.order_id || o.id"
+            :class="['orders-row', orderStatusClass(o)]"
+          >
+            <span class="o-col o-sym" :title="o.trading_symbol || o.symbol">{{ o.trading_symbol || o.symbol || '—' }}</span>
+            <span :class="['o-col', 'o-side', (o.txn_type || o.transaction_type || '').toUpperCase() === 'BUY' ? 'o-buy' : 'o-sell']">{{ (o.txn_type || o.transaction_type || '—').toUpperCase() }}</span>
+            <span class="o-col o-qty">{{ o.qty || o.quantity || 0 }}</span>
+            <span class="o-col o-price">₹{{ (o.price || o.avg_price || o.limit_price || 0).toFixed?.(2) ?? o.price }}</span>
+            <span :class="['o-col', 'o-status', orderStatusClass(o)]">{{ (o.status || o.order_status || '—').toUpperCase() }}</span>
+            <span class="o-col o-time">{{ fmtOrderTime(o.order_timestamp || o.exchange_timestamp || o.created_at) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Positions -->
+      <div class="orders-section" v-if="positionRows.length">
+        <div class="orders-section-title">POSITIONS</div>
+        <div class="orders-table">
+          <div class="orders-row orders-hdr">
+            <span class="o-col o-sym">Symbol</span>
+            <span class="o-col o-side">Side</span>
+            <span class="o-col o-qty">Qty</span>
+            <span class="o-col o-price">Avg</span>
+            <span class="o-col o-price">LTP</span>
+            <span class="o-col o-pnl">P&L</span>
+          </div>
+          <div
+            v-for="p in positionRows"
+            :key="p.trading_symbol || p.symbol"
+            class="orders-row"
+          >
+            <span class="o-col o-sym" :title="p.trading_symbol || p.symbol">{{ p.trading_symbol || p.symbol || '—' }}</span>
+            <span :class="['o-col', 'o-side', (p.net_qty || p.quantity || 0) >= 0 ? 'o-buy' : 'o-sell']">{{ (p.net_qty || p.quantity || 0) >= 0 ? 'LONG' : 'SHORT' }}</span>
+            <span class="o-col o-qty">{{ Math.abs(p.net_qty || p.quantity || 0) }}</span>
+            <span class="o-col o-price">₹{{ (p.avg_price || 0).toFixed?.(2) ?? p.avg_price }}</span>
+            <span class="o-col o-price">₹{{ (p.ltp || p.last_price || 0).toFixed?.(2) ?? p.ltp }}</span>
+            <span :class="['o-col', 'o-pnl', (p.pnl || p.unrealized_pnl || 0) >= 0 ? 'up' : 'dn']">₹{{ (p.pnl || p.unrealized_pnl || 0).toFixed?.(2) ?? 0 }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="feed-empty" v-if="!orderRows.length && !positionRows.length && !ordersLoading">
+        No orders or positions found
+      </div>
+    </div>
+
+    <div class="pred-bar" v-if="prediction.ready && intelTab !== 'ORDERS'">
       <span class="pred-label">AI PREDICTION</span>
       <span class="pred-item" :class="prediction.shortClass">SHORT: <b>{{ prediction.short }}</b> {{ prediction.shortPct }}%</span>
       <span class="pred-divider">|</span>
@@ -90,7 +161,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
   chartTicker: { type: String, default: '' },
@@ -106,7 +177,7 @@ const props = defineProps({
 
 defineEmits(['simulate', 'run-ai-predict'])
 
-const intelTabs = ['ALL', 'NEWS', 'ANALYSTS', 'REDDIT', 'FOMO', 'PREDICTIONS', 'SIM']
+const intelTabs = ['ALL', 'NEWS', 'ANALYSTS', 'REDDIT', 'FOMO', 'PREDICTIONS', 'SIM', 'ORDERS']
 const intelTab = ref('ALL')
 const feedRef = ref(null)
 const feedTip = ref({ visible: false, x: 0, y: 0, title: '', meta: '' })
@@ -172,6 +243,58 @@ function moveFeedTooltip(e) {
 function hideFeedTooltip() {
   feedTip.value.visible = false
 }
+
+// ── Orders tab ─────────────────────────────────────────────────────────────
+const ordersLoading = ref(false)
+const orderRows = ref([])
+const positionRows = ref([])
+let _ordersTimer = null
+
+async function fetchOrders() {
+  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  ordersLoading.value = true
+  try {
+    const [obResp, posResp] = await Promise.all([
+      fetch(`${base}/api/indmoney/order-book`).then(r => r.json()),
+      fetch(`${base}/api/indmoney/positions`).then(r => r.json()),
+    ])
+    orderRows.value = Array.isArray(obResp.data) ? obResp.data : []
+    positionRows.value = Array.isArray(posResp.data) ? posResp.data.filter(p => (p.net_qty || p.quantity || 0) !== 0) : []
+  } catch (e) {
+    console.warn('fetchOrders failed', e)
+  } finally {
+    ordersLoading.value = false
+  }
+}
+
+function orderStatusClass(o) {
+  const s = (o.status || o.order_status || '').toUpperCase()
+  if (['COMPLETE', 'COMPLETED', 'TRADED', 'FILLED'].includes(s)) return 'o-filled'
+  if (['REJECTED', 'CANCELLED', 'CANCELED', 'FAILED'].includes(s)) return 'o-rejected'
+  if (['OPEN', 'PENDING', 'TRIGGER_PENDING'].includes(s)) return 'o-pending'
+  return ''
+}
+
+function fmtOrderTime(ts) {
+  if (!ts) return '—'
+  try {
+    const d = new Date(ts)
+    return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+  } catch { return ts }
+}
+
+watch(intelTab, (tab) => {
+  if (tab === 'ORDERS') {
+    fetchOrders()
+    _ordersTimer = setInterval(fetchOrders, 10000)
+  } else {
+    if (_ordersTimer) { clearInterval(_ordersTimer); _ordersTimer = null }
+  }
+})
+
+onUnmounted(() => {
+  if (_ordersTimer) clearInterval(_ordersTimer)
+})
 </script>
 
 <style src="../../styles/IntelFeedPanel.css"></style>

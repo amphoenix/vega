@@ -238,6 +238,17 @@
           >{{ transactionLabel(ev) }}</span
         >
 
+        <!-- Alternative strikes -->
+        <div class="fo-alts" v-if="ev.alt_tickets?.length">
+          <span class="fo-alts-label">Also available:</span>
+          <span
+            v-for="(alt, ai) in ev.alt_tickets"
+            :key="ai"
+            class="fo-alt-chip"
+            :title="`Δ${alt.delta?.toFixed(2)} · SL ₹${alt.sl?.toFixed(0)} · T1 ₹${alt.t1?.toFixed(0)} · lot=${alt.lot_size}`"
+          >{{ alt.strike }} @ ₹{{ alt.premium?.toFixed(0) }}</span>
+        </div>
+
         <!-- Add-to-Watching button -->
         <button
           v-if="

@@ -1,9 +1,10 @@
 <template>
   <router-view />
+  <SnackBar />
 </template>
 
 <script setup>
-// Use Vue Router to manage pages
+import SnackBar from './components/ui/SnackBar.vue'
 </script>
 
 <style>

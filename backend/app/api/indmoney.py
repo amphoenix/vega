@@ -38,8 +38,15 @@ logger = get_logger('phoenixtrade.api.indmoney')
 # ── Config ────────────────────────────────────────────────────────────────────
 # Token is read fresh on every use so editing .env + restarting just the
 # scanner thread (or a SIGHUP) is enough — no full-process restart needed.
-BASE_URL     = 'https://api.indstocks.com'
-WS_PRICE_URL = 'wss://ws-prices.indstocks.com/api/v1/ws/prices'
+BASE_URL      = 'https://api.indstocks.com'
+WS_PRICE_URL  = 'wss://ws-prices.indstocks.com/api/v1/ws/prices'
+WS_ORDER_URL  = 'wss://ws-order-updates.indstocks.com'
+
+
+def _live_trading_enabled() -> bool:
+    """True only when LIVE_TRADING_ENABLED=true in .env. Default: False (paper mode)."""
+    return os.environ.get('LIVE_TRADING_ENABLED', 'false').strip().lower() == 'true'
+
 
 def _access_token() -> str:
     """Always read fresh from env so .env edits + dotenv-reload pick up
@@ -667,6 +674,159 @@ def _start_ws():
         logger.warning("websocket-client not installed — INDmoney WebSocket unavailable. Run: uv add websocket-client")
 
 
+# ── Order-updates WebSocket ────────────────────────────────────────────────────
+# Connects to wss://ws-order-updates.indstocks.com to receive real-time order
+# fill, rejection, and modification events.  Events are broadcast via SSE
+# through the /api/indmoney/order-events/stream endpoint so the frontend can
+# show toast/snackbar notifications for order status changes.
+
+_order_ws_thread: threading.Thread | None = None
+_order_ws_lock   = threading.Lock()
+
+_order_subs_lock = threading.Lock()
+_order_subs: set[_queue.Queue] = set()      # SSE listeners for order events
+_order_event_log: list[dict] = []           # last N events for replay on reconnect
+_ORDER_LOG_MAX   = 50
+
+
+def order_subscribe_sse() -> _queue.Queue:
+    """Frontend opens an SSE connection for order updates."""
+    q: _queue.Queue = _queue.Queue(maxsize=200)
+    with _order_subs_lock:
+        _order_subs.add(q)
+    # No replay — snackbars are ephemeral, replaying old events on
+    # reconnect/refresh causes stale toasts (SL EXIT, DAILY LOSS, etc.)
+    return q
+
+
+def order_unsubscribe_sse(q: _queue.Queue) -> None:
+    with _order_subs_lock:
+        _order_subs.discard(q)
+
+
+def _order_broadcast(payload: dict) -> None:
+    """Fan-out an order event to every connected SSE listener."""
+    _order_event_log.append(payload)
+    if len(_order_event_log) > _ORDER_LOG_MAX:
+        del _order_event_log[: len(_order_event_log) - _ORDER_LOG_MAX]
+    with _order_subs_lock:
+        dead = set()
+        for q in _order_subs:
+            try: q.put_nowait(payload)
+            except _queue.Full: dead.add(q)
+        _order_subs.difference_update(dead)
+
+
+def _order_ws_on_open(ws):
+    logger.info("INDmoney order-updates WebSocket connected")
+
+
+def _order_ws_on_message(ws, message):
+    try:
+        parsed = json.loads(message)
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+
+        # Normalise to list
+        events = parsed if isinstance(parsed, list) else [parsed]
+
+        for evt in events:
+            if not isinstance(evt, dict):
+                continue
+            # Build a clean event payload for the frontend
+            status    = (evt.get('status') or evt.get('order_status') or '').upper()
+            order_id  = evt.get('order_id') or evt.get('id') or ''
+            symbol    = (evt.get('trading_symbol') or evt.get('symbol')
+                         or evt.get('scrip_name') or '')
+            txn_type  = (evt.get('txn_type') or evt.get('transaction_type') or '').upper()
+            qty       = evt.get('qty') or evt.get('quantity') or 0
+            price     = evt.get('price') or evt.get('avg_price') or evt.get('trade_price') or 0
+            message_  = evt.get('status_message') or evt.get('rejection_reason') or ''
+
+            payload = {
+                'type':       'order_update',
+                'order_id':    order_id,
+                'status':      status,
+                'symbol':      symbol,
+                'txn_type':    txn_type,
+                'qty':         qty,
+                'price':       price,
+                'message':     message_,
+                'timestamp':   datetime.now().isoformat(),
+                'raw':         evt,
+            }
+
+            # Classify for frontend toast severity
+            if status in ('COMPLETE', 'COMPLETED', 'TRADED', 'FILLED'):
+                payload['severity'] = 'success'
+                payload['title']    = f"Order filled: {txn_type} {symbol}"
+            elif status in ('REJECTED', 'CANCELLED', 'CANCELED', 'FAILED'):
+                payload['severity'] = 'error'
+                payload['title']    = f"Order {status.lower()}: {txn_type} {symbol}"
+            elif status in ('OPEN', 'PENDING', 'TRIGGER_PENDING', 'AFTER_MARKET_ORDER_REQ_RECEIVED'):
+                payload['severity'] = 'info'
+                payload['title']    = f"Order pending: {txn_type} {symbol}"
+            else:
+                payload['severity'] = 'info'
+                payload['title']    = f"Order update: {status} {symbol}"
+
+            logger.info(f"[order-ws] {payload['title']} qty={qty} @ ₹{price} "
+                        f"({message_})" if message_ else f"[order-ws] {payload['title']} qty={qty} @ ₹{price}")
+            _order_broadcast(payload)
+
+    except Exception as e:
+        logger.debug(f"order-ws message parse error: {e}")
+
+
+def _order_ws_on_close(ws, close_status_code, close_msg):
+    logger.info(f"INDmoney order-updates WebSocket closed: {close_status_code} {close_msg}")
+
+
+def _order_ws_on_error(ws, error):
+    logger.warning(f"INDmoney order-updates WebSocket error: {error}")
+
+
+def _start_order_ws():
+    """Start the INDmoney order-updates WebSocket in a background thread."""
+    global _order_ws_thread
+    if not _access_token():
+        return
+    with _order_ws_lock:
+        if _order_ws_thread and _order_ws_thread.is_alive():
+            return
+
+    try:
+        import websocket as _ws_lib
+
+        def _run():
+            backoff = 5
+            while True:
+                tok = _access_token()
+                if not tok:
+                    time.sleep(10); continue
+                try:
+                    ws = _ws_lib.WebSocketApp(
+                        WS_ORDER_URL,
+                        header=[f'Authorization: {tok}'],
+                        on_open=_order_ws_on_open,
+                        on_message=_order_ws_on_message,
+                        on_close=_order_ws_on_close,
+                        on_error=_order_ws_on_error,
+                    )
+                    ws.run_forever(ping_interval=30, ping_timeout=10)
+                except Exception as e:
+                    logger.error(f"INDmoney order-WS crashed: {e}")
+                time.sleep(min(backoff, 120))
+                backoff = min(backoff * 2, 120)
+
+        t = threading.Thread(target=_run, daemon=True, name='INDmoneyOrderWS')
+        t.start()
+        _order_ws_thread = t
+        logger.info("INDmoney order-updates WebSocket thread started")
+    except ImportError:
+        logger.warning("websocket-client not installed — order updates WS unavailable")
+
+
 # ── REST polling fallback ─────────────────────────────────────────────────────
 # IndStocks WebSocket sometimes accepts the connection + auth but never delivers
 # ticks (silent server-side gating, e.g. for accounts without streaming
@@ -823,6 +983,9 @@ def _start_rest_poll():
 if _access_token():
     _start_ws()
     _start_rest_poll()
+    # Order-updates WS disabled — endpoint returns 404.
+    # Uncomment when IndStocks enables wss://ws-order-updates.indstocks.com
+    # _start_order_ws()
 
 
 # ── Ticker normaliser: Yahoo-style → NSE/BSE symbol ──────────────────────────
@@ -1719,8 +1882,9 @@ def order_book():
 @indmoney_bp.route('/order', methods=['POST'])
 def place_order():
     """
-    Place a BUY or SELL order.
+    Place a BUY or SELL order (equity).
     Body: { ticker, txn_type, qty, order_type, product, limit_price? }
+    Guarded by LIVE_TRADING_ENABLED env var.
     """
     if not _connected():
         return jsonify({"success": False, "error": "INDMONEY_ACCESS_TOKEN not set"}), 401
@@ -1733,21 +1897,39 @@ def place_order():
     product    = body.get('product', 'CNC').upper()
     limit_px   = body.get('limit_price')
 
+    if not _live_trading_enabled():
+        logger.info(f"[order] PAPER MODE — {txn_type} {ticker} qty={qty} (LIVE_TRADING_ENABLED=false)")
+        _order_broadcast({
+            'type': 'order_update', 'severity': 'warning',
+            'title': f"Paper: {txn_type} {ticker}",
+            'status': 'SIMULATED', 'symbol': ticker,
+            'txn_type': txn_type, 'qty': qty,
+            'message': 'LIVE_TRADING_ENABLED=false — order not sent to broker',
+            'timestamp': datetime.now().isoformat(),
+        })
+        return jsonify({"success": True, "data": {"order_id": "PAPER", "status": "SIMULATED"}})
+
     sec_id = _security_id(ticker)
     if not sec_id:
         return jsonify({"success": False, "error": f"Instrument not found: {ticker}"}), 400
 
+    exch = _exchange(ticker)
+    _eq_product_map = {'NRML': 'CNC', 'MIS': 'INTRADAY', 'CNC': 'CNC',
+                       'MARGIN': 'MARGIN', 'INTRADAY': 'INTRADAY'}
+    api_product = _eq_product_map.get(product, 'CNC')
+    algo_id = "9999999999999999" if exch == 'BSE' else "99999"
+
     payload = {
         "txn_type":   txn_type,
-        "exchange":   _exchange(ticker),
+        "exchange":   exch,
         "segment":    "EQUITY",
-        "product":    product,
+        "product":    api_product,
         "order_type": order_type,
         "validity":   "DAY",
         "security_id": sec_id,
         "qty":        qty,
         "is_amo":     False,
-        "algo_id":    "99999",
+        "algo_id":    algo_id,
     }
     if order_type == 'LIMIT' and limit_px:
         payload['limit_price'] = limit_px
@@ -1764,13 +1946,168 @@ def place_order():
 def cancel_order():
     if not _connected():
         return jsonify({"success": False, "error": "INDMONEY_ACCESS_TOKEN not set"}), 401
+    if not _live_trading_enabled():
+        return jsonify({"success": True, "data": {"status": "SIMULATED", "message": "Paper mode — cancel not sent"}})
     body     = request.get_json() or {}
     order_id = body.get('order_id')
+    segment  = body.get('segment', 'DERIVATIVE')
     if not order_id:
         return jsonify({"success": False, "error": "order_id required"}), 400
     try:
         r = _requests.post(f'{BASE_URL}/order/cancel', headers=_headers(),
-                           json={"order_id": order_id}, timeout=10)
+                           json={"order_id": order_id, "segment": segment}, timeout=10)
         return jsonify({"success": r.ok, "data": r.json()})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@indmoney_bp.route('/order/fo', methods=['POST'])
+def place_fo_order():
+    """
+    Place an F&O (options/futures) order.
+    Body: { ticker, txn_type, qty, order_type, product, limit_price? }
+    ticker: trading symbol like 'NIFTY-JUN2026-23500-CE' or 'NIFTY-JUN2026-FUT'
+    product: NRML (carry-forward) or MIS (intraday), default NRML
+    Guarded by LIVE_TRADING_ENABLED env var.
+    """
+    if not _connected():
+        return jsonify({"success": False, "error": "INDMONEY_ACCESS_TOKEN not set"}), 401
+
+    body       = request.get_json() or {}
+    ticker     = body.get('ticker', '')
+    txn_type   = body.get('txn_type', 'BUY').upper()
+    qty        = body.get('qty', 1)
+    order_type = body.get('order_type', 'MARKET').upper()
+    product    = body.get('product', 'NRML').upper()
+    limit_px   = body.get('limit_price')
+
+    if not _live_trading_enabled():
+        display = ticker
+        try:
+            inst = _resolve_fo_instrument(ticker)
+            if inst:
+                display = (inst.get('CUSTOM_SYMBOL') or ticker).strip()
+        except Exception:
+            pass
+        logger.info(f"[order/fo] PAPER MODE — {txn_type} {display} qty={qty} (LIVE_TRADING_ENABLED=false)")
+        _order_broadcast({
+            'type': 'order_update', 'severity': 'warning',
+            'title': f"Paper: {txn_type} {display}",
+            'status': 'SIMULATED', 'symbol': display,
+            'txn_type': txn_type, 'qty': qty,
+            'message': 'LIVE_TRADING_ENABLED=false — order not sent to broker',
+            'timestamp': datetime.now().isoformat(),
+        })
+        return jsonify({"success": True, "data": {"order_id": "PAPER", "status": "SIMULATED"}})
+
+    # Resolve F&O instrument from master
+    inst = _resolve_fo_instrument(ticker)
+    if not inst:
+        _order_broadcast({
+            'type': 'order_update', 'severity': 'error',
+            'title': f"Instrument not found: {ticker}",
+            'status': 'REJECTED', 'symbol': ticker,
+            'txn_type': txn_type, 'message': 'Could not resolve F&O instrument',
+            'timestamp': datetime.now().isoformat(),
+        })
+        return jsonify({"success": False, "error": f"F&O instrument not found: {ticker}"}), 400
+
+    sec_id = (inst.get('SECURITY_ID') or '').strip()
+    seg    = (inst.get('SEGMENT') or '').strip().upper()
+    exch   = (inst.get('EXCH') or '').strip().upper()
+
+    # Exchange: NSE or BSE based on instrument master
+    if exch.startswith('B') or seg == 'BFO':
+        exchange = 'BSE'
+    else:
+        exchange = 'NSE'
+
+    # Map product: NRML/MIS → API enum (MARGIN/INTRADAY)
+    _product_map = {'NRML': 'MARGIN', 'MIS': 'INTRADAY', 'CNC': 'CNC',
+                    'MARGIN': 'MARGIN', 'INTRADAY': 'INTRADAY'}
+    api_product = _product_map.get(product, 'MARGIN')
+
+    # algo_id: "99999" for NSE, "9999999999999999" for BSE (per API docs)
+    algo_id = "9999999999999999" if exchange == 'BSE' else "99999"
+
+    payload = {
+        "txn_type":    txn_type,
+        "exchange":    exchange,
+        "segment":     "DERIVATIVE",
+        "product":     api_product,
+        "order_type":  order_type,
+        "validity":    "DAY",
+        "security_id": sec_id,
+        "qty":         qty,
+        "is_amo":      False,
+        "algo_id":     algo_id,
+    }
+    if order_type == 'LIMIT' and limit_px:
+        payload['limit_price'] = limit_px
+
+    display = (inst.get('CUSTOM_SYMBOL') or ticker).strip()
+    logger.info(f"[order/fo] Placing {txn_type} {display} qty={qty} type={order_type} product={product}")
+
+    try:
+        r = _requests.post(f'{BASE_URL}/order', headers=_headers(),
+                           json=payload, timeout=10)
+        resp = r.json()
+        # Broadcast immediate feedback
+        if r.ok:
+            _order_broadcast({
+                'type': 'order_update', 'severity': 'success',
+                'title': f"Order placed: {txn_type} {display}",
+                'status': 'PLACED', 'symbol': display,
+                'txn_type': txn_type, 'qty': qty,
+                'order_id': resp.get('data', {}).get('order_id', ''),
+                'message': f"qty={qty} {order_type} {product}",
+                'timestamp': datetime.now().isoformat(),
+            })
+        else:
+            err_msg = resp.get('message') or resp.get('error') or str(resp)
+            _order_broadcast({
+                'type': 'order_update', 'severity': 'error',
+                'title': f"Order failed: {txn_type} {display}",
+                'status': 'FAILED', 'symbol': display,
+                'txn_type': txn_type, 'qty': qty,
+                'message': err_msg,
+                'timestamp': datetime.now().isoformat(),
+            })
+        return jsonify({"success": r.ok, "data": resp})
+    except Exception as e:
+        _order_broadcast({
+            'type': 'order_update', 'severity': 'error',
+            'title': f"Order error: {txn_type} {display}",
+            'status': 'ERROR', 'symbol': display,
+            'txn_type': txn_type, 'message': str(e),
+            'timestamp': datetime.now().isoformat(),
+        })
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@indmoney_bp.route('/order-events/stream', methods=['GET'])
+def order_events_stream():
+    """
+    SSE endpoint pushing real-time order status updates (fills, rejections, etc.).
+    The frontend connects here and shows toast/snackbar notifications.
+    """
+    from flask import stream_with_context
+
+    @stream_with_context
+    def gen():
+        q = order_subscribe_sse()
+        try:
+            yield 'data: {"type":"order_events_connected"}\n\n'
+            while True:
+                try:
+                    payload = q.get(timeout=15.0)
+                    yield f'data: {json.dumps(payload, default=str)}\n\n'
+                except Exception:
+                    yield 'data: {"type":"heartbeat"}\n\n'
+        except GeneratorExit:
+            pass
+        finally:
+            order_unsubscribe_sse(q)
+
+    return Response(gen(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})

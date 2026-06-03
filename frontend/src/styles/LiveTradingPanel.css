@@ -267,6 +267,100 @@
 }
 
 /* WATCHING section — pinned positions */
+/* ─── Daily P&L strip ─────────────────────────────────────────────────── */
+.lv-daily-pnl {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 6px 4px;
+  padding: 8px 12px;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  flex-wrap: wrap;
+}
+.lv-daily-label {
+  color: #8b949e;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.lv-daily-realized,
+.lv-daily-unrealized,
+.lv-daily-total {
+  font-variant-numeric: tabular-nums;
+}
+.lv-daily-total {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #161b22;
+}
+.lv-daily-realized.up, .lv-daily-unrealized.up, .lv-daily-total.up { color: #26a69a; }
+.lv-daily-realized.dn, .lv-daily-unrealized.dn, .lv-daily-total.dn { color: #ef5350; }
+.lv-daily-limit {
+  color: #6e7681;
+  font-size: 11px;
+  margin-left: auto;
+}
+.lv-daily-kill {
+  color: #f85149;
+  font-weight: 700;
+  animation: pulse-kill 1s ease-in-out infinite;
+}
+@keyframes pulse-kill {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Auto-trading toggle switch */
+.lv-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.lv-toggle input { display: none; }
+.lv-toggle-track {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: #30363d;
+  border: 1px solid #484f58;
+  transition: background 0.25s, border-color 0.25s;
+}
+.lv-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #8b949e;
+  transition: transform 0.25s, background 0.25s;
+}
+.lv-toggle input:checked + .lv-toggle-track {
+  background: #1a3a2a;
+  border-color: #26a69a;
+}
+.lv-toggle input:checked + .lv-toggle-track .lv-toggle-knob {
+  transform: translateX(16px);
+  background: #26a69a;
+}
+.lv-toggle-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #8b949e;
+  white-space: nowrap;
+}
+.lv-toggle input:checked ~ .lv-toggle-label {
+  color: #26a69a;
+}
+
 .lv-watch {
   margin: 8px 6px;
   padding: 8px;
@@ -406,6 +500,22 @@
 .lv-watch-badge.lv-watch-time_exit {
   background: #2a0d0d;
   color: #ef5350;
+}
+.lv-watch-force-exit {
+  background: #1a0a0a;
+  color: #f0883e;
+  border: 1px solid #f0883e55;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-family: monospace;
+  font-weight: 700;
+}
+.lv-watch-force-exit:hover {
+  background: #f0883e22;
+  border-color: #f0883e;
+  color: #ff9f43;
 }
 .lv-watch-exit {
   background: #21262d;

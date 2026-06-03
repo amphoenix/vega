@@ -1236,6 +1236,10 @@ def tracked_remove(track_id: str):
         exit_px = float(qp_premium) if qp_premium not in (None, '') else body.get('exit_premium')
     except ValueError:
         exit_px = body.get('exit_premium')
+    # Grab ticket info BEFORE remove (need entry premium + qty for P&L)
+    positions = tp.list_tracked()
+    pre_rec = next((r for r in positions if r.get('id') == track_id), None)
+
     rec = tp.remove_tracked(
         track_id,
         exit_premium=exit_px,
@@ -1243,6 +1247,19 @@ def tracked_remove(track_id: str):
     )
     if not rec:
         return jsonify({"success": False, "error": "not found"}), 404
+
+    # Record realized P&L for manual exits (auto-exits already do this)
+    if pre_rec and exit_px is not None:
+        try:
+            from ..services.order_executor import record_exit_pnl
+            ticket = pre_rec.get('ticket') or {}
+            entry_prem = float((ticket.get('entry') or {}).get('expected_premium_inr', 0) or 0)
+            qty = int(pre_rec.get('qty', 1) or 1)
+            if entry_prem > 0:
+                record_exit_pnl(entry_prem, float(exit_px), qty)
+        except Exception as e:
+            logger.warning(f"Manual exit P&L recording failed: {e}")
+
     return jsonify({"success": True, "data": rec})
 
 
@@ -1328,3 +1345,85 @@ def fo_scanner_stream():
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
+# ── Order Executor overrides ──────────────────────────────────────────────────
+
+@trade_bp.route('/executor/force-exit/<track_id>', methods=['POST'])
+def executor_force_exit(track_id: str):
+    """User override: queue a force-exit for the given tracked position."""
+    from ..services.order_executor import force_exit
+    force_exit(track_id)
+    return jsonify({"success": True, "message": f"Force-exit queued for {track_id}"})
+
+
+@trade_bp.route('/executor/block-entry', methods=['POST'])
+def executor_block_entry():
+    """User override: block auto-entry for a specific symbol this session."""
+    body = request.get_json(silent=True) or {}
+    symbol = body.get('symbol', '').strip()
+    if not symbol:
+        return jsonify({"success": False, "error": "symbol required"}), 400
+    from ..services.order_executor import block_symbol
+    block_symbol(symbol)
+    return jsonify({"success": True, "message": f"Auto-entry blocked for {symbol}"})
+
+
+@trade_bp.route('/executor/unblock-entry', methods=['POST'])
+def executor_unblock_entry():
+    """User override: re-allow auto-entry for a symbol."""
+    body = request.get_json(silent=True) or {}
+    symbol = body.get('symbol', '').strip()
+    if not symbol:
+        return jsonify({"success": False, "error": "symbol required"}), 400
+    from ..services.order_executor import unblock_symbol
+    unblock_symbol(symbol)
+    return jsonify({"success": True, "message": f"Auto-entry unblocked for {symbol}"})
+
+
+@trade_bp.route('/executor/reset-daily', methods=['POST'])
+def executor_reset_daily():
+    """Reset daily P&L, kill-switch, and all executor state."""
+    from ..services.order_executor import reset_daily
+    reset_daily()
+    return jsonify({"success": True, "message": "Daily state reset — kill-switch off, P&L zeroed"})
+
+
+@trade_bp.route('/executor/status', methods=['GET'])
+def executor_status():
+    """Return current executor state: daily ledger, exits fired, blocked symbols."""
+    from ..services.order_executor import (
+        _daily_ledger, _exit_fired, _partial_exited, _blocked_symbols,
+        min_confidence, sl_max_points, allow_reentry, max_reentries,
+        daily_loss_limit, get_daily_pnl, is_kill_switch_active,
+        auto_trading_enabled,
+    )
+    return jsonify({
+        "success": True,
+        "data": {
+            "auto_trading_enabled": auto_trading_enabled(),
+            "min_confidence": min_confidence(),
+            "sl_max_points_nifty": sl_max_points('^NSEI'),
+            "sl_max_points_sensex": sl_max_points('^BSESN'),
+            "allow_reentry": allow_reentry(),
+            "max_reentries": max_reentries(),
+            "daily_loss_limit_inr": daily_loss_limit(),
+            "daily_realized_pnl": round(get_daily_pnl(), 2),
+            "kill_switch_active": is_kill_switch_active(),
+            "daily_ledger": dict(_daily_ledger),
+            "exits_fired": dict(_exit_fired),
+            "partial_exited": list(_partial_exited),
+            "blocked_symbols": list(_blocked_symbols),
+        }
+    })
+
+
+@trade_bp.route('/executor/auto-trading', methods=['POST'])
+def executor_toggle_auto_trading():
+    """Toggle auto-trading on/off at runtime (without restarting server)."""
+    body = request.get_json(silent=True) or {}
+    enabled = body.get('enabled')
+    if enabled is None:
+        return jsonify({"success": False, "error": "'enabled' (bool) required"}), 400
+    import os
+    os.environ['AUTO_TRADING_ENABLED'] = 'true' if enabled else 'false'
+    logger.info(f"Auto-trading {'ENABLED' if enabled else 'DISABLED'} via API")
+    return jsonify({"success": True, "auto_trading_enabled": bool(enabled)})

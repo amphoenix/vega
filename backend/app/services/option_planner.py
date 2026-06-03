@@ -404,7 +404,14 @@ def plan_option_trade(
     if atr and float(atr) > 0:
         a = float(atr)
         S = float(spot)
-        SL_MULT, T1_MULT, T2_MULT = 1.5, 2.5, 5.0
+        # Scale ATR multipliers by DTE — short-dated options can't achieve
+        # multi-day spot moves. sqrt(DTE) scaling models diffusion.
+        # DTE=1 → 0.45×, DTE=4 → 0.9×, DTE=7 → 1.0× (full mult at 7+ DTE)
+        import math
+        _dte_scale = min(1.0, math.sqrt(dte_d / 7.0))
+        SL_MULT  = 1.5 * max(0.5, _dte_scale)   # floor 0.75 ATR for SL
+        T1_MULT  = 2.5 * _dte_scale              # 1DTE: ~1.1 ATR
+        T2_MULT  = 5.0 * _dte_scale              # 1DTE: ~1.9 ATR
 
         # ── Direction validation — Cerebrum sometimes returns BUY-oriented
         #    spot levels even on a SELL/BEAR signal. If the supplied levels

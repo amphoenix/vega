@@ -321,6 +321,38 @@
       </div>
     </div>
 
+    <!-- ═ Auto-trading toggle + Daily P&L strip -->
+    <div class="lv-daily-pnl">
+      <label
+        class="lv-toggle"
+        :title="autoTradingEnabled ? 'Auto-trading ON — click to switch to monitor-only' : 'Monitor only — click to enable auto-trading'"
+      >
+        <input type="checkbox" :checked="autoTradingEnabled" @change="toggleAutoTrading" />
+        <span class="lv-toggle-track">
+          <span class="lv-toggle-knob"></span>
+        </span>
+        <span class="lv-toggle-label">{{ autoTradingEnabled ? 'Auto' : 'Monitor' }}</span>
+      </label>
+      <span class="lv-daily-label">Today's P&amp;L</span>
+      <span :class="['lv-daily-realized', dailyPnlComputed.realized >= 0 ? 'up' : 'dn']"
+        title="Realized P&L from closed trades today"
+        >Realized: {{ dailyPnlComputed.realized >= 0 ? '+' : '' }}₹{{ dailyPnlComputed.realized.toFixed(0) }}</span
+      >
+      <span :class="['lv-daily-unrealized', dailyPnlComputed.unrealized >= 0 ? 'up' : 'dn']"
+        title="Unrealized P&L from open positions"
+        >Open: {{ dailyPnlComputed.unrealized >= 0 ? '+' : '' }}₹{{ dailyPnlComputed.unrealized.toFixed(0) }}</span
+      >
+      <span :class="['lv-daily-total', (dailyPnlComputed.realized + dailyPnlComputed.unrealized) >= 0 ? 'up' : 'dn']"
+        title="Total = Realized + Unrealized"
+        >Net: {{ (dailyPnlComputed.realized + dailyPnlComputed.unrealized) >= 0 ? '+' : '' }}₹{{ (dailyPnlComputed.realized + dailyPnlComputed.unrealized).toFixed(0) }}</span
+      >
+      <span class="lv-daily-limit"
+        :title="`Daily loss limit: ₹${dailyPnlComputed.limit}. Kill switch ${dailyPnlComputed.kill_switch ? 'ACTIVE — no more trades' : 'off'}`"
+        >Limit: -₹{{ dailyPnlComputed.limit }}</span
+      >
+      <span v-if="dailyPnlComputed.kill_switch" class="lv-daily-kill">🛑 KILL SWITCH</span>
+    </div>
+
     <!-- ═ WATCHING — positions the user manually entered, persists across refreshes -->
     <div v-if="trackedCards.length" class="lv-watch">
       <div class="lv-watch-head">
@@ -398,6 +430,13 @@
             card.statusLabel
           }}</span>
           <button
+            class="lv-watch-force-exit"
+            @click="forceExit(card)"
+            title="Force-exit: auto-places SELL order at market NOW"
+          >
+            ⚡ Force Exit
+          </button>
+          <button
             :class="[
               'lv-watch-exit',
               isExitArmed(card.id) && 'lv-watch-exit-armed',
@@ -437,7 +476,7 @@
           </span>
           <span
             :class="['lv-watch-pnl', card.pnl_pct >= 0 ? 'up' : 'dn']"
-            :title="`P&L = (now − entry) × lot ${card.lot} × qty ${card.qty}. Same formula for CE and PE buyers — premium up = profit.`"
+            :title="`P&L = (now − entry) × qty ${card.qty}. qty = lot_size(${card.lot}) × lots. CE/PE buyers — premium up = profit.`"
           >
             {{ card.pnl_inr >= 0 ? "+" : "−" }}₹{{
               Math.abs(card.pnl_inr || 0).toFixed(0)
@@ -873,6 +912,8 @@ import { useLiveTradingStore } from '../../stores/useLiveTradingStore'
 import { repriceTicket, GLOSSARY } from '../../utils/blackScholes'
 import { fmtIndian, fmtTime } from '../../utils/formatters'
 import { getOptionChain } from '../../api/market'
+import { snack } from '../../utils/snack'
+import { playNotifSound } from '../../utils/notifSound'
 
 const { chartTicker } = storeToRefs(useMarketStore())
 const { foAnalysing, foScannerState } = storeToRefs(useFoScannerStore())
@@ -894,6 +935,7 @@ const notifPermission = ref(
   typeof Notification !== 'undefined' ? Notification.permission : 'denied',
 )
 
+let _dailyPnlTimer = null
 let _liveClockTimer = null
 let _ticketAgeTimer = null
 let _alertsES = null
@@ -965,6 +1007,60 @@ function _registerSingletonStream(name, es) {
   if (typeof window !== 'undefined') window[`__phoenix_${name}`] = es
   return es
 }
+
+// ── Daily P&L ──────────────────────────────────────────────────────────────
+const _dailyRealized = ref(0)
+const _dailyKillSwitch = ref(false)
+const _dailyLimit = ref(1000)
+const autoTradingEnabled = ref(false)
+
+async function _loadDailyPnl() {
+  try {
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const r = await fetch(`${base}/api/trade/executor/status`).then((x) => x.json())
+    if (r.success) {
+      _dailyRealized.value = r.data.daily_realized_pnl || 0
+      _dailyKillSwitch.value = r.data.kill_switch_active || false
+      _dailyLimit.value = r.data.daily_loss_limit_inr || 1000
+      if (r.data.auto_trading_enabled !== undefined) {
+        autoTradingEnabled.value = r.data.auto_trading_enabled
+      }
+    }
+  } catch (e) {
+    console.warn('_loadDailyPnl failed', e)
+  }
+}
+
+async function toggleAutoTrading() {
+  try {
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const next = !autoTradingEnabled.value
+    const r = await fetch(`${base}/api/trade/executor/auto-trading`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    }).then((x) => x.json())
+    if (r.success) {
+      autoTradingEnabled.value = r.auto_trading_enabled
+    }
+  } catch (e) {
+    console.warn('toggleAutoTrading failed', e)
+  }
+}
+
+// Unrealized P&L recomputes reactively every time trackedCards change (every 3s tick)
+const dailyPnlComputed = computed(() => {
+  let unrealized = 0
+  for (const card of trackedCards.value || []) {
+    unrealized += card.pnl_inr || 0
+  }
+  return {
+    realized: _dailyRealized.value,
+    unrealized,
+    kill_switch: _dailyKillSwitch.value,
+    limit: _dailyLimit.value,
+  }
+})
 
 // ── Tracked-position persistence ───────────────────────────────────────────
 async function _loadTracked() {
@@ -1046,6 +1142,22 @@ async function trackExited(card) {
 
 function isExitArmed(id) {
   return _trackExitArmed.value.has(id)
+}
+
+async function forceExit(card) {
+  if (!confirm(`⚡ Force-exit ${card.display_symbol || card.trading_symbol}?\n\nThis will place a SELL MARKET order immediately.`)) return
+  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  try {
+    const r = await fetch(`${base}/api/trade/executor/force-exit/${card.id}`, { method: 'POST' })
+    const data = await r.json()
+    if (data.success) {
+      snack.warning('Force exit queued', `${card.display_symbol || card.trading_symbol} — will sell on next poll`)
+    } else {
+      snack.error('Force exit failed', data.error || 'Unknown error')
+    }
+  } catch (e) {
+    snack.error('Force exit error', e.message)
+  }
 }
 
 // ── Audio alerts ───────────────────────────────────────────────────────────
@@ -1169,6 +1281,10 @@ function _onTrackedAlert(payload) {
   _saveMissedAlerts()
   _playExitAlert(payload.status)
   _showDesktopNotification(payload)
+  // Refresh tracked list on exit events (position removed server-side)
+  if (['sl_hit', 'past_t2', 'time_exit', 'thesis_flip'].includes(payload.status)) {
+    setTimeout(() => _loadTracked(), 1000)
+  }
 }
 
 function _openTrackedAlertsStream() {
@@ -1186,6 +1302,24 @@ function _openTrackedAlertsStream() {
       if (m.type === 'alerts_connected') { alertsConnected.value = true; return }
       if (m.type === 'heartbeat') return
       if (m.type === 'funds_update') { indmoneyAvailableCash.value = m.available_cash ?? null; return }
+      if (m.type === 'daily_pnl') {
+        _dailyRealized.value = m.realized ?? 0
+        _dailyKillSwitch.value = m.kill_switch ?? false
+        _dailyLimit.value = m.limit ?? 1000
+        return
+      }
+      if (m.type === 'tracked_update') {
+        // Live SL/T1/T2 update from server trailing — patch local position
+        for (const rec of trackedPositions.value) {
+          if (rec.id === m.id && rec.ticket?.exit) {
+            if (m.sl != null) rec.ticket.exit.stop_loss_inr = m.sl
+            if (m.t1 != null) rec.ticket.exit.target_1_inr = m.t1
+            if (m.t2 != null) rec.ticket.exit.target_2_inr = m.t2
+            break
+          }
+        }
+        return
+      }
       if (m.type === 'tracked_alert') _onTrackedAlert(m)
     } catch (err) {
       console.warn('alerts SSE parse', err)
@@ -1397,7 +1531,7 @@ const trackedCards = computed(() => {
 
     const lot = Number(t.lot_size) || 1
     const qty = Number(rec.qty) || 1
-    const pnl_inr = (now_premium - entry_prem) * lot * qty
+    const pnl_inr = (now_premium - entry_prem) * qty  // qty already = lot_size × num_lots
     const tick_age = Number(liveTickAges.value[under]) || 0
     const is_live = !!liveSpots.value[under] && tick_age < 10
 
@@ -1436,11 +1570,64 @@ async function triggerScan() {
   await fetch(`${base}/api/trade/fo-scanner/trigger`, { method: 'POST' }).catch(() => {})
 }
 
+// ── Order events SSE stream ────────────────────────────────────────────────
+let _orderES = null
+
+function _openOrderEventsStream() {
+  if (_orderES) return
+  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  _orderES = new EventSource(`${base}/api/indmoney/order-events/stream`)
+  _orderES.onmessage = (e) => {
+    try {
+      const m = JSON.parse(e.data)
+      if (m.type === 'order_events_connected' || m.type === 'heartbeat') return
+      if (m.type === 'order_update') {
+        // Map order status to specific sound type
+        const statusSoundMap = {
+          'ENTRY_PLACED': 'entry_buy',
+          'SL_HIT':       'sl_exit',
+          'PAST_T1':      't1_exit',
+          'PAST_T2':      't2_exit',
+          'TIME_EXIT':    'time_exit',
+          'THESIS_FLIP':  'thesis_exit',
+          'SLIPPAGE_REJECT': 'slippage_reject',
+          'SIMULATED':    'entry_buy',
+        }
+        const soundType = statusSoundMap[m.status] || m.severity || 'info'
+        playNotifSound(soundType)
+        snack({
+          severity: m.severity || 'info',
+          title:    m.title || `Order ${m.status}`,
+          message:  m.message || '',
+          duration: m.severity === 'error' ? 8000 : 5000,
+          sound: false,
+        })
+        // Refresh tracked positions + daily P&L on any order event
+        _loadTracked()
+        _loadDailyPnl()
+      }
+    } catch {}
+  }
+  _orderES.onerror = () => {
+    // Auto-reconnect is built into EventSource
+  }
+}
+
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 onMounted(() => {
   _loadTracked()
+  _loadDailyPnl()
   _loadMissedAlerts()
   _openTrackedAlertsStream()
+  _openOrderEventsStream()
+  // Daily P&L + tracked updates now arrive via SSE (every 3s from server).
+  // Keep a slow fallback poll for SSE reconnect gaps only.
+  _dailyPnlTimer = setInterval(() => {
+    if (!alertsConnected.value) {
+      _loadDailyPnl()
+      _loadTracked()
+    }
+  }, 30_000)
 
   const tickClock = () => {
     liveClock.value = fmtTime(new Date()) + ' IST'
@@ -1513,9 +1700,11 @@ onMounted(() => {
 
 onUnmounted(() => {
   _closeAllTicketStreams()
+  if (_dailyPnlTimer)  clearInterval(_dailyPnlTimer)
   if (_ticketAgeTimer) clearInterval(_ticketAgeTimer)
   if (_liveClockTimer) clearInterval(_liveClockTimer)
   if (_alertsES) { _alertsES.close(); _alertsES = null }
+  if (_orderES)  { _orderES.close();  _orderES = null }
 })
 </script>
 

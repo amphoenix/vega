@@ -37,12 +37,29 @@ from . import broker_utils as bu
 logger = get_logger('phoenixtrade.fo_scanner')
 
 # ── F&O universe ──────────────────────────────────────────────────────────────
-# Tickers in yfinance format. Scanner cycles through these.
-FO_UNIVERSE = [
-    '^NSEI',        # NIFTY 50
-    '^NSEBANK',     # BANKNIFTY
-    '^BSESN',       # SENSEX (BSE F&O — confirmed in IndMoney instrument master)
-]
+# Configurable via FO_UNIVERSE env var (comma-separated tickers in yfinance format).
+# Default: NIFTY 50 and SENSEX only.
+_DEFAULT_UNIVERSE = '^NSEI,^BSESN'
+_fo_universe_cache: list | None = None
+
+def _get_fo_universe() -> list[str]:
+    global _fo_universe_cache
+    if _fo_universe_cache is None:
+        raw = os.environ.get('FO_UNIVERSE', _DEFAULT_UNIVERSE)
+        _fo_universe_cache = [t.strip() for t in raw.split(',') if t.strip()]
+        logger.info(f"F&O universe: {_fo_universe_cache}")
+    return _fo_universe_cache
+
+# Keep FO_UNIVERSE as a property-like accessor for backward compat
+class _UniverseProxy(list):
+    """Lazy list that resolves from env on first access."""
+    def __iter__(self): return iter(_get_fo_universe())
+    def __len__(self): return len(_get_fo_universe())
+    def __getitem__(self, i): return _get_fo_universe()[i]
+    def __contains__(self, v): return v in _get_fo_universe()
+    def index(self, v, *a): return _get_fo_universe().index(v, *a)
+
+FO_UNIVERSE = _UniverseProxy()
 
 # Lot sizes are now sourced from the IndStocks F&O instrument master
 # (see broker_utils.fno_meta / underlying_lot_size). The dict below is kept
@@ -86,6 +103,10 @@ _stop_event     = threading.Event()
 _manual_trigger = threading.Event()   # set by trigger_now() to force a scan even off-hours
 _wake_event     = threading.Event()   # wakes the loop's wait() without killing the thread
 _scan_lock      = threading.Lock()
+
+# ── Ticket cache: lock entry price to first signal per underlying per day ──
+# Prevents re-pricing when auto-entry retries on subsequent scan cycles.
+_ticket_cache: dict = {}   # underlying → ticket (cleared on daily reset)
 
 # Scan state (for status endpoint)
 _state = {
@@ -584,6 +605,12 @@ def _run_scan_cycle(llm_client):
         _state['scanned']   = []
         _state['signals']   = []
 
+    # Clear ticket cache at start of new trading day (09:15 IST)
+    _now = datetime.now()
+    if _now.hour == 9 and _now.minute < (SCAN_INTERVAL_SECONDS // 60 + 4):
+        _ticket_cache.clear()
+        logger.info("Scanner: ticket cache cleared (new trading day)")
+
     _broadcast({'type': 'scan_start', 'universe': FO_UNIVERSE,
                 'timestamp': datetime.now().isoformat()})
 
@@ -648,51 +675,108 @@ def _run_scan_cycle(llm_client):
         option_contract = None
         ticket = None
         if itype in ('CE', 'PE') and conf >= 60:
-            try:
-                from .option_planner import plan_option_trade
-                bias = 'BULL' if itype == 'CE' else 'BEAR'
-                # Defaults:
-                #   target_delta=0.50  → ATM (best gamma/theta tradeoff for directional bets)
-                #   min_dte=3          → skip same-day + 1-DTE theta cliff (avoid OTM lottery tickets)
-                #   max_dte=21         → at most ~3 weeks out, premium too high beyond that
-                # Pass CIO's spot-level SL/T1/T2 through so the planner can
-                # back-derive PREMIUM targets via Black-Scholes at those spots
-                # — instead of the old (broken) 2x/3x entry-premium heuristic.
-                _fnum = lambda v: float(v) if v not in (None, '', 0) else None
-                # ATR(14) clamps CIO's spot targets to intraday-realistic bands.
-                # CIO from _scan_one/_technical_cio may stash atr; otherwise
-                # the planner runs without ATR clamping (still works fine).
-                atr = _fnum(cio.get('_atr')) or _fnum(cio.get('atr'))
-                ticket = plan_option_trade(
-                    underlying=ticker, bias=bias, spot=price,
-                    # 0.55 = mildly ITM. Avoids the OTM-junk problem where a
-                    # 0.50 target rounds OFF strike and ends up at Δ≈0.40 on
-                    # short DTE, producing ₹8 lottery tickets. ITM gives real
-                    # delta exposure + intrinsic value cushion.
-                    target_delta=float(os.environ.get('FO_TARGET_DELTA', '0.55')),
-                    min_dte=int(os.environ.get('FO_MIN_DTE', '3')),
-                    max_dte=int(os.environ.get('FO_MAX_DTE', '21')),
-                    rationale=f"{verdict} conf={conf}% | {cio.get('short_term_reason','')}",
-                    spot_target_1  = _fnum(cio.get('target_1')),
-                    spot_target_2  = _fnum(cio.get('target_2')),
-                    spot_stop_loss = _fnum(cio.get('stop_loss')),
-                    atr            = atr,
-                )
-            except Exception as e:
-                logger.warning(f"Ticket build failed for {ticker}: {e}")
-                ticket = None
+            # ── Reuse cached ticket if same underlying + same direction ──────
+            # Locks entry price to the first signal shown in the UI.
+            # Invalidate if direction flipped (e.g., was PE now CE).
+            _cache_key = f"{ticker}:{itype}"
+            _opposite  = f"{ticker}:{'CE' if itype == 'PE' else 'PE'}"
+            if _opposite in _ticket_cache:
+                del _ticket_cache[_opposite]
+            bias = 'BULL' if itype == 'CE' else 'BEAR'
+            _fnum = lambda v: float(v) if v not in (None, '', 0) else None
+            atr = _fnum(cio.get('_atr')) or _fnum(cio.get('atr'))
+            cached = _ticket_cache.get(_cache_key)
+            if cached:
+                ticket = cached
+                logger.debug(f"Scanner: reusing cached ticket for {_cache_key} "
+                             f"@ ₹{ticket['entry']['expected_premium_inr']:.2f}")
+            else:
+                try:
+                    from .option_planner import plan_option_trade
+                    ticket = plan_option_trade(
+                        underlying=ticker, bias=bias, spot=price,
+                        target_delta=float(os.environ.get('FO_TARGET_DELTA', '0.55')),
+                        min_dte=int(os.environ.get('FO_MIN_DTE', '3')),
+                        max_dte=int(os.environ.get('FO_MAX_DTE', '21')),
+                        rationale=f"{verdict} conf={conf}% | {cio.get('short_term_reason','')}",
+                        spot_target_1  = _fnum(cio.get('target_1')),
+                        spot_target_2  = _fnum(cio.get('target_2')),
+                        spot_stop_loss = _fnum(cio.get('stop_loss')),
+                        atr            = atr,
+                    )
+                    if ticket:
+                        _ticket_cache[_cache_key] = ticket
+                        logger.info(f"Scanner: cached ticket for {_cache_key} "
+                                    f"@ ₹{ticket['entry']['expected_premium_inr']:.2f}")
+                except Exception as e:
+                    logger.warning(f"Ticket build failed for {ticker}: {e}")
+                    ticket = None
+
+            # ── Generate alternative strikes at different deltas ──────────
+            from .option_planner import plan_option_trade
+            alt_tickets = []
+            if ticket:
+                _alt_deltas = [0.40, 0.45, 0.65]   # cheaper OTM + pricier ITM
+                primary_strike = ticket.get('strike')
+                # Use the primary ticket's DTE so alts match the same expiry
+                # (avoids min_dte filter rejecting short-dated contracts like SENSEX 1DTE)
+                _ticket_dte = ticket.get('days_to_expiry', 1) or 1
+                _alt_min_dte = min(int(os.environ.get('FO_MIN_DTE', '3')), _ticket_dte)
+                _alt_max_dte = max(int(os.environ.get('FO_MAX_DTE', '21')), _ticket_dte)
+                for ad in _alt_deltas:
+                    try:
+                        alt = plan_option_trade(
+                            underlying=ticker, bias=bias, spot=price,
+                            target_delta=ad,
+                            min_dte=_alt_min_dte,
+                            max_dte=_alt_max_dte,
+                            rationale=f"alt Δ={ad}",
+                            spot_target_1=_fnum(cio.get('target_1')),
+                            spot_target_2=_fnum(cio.get('target_2')),
+                            spot_stop_loss=_fnum(cio.get('stop_loss')),
+                            atr=atr,
+                        )
+                        if alt and alt.get('strike') != primary_strike:
+                            alt_tickets.append(alt)
+                    except Exception:
+                        pass
 
             if ticket:
                 cio['expiry']            = ticket['expiry']
                 cio['strike_price']      = ticket['strike']
                 cio['option_symbol']     = ticket['trading_symbol']
                 cio['display_symbol']    = ticket.get('display_symbol') or ticket['trading_symbol']
-                cio['option_ltp']        = ticket['entry']['expected_premium_inr']
+                # Entry price = locked from first signal (cached ticket)
                 cio['estimated_premium'] = ticket['entry']['expected_premium_inr']
+                # option_ltp = live price for UI display (fetch current tick)
+                try:
+                    from ..api.indmoney import _ind_ltp
+                    live_px = _ind_ltp(ticket['trading_symbol'])
+                    cio['option_ltp'] = live_px if live_px else ticket['entry']['expected_premium_inr']
+                except Exception:
+                    cio['option_ltp'] = ticket['entry']['expected_premium_inr']
                 cio['lot_size']          = ticket['lot_size']
                 cio['premium_sl']        = ticket['exit']['stop_loss_inr']
                 cio['premium_t1']        = ticket['exit']['target_1_inr']
                 cio['premium_t2']        = ticket['exit']['target_2_inr']
+                # Attach alternatives for UI display + affordable auto-entry
+                if alt_tickets:
+                    cio['alt_tickets'] = [{
+                        'trading_symbol':  a['trading_symbol'],
+                        'display_symbol':  a.get('display_symbol') or a['trading_symbol'],
+                        'strike':          a['strike'],
+                        'premium':         a['entry']['expected_premium_inr'],
+                        'delta':           a['greeks']['delta'],
+                        'theta_per_day':   a['greeks']['theta_per_day'],
+                        'sl':              a['exit']['stop_loss_inr'],
+                        't1':              a['exit']['target_1_inr'],
+                        'lot_size':        a['lot_size'],
+                        'max_loss':        a.get('risk', {}).get('max_loss_inr', 0),
+                        '_full_ticket':    a,
+                    } for a in alt_tickets]
+                    alt_syms = ', '.join(f"{a['strike']}@₹{a['entry']['expected_premium_inr']:.0f}"
+                                        for a in alt_tickets)
+                    logger.info(f"Scanner alts for {ticker}: {alt_syms}")
                 logger.info(f"Scanner ticket: {ticket['trading_symbol']} "
                             f"@ ₹{ticket['entry']['expected_premium_inr']:.2f} "
                             f"Δ={ticket['greeks']['delta']:.2f} "
@@ -708,9 +792,16 @@ def _run_scan_cycle(llm_client):
                 # This prevents a single trade from wiping out the account.
                 # If capital cannot be fetched or is ≤ 0 → block the trade
                 # (fail-safe: never trade blind on unknown capital).
+                # In paper mode, use PAPER_CAPITAL_INR (default ₹100,000).
                 try:
                     from ..api.indmoney import _ind_available_cash
-                    avail = _ind_available_cash()
+                    _paper_mode = not (os.environ.get('LIVE_TRADING_ENABLED', 'false')
+                                       .strip().lower() in ('true', '1', 'yes'))
+                    if _paper_mode:
+                        avail = float(os.environ.get('PAPER_CAPITAL_INR', '100000'))
+                        logger.debug(f"Scanner: paper mode — using simulated capital ₹{avail:.0f}")
+                    else:
+                        avail = _ind_available_cash()
                     max_loss = float(ticket.get('risk', {}).get('max_loss_inr', 0))
 
                     if avail is None:
@@ -735,20 +826,45 @@ def _run_scan_cycle(llm_client):
                         conf = cio['confidence_to_trade']
                     else:
                         risk_limit = avail * (MAX_RISK_PCT / 100.0)
+                        # Use enforced strict SL for max_loss (not planner's loose 50% SL)
+                        # e.g. NIFTY: 15pts × 75 lot = ₹1,125 vs planner's ₹8,025
+                        from .order_executor import sl_max_points
+                        _strict_max_loss = sl_max_points(ticker) * float(ticket.get('lot_size', 1))
+                        if _strict_max_loss > 0:
+                            max_loss = _strict_max_loss
+                            logger.debug(f"Scanner: {ticker} using strict SL max_loss ₹{max_loss:.0f} "
+                                         f"(sl_max_pts={sl_max_points(ticker)} × lot={ticket.get('lot_size')})")
                         if max_loss > risk_limit:
-                            logger.warning(
-                                f"Scanner: {ticker} REJECTED by capital gate — "
-                                f"max_loss ₹{max_loss:.0f} > {MAX_RISK_PCT}% of "
-                                f"₹{avail:.0f} (limit ₹{risk_limit:.0f})")
-                            cio['short_term_action'] = 'AVOID'
-                            cio['confidence_to_trade'] = min(conf, 40)
-                            cio['_risk_rejected'] = True
-                            cio['_risk_reason'] = (
-                                f"Max loss ₹{max_loss:.0f} exceeds {MAX_RISK_PCT}% "
-                                f"of available capital ₹{avail:.0f} "
-                                f"(limit ₹{risk_limit:.0f})")
-                            ticket['risk']['capital_warning'] = cio['_risk_reason']
-                            conf = cio['confidence_to_trade']
+                            # Check if any alt ticket fits within the limit
+                            # Use strict SL (sl_max_points × lot) — same as primary
+                            _has_affordable_alt = any(
+                                sl_max_points(ticker) * float(a.get('lot_size', 1) or 1) <= risk_limit
+                                for a in alt_tickets
+                            ) if alt_tickets else False
+                            if _has_affordable_alt:
+                                # Let executor pick the cheaper alt — keep conf intact
+                                logger.info(
+                                    f"Scanner: {ticker} primary too expensive "
+                                    f"(₹{max_loss:.0f} > ₹{risk_limit:.0f}) "
+                                    f"but cheaper alt available — passing to executor")
+                                cio['_risk_reason'] = (
+                                    f"Primary ₹{max_loss:.0f} > limit ₹{risk_limit:.0f}, "
+                                    f"executor will use cheaper alt")
+                            else:
+                                logger.warning(
+                                    f"Scanner: {ticker} REJECTED by capital gate — "
+                                    f"max_loss ₹{max_loss:.0f} > {MAX_RISK_PCT}% of "
+                                    f"₹{avail:.0f} (limit ₹{risk_limit:.0f})")
+                                cio['short_term_action'] = 'AVOID'
+                                cio['confidence_to_trade'] = min(conf, 40)
+                                cio['_risk_rejected'] = True
+                                cio['_risk_reason'] = (
+                                    f"Max loss ₹{max_loss:.0f} exceeds {MAX_RISK_PCT}% "
+                                    f"of available capital ₹{avail:.0f} "
+                                    f"(limit ₹{risk_limit:.0f})")
+                                ticket['risk']['capital_warning'] = cio['_risk_reason']
+                                conf = cio['confidence_to_trade']
+                                verdict = f"{verdict} (⚠ CAPITAL)"
                         else:
                             logger.info(
                                 f"Scanner: {ticker} capital gate OK — "
@@ -761,6 +877,7 @@ def _run_scan_cycle(llm_client):
                     cio['_risk_rejected'] = True
                     cio['_risk_reason'] = f"Capital gate error: {e}"
                     conf = cio['confidence_to_trade']
+                    verdict = f"{verdict} (⚠ CAPITAL)"
 
             else:
                 # Legacy fallback so we still emit *something* on signal
@@ -793,6 +910,8 @@ def _run_scan_cycle(llm_client):
             'display_symbol': cio.get('display_symbol') or cio.get('option_symbol'),
             'option_ltp':     cio.get('option_ltp'),
             'ticket':         ticket,            # full plan with Greeks + risk
+            'alt_tickets':    cio.get('alt_tickets', []),
+            'cio':            cio,               # full CIO for executor alt-strike logic
             'timestamp':      datetime.now().isoformat(),
         }
         signals.append(signal)
@@ -806,9 +925,67 @@ def _run_scan_cycle(llm_client):
             if under:
                 _state['latest_by_under'][under] = signal
 
-        _broadcast({'type': 'scan_signal', **signal})
+        # Strip _full_ticket from alt_tickets before SSE broadcast (too heavy)
+        _bcast_signal = {**signal}
+        if _bcast_signal.get('alt_tickets'):
+            _bcast_signal['alt_tickets'] = [
+                {k: v for k, v in a.items() if k != '_full_ticket'}
+                for a in _bcast_signal['alt_tickets']
+            ]
+        _bcast_signal.pop('cio', None)  # cio is internal, don't send to frontend
+        _broadcast({'type': 'scan_signal', **_bcast_signal})
         logger.info(f"Scanner [{source}] {ticker} {verdict} conf={conf}% "
                     f"instrument={cio.get('instrument_type')} action={cio.get('short_term_action')}")
+
+        # ── Thesis invalidation: exit opposite positions on direction flip ──
+        # If scanner says BUY (CE) but we hold a PE for the same underlying
+        # (or vice versa), the thesis is dead — auto-exit the old position.
+        if itype in ('CE', 'PE') and conf >= 70:
+            opposite_type = 'PE' if itype == 'CE' else 'CE'
+            try:
+                from . import tracked_positions as tp
+                from .order_executor import try_auto_exit
+                from ..api.indmoney import _order_broadcast, _ind_ltp
+                for rec in tp.list_tracked():
+                    t = rec.get('ticket') or {}
+                    t_under = t.get('underlying', '')
+                    t_opt = t.get('option_type', '').upper()
+                    # Same underlying, opposite direction
+                    if t_under == ticker and t_opt == opposite_type:
+                        opt_sym = t.get('trading_symbol', '')
+                        prem = _ind_ltp(opt_sym) or 0
+                        logger.warning(f"Scanner: THESIS FLIP for {ticker} — "
+                                       f"was {opposite_type}, now {itype} conf={conf}%. "
+                                       f"Auto-exiting {opt_sym}")
+                        _order_broadcast({
+                            'type': 'order_update', 'severity': 'warning',
+                            'title': f"⚡ THESIS FLIP: {t.get('display_symbol', opt_sym)}",
+                            'status': 'THESIS_FLIP', 'symbol': opt_sym,
+                            'txn_type': 'SELL',
+                            'message': f"Direction flipped {opposite_type}→{itype} conf={conf}%. Exiting.",
+                            'timestamp': datetime.now().isoformat(),
+                        })
+                        try_auto_exit(rec['id'], 'thesis_flip', rec, prem)
+            except Exception as e:
+                logger.warning(f"Scanner: thesis invalidation failed for {ticker}: {e}")
+
+        # ── Auto-entry via order executor ────────────────────────────────
+        if ticket and conf >= 60:
+            try:
+                from .order_executor import try_auto_entry
+                result = try_auto_entry(signal)
+                if result:
+                    logger.info(f"Scanner: auto-entry placed for {ticker} → {result.get('id')}")
+            except Exception as e:
+                logger.warning(f"Scanner: auto-entry failed for {ticker}: {e}")
+                from ..api.indmoney import _order_broadcast
+                _order_broadcast({
+                    'type': 'order_update', 'severity': 'error',
+                    'title': f"Auto-entry error: {ticker}",
+                    'status': 'ERROR', 'symbol': ticker,
+                    'message': str(e),
+                    'timestamp': datetime.now().isoformat(),
+                })
 
     _broadcast({'type': 'scan_complete', 'signals': len(signals),
                 'timestamp': datetime.now().isoformat()})

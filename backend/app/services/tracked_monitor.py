@@ -59,6 +59,7 @@ ALERT_STATES = {'sl_hit', 'past_t1', 'past_t2', 'near_sl', 'near_t1', 'time_exit
 _status_lock      = threading.Lock()
 _last_status:     dict[str, str] = {}        # position_id → last classified status
 _last_payload:    dict[str, dict] = {}       # position_id → last full alert payload
+_high_water:      dict[str, float] = {}      # position_id → highest premium seen
 
 _subs_lock        = threading.Lock()
 _subscribers:     set[_queue.Queue] = set()  # SSE listeners
@@ -135,6 +136,7 @@ def _classify(prem: float, ticket: dict) -> str:
     """Map a current premium to a status bucket using the ticket's own levels."""
     try:
         ex = ticket.get('exit') or {}
+        entry = float((ticket.get('entry') or {}).get('expected_premium_inr') or 0)
         sl = float(ex.get('stop_loss_inr') or 0)
         t1 = float(ex.get('target_1_inr')  or 0)
         t2 = float(ex.get('target_2_inr')  or 0)
@@ -142,11 +144,117 @@ def _classify(prem: float, ticket: dict) -> str:
         if sl and prem <= sl:                       return 'sl_hit'
         if t2 and prem >= t2:                       return 'past_t2'
         if t1 and prem >= t1:                       return 'past_t1'
-        if sl and prem <= sl * (1.0 + NEAR_SL_PCT): return 'near_sl'
+        # NEAR SL: use tighter threshold when SL has been trailed above entry
+        # (position is in profit — don't spam NEAR SL on normal pullbacks)
+        if sl:
+            sl_is_trailed = entry > 0 and sl > entry
+            near_pct = 0.03 if sl_is_trailed else NEAR_SL_PCT
+            if prem <= sl * (1.0 + near_pct):       return 'near_sl'
         if t1 and prem >= t1 * (1.0 - NEAR_T1_PCT): return 'near_t1'
         return 'safe'
     except Exception:
         return 'safe'
+
+
+def _trail_sl_and_targets(rec: dict, prem: float) -> None:
+    """
+    Dynamically trail SL upward as premium rises, and cap unreasonable targets.
+
+    Rules:
+    - Sanity-cap T1/T2: T1 ≤ entry × 2.0, T2 ≤ entry × 3.5 (DTE-scaled).
+      Fixes legacy positions with absurd targets (e.g. ₹3,854 on a ₹515 option).
+    - Track high-water mark for each position.
+    - Once premium is ≥20% above entry: trail SL to (high_water − trail_drop).
+      trail_drop = sl_max_points for the underlying (15 for NIFTY, 50 for SENSEX).
+    - SL only ratchets UP (never down).
+    - Changes are persisted to tracked_positions JSON.
+    """
+    pid = rec.get('id')
+    t = rec.get('ticket') or {}
+    ex = t.get('exit') or {}
+    entry = float((t.get('entry') or {}).get('expected_premium_inr') or 0)
+    if not entry or entry <= 0 or not pid:
+        return
+
+    changed = False
+
+    # ── Sanity-cap T1/T2 (fixes legacy positions with planner's loose targets) ─
+    # Scale max targets by DTE: shorter expiry → tighter caps.
+    # DTE=1: T1 ≤ 1.5× entry, T2 ≤ 2.2× | DTE=7+: T1 ≤ 2.0×, T2 ≤ 3.5×
+    import math
+    dte = max(1, int(t.get('days_to_expiry') or 1))
+    dte_scale = min(1.0, math.sqrt(dte / 7.0))  # 1DTE→0.38, 3DTE→0.65, 7+→1.0
+    t1_max_mult = 1.30 + 0.70 * dte_scale   # 1DTE: 1.57×  7DTE: 2.0×
+    t2_max_mult = 1.80 + 1.70 * dte_scale   # 1DTE: 2.44×  7DTE: 3.5×
+
+    current_t1 = float(ex.get('target_1_inr') or 0)
+    current_t2 = float(ex.get('target_2_inr') or 0)
+    capped_t1 = round(entry * t1_max_mult, 2)
+    capped_t2 = round(entry * t2_max_mult, 2)
+
+    if current_t1 > capped_t1:
+        logger.info(f"[trailing] {t.get('trading_symbol')} T1 capped: "
+                    f"₹{current_t1:.2f} → ₹{capped_t1:.2f} "
+                    f"({t1_max_mult:.2f}× entry, {dte}DTE)")
+        ex['target_1_inr'] = capped_t1
+        changed = True
+    if current_t2 > capped_t2:
+        logger.info(f"[trailing] {t.get('trading_symbol')} T2 capped: "
+                    f"₹{current_t2:.2f} → ₹{capped_t2:.2f} "
+                    f"({t2_max_mult:.2f}× entry, {dte}DTE)")
+        ex['target_2_inr'] = capped_t2
+        changed = True
+    # T2 must be above T1
+    if ex.get('target_2_inr') and ex.get('target_1_inr'):
+        if float(ex['target_2_inr']) <= float(ex['target_1_inr']):
+            ex['target_2_inr'] = round(float(ex['target_1_inr']) * 1.40, 2)
+            changed = True
+
+    # ── High-water mark + trailing SL ─────────────────────────────────────
+    prev_hw = _high_water.get(pid, entry)
+    hw = max(prev_hw, prem)
+    _high_water[pid] = hw
+
+    # Only trail once premium has risen ≥20% above entry
+    gain_pct = (hw - entry) / entry
+    if gain_pct >= 0.20:
+        from .order_executor import sl_max_points
+        underlying = t.get('underlying', '')
+        trail_drop = sl_max_points(underlying)
+
+        # New SL = high_water minus trail_drop, but never below current SL
+        current_sl = float(ex.get('stop_loss_inr') or 0)
+        new_sl = round(max(current_sl, hw - trail_drop), 2)
+
+        if new_sl > current_sl and new_sl > 0:
+            ex['stop_loss_inr'] = new_sl
+            changed = True
+            logger.info(f"[trailing] {t.get('trading_symbol')} SL trailed: "
+                        f"₹{current_sl:.2f} → ₹{new_sl:.2f} (HWM=₹{hw:.2f})")
+
+    # Persist if changed
+    if changed:
+        t['exit'] = ex
+        rec['ticket'] = t
+        try:
+            items = tp._read()
+            for item in items:
+                if item.get('id') == pid:
+                    item['ticket'] = t
+                    break
+            tp._write(items)
+        except Exception as e:
+            logger.warning(f"[trailing] Failed to persist SL/target update: {e}")
+        # Push updated levels to frontend via SSE (no polling needed)
+        _broadcast({
+            'type': 'tracked_update',
+            'id': pid,
+            'sl':  ex.get('stop_loss_inr'),
+            't1':  ex.get('target_1_inr'),
+            't2':  ex.get('target_2_inr'),
+            'high_water': hw,
+            'timestamp': datetime.now().isoformat(),
+        })
 
 
 def _build_payload(rec: dict, prem: float, status: str, spot: float) -> dict:
@@ -192,6 +300,15 @@ def _poll_once() -> None:
     if not positions:
         return
 
+    # Prune stale entries from _last_status/_last_payload for removed positions
+    active_ids = {rec.get('id') for rec in positions}
+    with _status_lock:
+        stale = [pid for pid in _last_status if pid not in active_ids]
+        for pid in stale:
+            _last_status.pop(pid, None)
+            _last_payload.pop(pid, None)
+            _high_water.pop(pid, None)
+
     # Group positions by underlying so we fetch each spot only once.
     by_under: dict[str, list[dict]] = {}
     for rec in positions:
@@ -222,6 +339,8 @@ def _poll_once() -> None:
                     prem_source = 'bs_model'
             if prem is None:
                 continue
+            # Trail SL upward as premium rises (before classify so SL is current)
+            _trail_sl_and_targets(rec, prem)
             new_status = _classify(prem, t)
             pid        = rec.get('id')
             logger.debug(f"[tracked_monitor] {opt_sym} prem=₹{prem:.2f} "
@@ -235,11 +354,45 @@ def _poll_once() -> None:
                     _last_payload[pid] = payload
                 else:
                     payload = None
+            # Check for user force-exit override (fires regardless of status)
+            try:
+                from .order_executor import is_force_exit_pending, try_auto_exit
+                if is_force_exit_pending(pid):
+                    try_auto_exit(pid, 'force_exit', rec, prem)
+                    continue
+            except Exception as _fe:
+                logger.warning(f"[tracked_monitor] force-exit check failed: {_fe}")
+
             if payload:
                 logger.info(f"[tracked_monitor] {opt_sym} "
                             f"{prev or 'init'} → {new_status} @ ₹{prem:.2f} "
                             f"(src={prem_source})")
                 _broadcast(payload)
+
+            # ── Auto-exit via order executor ──────────────────────────
+            # Run on EVERY poll where status is an exit trigger, not just
+            # on transitions. This ensures exit retries if the first
+            # attempt failed (e.g. network error, paper-mode crash).
+            if new_status in ('sl_hit', 'past_t1', 'past_t2', 'time_exit'):
+                try:
+                    from .order_executor import try_auto_exit
+                    try_auto_exit(pid, new_status, rec, prem)
+                except Exception as _ex:
+                    logger.warning(f"[tracked_monitor] auto-exit failed "
+                                   f"for {opt_sym}: {_ex}")
+
+    # ── Push live P&L to frontend via SSE (replaces frontend polling) ─────
+    try:
+        from .order_executor import get_daily_pnl, is_kill_switch_active, daily_loss_limit
+        _broadcast({
+            'type': 'daily_pnl',
+            'realized': round(get_daily_pnl(), 2),
+            'kill_switch': is_kill_switch_active(),
+            'limit': daily_loss_limit(),
+            'timestamp': datetime.now().isoformat(),
+        })
+    except Exception:
+        pass
 
 
 _funds_last_push: float = 0.0
@@ -304,6 +457,12 @@ def _force_exit_loop() -> None:
                         _last_payload[pid] = payload
                     _broadcast(payload)
                     logger.info(f"[tracked_monitor] FORCE_EXIT 15:00 → {t.get('trading_symbol')}")
+                    # Auto-exit order for 15:00 force close
+                    try:
+                        from .order_executor import try_auto_exit
+                        try_auto_exit(pid, 'time_exit', rec, prem or 0.0)
+                    except Exception as _te:
+                        logger.warning(f"[tracked_monitor] 15:00 auto-exit failed: {_te}")
                 _force_exit_fired_today = True
             except Exception as e:
                 logger.warning(f"force-exit broadcast failed: {e}")
@@ -318,7 +477,18 @@ def sync() -> None:
     """
     global _poller_thread, _force_exit_thread
 
-    has_positions = bool(tp.list_tracked())
+    positions = tp.list_tracked()
+    has_positions = bool(positions)
+
+    # Always prune stale IDs (position was removed but others remain)
+    if has_positions:
+        active_ids = {rec.get('id') for rec in positions}
+        with _status_lock:
+            stale = [pid for pid in _last_status if pid not in active_ids]
+            for pid in stale:
+                _last_status.pop(pid, None)
+                _last_payload.pop(pid, None)
+                _high_water.pop(pid, None)
 
     if has_positions:
         if _poller_thread is None or not _poller_thread.is_alive():
@@ -337,3 +507,4 @@ def sync() -> None:
         with _status_lock:
             _last_status.clear()
             _last_payload.clear()
+            _high_water.clear()

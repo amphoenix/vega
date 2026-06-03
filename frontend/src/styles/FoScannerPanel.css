@@ -211,3 +211,31 @@
   border: 1px solid #26a69a55;
   border-radius: 3px;
 }
+
+/* ── Alternative strikes row ──────────────────────────────────────────────── */
+.fo-alts {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px dashed #30363d;
+}
+.fo-alts-label {
+  font-size: 8px;
+  color: #6e7681;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.fo-alt-chip {
+  font-size: 9px;
+  font-weight: 600;
+  color: #d2a8ff;
+  background: #1c1035;
+  border: 1px solid #d2a8ff44;
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: default;
+}
