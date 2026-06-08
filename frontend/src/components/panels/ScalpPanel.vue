@@ -15,6 +15,7 @@
             <span class="scalp-toggle-slider"></span>
             <span class="scalp-toggle-label">{{ autoTrading ? 'Auto' : 'Monitor' }}</span>
           </label>
+          <button class="scalp-settings-btn" @click="showSettings = true" title="Scalp Config">⚙</button>
           <div class="scanner-pill running">
             <span class="pill-dot"></span>
             <span>Scanner ON</span>
@@ -204,6 +205,37 @@
       </div>
     </div>
 
+    <!-- ═══ SETTINGS DRAWER ═══════════════════════════════════════════════════ -->
+    <div v-if="showSettings" class="scalp-settings-overlay" @click.self="showSettings = false">
+      <div class="scalp-settings-drawer">
+        <div class="settings-header">
+          <h3>⚙ Scalp Config</h3>
+          <button class="settings-close" @click="showSettings = false">✕</button>
+        </div>
+        <div class="settings-body">
+          <div v-for="group in configGroups" :key="group" class="settings-group">
+            <h4 class="settings-group-title">{{ group }}</h4>
+            <div v-for="(meta, key) in groupedParams[group]" :key="key" class="settings-row">
+              <label class="settings-label" :title="key">{{ meta.label }}</label>
+              <input
+                class="settings-input"
+                type="number"
+                :step="key.includes('MULT') || key.includes('PCT') ? 0.1 : 1"
+                v-model.number="editableConfig[key]"
+                @change="markDirty(key)"
+              />
+            </div>
+          </div>
+        </div>
+        <div class="settings-footer">
+          <span v-if="dirtyKeys.size" class="settings-dirty">{{ dirtyKeys.size }} unsaved change(s)</span>
+          <button class="settings-save-btn" :disabled="!dirtyKeys.size || savingConfig" @click="saveConfig">
+            {{ savingConfig ? 'Saving…' : 'Save' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- ═══ LIVE TRADE FEED ══════════════════════════════════════════════════ -->
     <div class="scalp-log">
       <h3 class="section-title">LIVE TRADE FEED</h3>
@@ -233,6 +265,7 @@ import { playNotifSound } from '../../utils/notifSound'
 import {
   getScalpScannerStatus,
   getScalpScannerConfig,
+  updateScalpConfig,
   createScalpStream,
 } from '../../api/market'
 
@@ -245,6 +278,70 @@ const stats = ref({})
 const config = ref({})
 const tradeFeed = ref([])
 const activeScalpTicker = ref(null) // 3rd chart pane ticker (from signal or active position)
+
+// ── Settings drawer state ─────────────────────────────────────────────────────
+const showSettings = ref(false)
+const configParams = ref({})        // raw params from API: {KEY: {value, label, group}}
+const editableConfig = ref({})      // editable copy: {KEY: value}
+const dirtyKeys = ref(new Set())
+const savingConfig = ref(false)
+
+const configGroups = computed(() => {
+  const groups = new Set()
+  for (const meta of Object.values(configParams.value)) {
+    if (meta.group) groups.add(meta.group)
+  }
+  return ['Risk', 'Trade Levels', 'Limits', 'Filters', 'Zero-Hero'].filter(g => groups.has(g))
+})
+
+const groupedParams = computed(() => {
+  const result = {}
+  for (const [key, meta] of Object.entries(configParams.value)) {
+    if (!meta.group) continue
+    if (!result[meta.group]) result[meta.group] = {}
+    result[meta.group][key] = meta
+  }
+  return result
+})
+
+function markDirty(key) {
+  dirtyKeys.value = new Set([...dirtyKeys.value, key])
+}
+
+async function saveConfig() {
+  if (!dirtyKeys.value.size) return
+  savingConfig.value = true
+  try {
+    const payload = {}
+    for (const key of dirtyKeys.value) {
+      payload[key] = editableConfig.value[key]
+    }
+    const res = await updateScalpConfig(payload)
+    const params = res.data?.data?.params || res.data?.params || {}
+    if (Object.keys(params).length) {
+      configParams.value = params
+      // Rebuild editable values
+      for (const [k, m] of Object.entries(params)) {
+        editableConfig.value[k] = m.value
+      }
+      // Update the display config (for stats strip)
+      config.value = {
+        ...config.value,
+        sl_pts: params.SCALP_SL_PTS?.value,
+        t1_pts: params.SCALP_T1_PTS?.value,
+        max_hold_min: params.SCALP_MAX_HOLD_MIN?.value,
+        daily_loss: params.SCALP_DAILY_LOSS_LIMIT?.value,
+      }
+    }
+    dirtyKeys.value = new Set()
+    snack({ severity: 'success', title: 'Config Saved', message: `${Object.keys(payload).length} param(s) updated` })
+  } catch (e) {
+    console.error('[scalp] saveConfig failed:', e)
+    snack({ severity: 'error', title: 'Config Save Failed', message: 'Check console' })
+  } finally {
+    savingConfig.value = false
+  }
+}
 
 let scalpSSE = null
 let orderSSE = null
@@ -580,6 +677,20 @@ async function loadInitialState() {
     const cfg = configRes.data?.data || configRes.data || {}
     config.value = cfg
     autoTrading.value = cfg.auto_trading !== false
+    // Populate settings drawer from params
+    if (cfg.params) {
+      configParams.value = cfg.params
+      const editable = {}
+      for (const [k, m] of Object.entries(cfg.params)) {
+        editable[k] = m.value
+      }
+      editableConfig.value = editable
+      // Map old flat keys for display strip
+      config.value.sl_pts = cfg.params.SCALP_SL_PTS?.value
+      config.value.t1_pts = cfg.params.SCALP_T1_PTS?.value
+      config.value.max_hold_min = cfg.params.SCALP_MAX_HOLD_MIN?.value
+      config.value.daily_loss = cfg.params.SCALP_DAILY_LOSS_LIMIT?.value
+    }
   } catch {}
 }
 

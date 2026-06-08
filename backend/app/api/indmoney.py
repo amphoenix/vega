@@ -28,19 +28,34 @@ import queue as _queue
 import threading
 import requests as _requests
 from datetime import datetime
-from flask import request, jsonify, Response
+from flask import current_app, request, jsonify, Response
 
 from . import indmoney_bp
 from ..utils.logger import get_logger
 
 logger = get_logger('vega.api.indmoney')
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+_SSE_MAX_MINUTES = 30                        # hard cap on SSE connection duration
+
+def _safe_error(e: Exception) -> str:
+    """Sanitize exception for API response — hide internal paths and tracebacks."""
+    msg = str(e)
+    # Strip file paths
+    import re
+    msg = re.sub(r'(?:/[^\s:]+/)+[^\s:]+\.py', '<internal>', msg)
+    # Truncate to a sane length
+    if len(msg) > 200:
+        msg = msg[:200] + '...'
+    return msg
+
 # ── Config ────────────────────────────────────────────────────────────────────
 # Token is read fresh on every use so editing .env + restarting just the
 # scanner thread (or a SIGHUP) is enough — no full-process restart needed.
 BASE_URL      = 'https://api.indstocks.com'
 WS_PRICE_URL  = 'wss://ws-prices.indstocks.com/api/v1/ws/prices'
-WS_ORDER_URL  = 'wss://ws-order-updates.indstocks.com'
+WS_ORDER_URL  = 'wss://ws-order-updates.indstocks.com/api/v1/ws/trades'
 
 
 def _live_trading_enabled() -> bool:
@@ -77,7 +92,7 @@ def _connected():
 # We maintain a small cache populated on first lookup.
 _scrip_cache: dict[str, str] = {}   # ticker → "NSE_2885" format
 _scrip_lock  = threading.Lock()
-_inst_master: list = []              # full instrument list (fetched once)
+_inst_master: dict = {}              # source → instrument list (fetched once per source)
 _inst_lock   = threading.Lock()
 
 
@@ -126,6 +141,21 @@ def _load_instruments(source: str = 'equity') -> list[dict]:
 # Pure passthrough from IndStocks' instrument-master CSV (CUSTOM_SYMBOL column).
 # Not constructed here — we only look up what IND already shipped.
 _display_cache: dict[str, str] = {}
+_equity_sym_index: dict[str, str] = {}  # TRADING_SYMBOL.upper() → CUSTOM_SYMBOL
+
+
+def _build_equity_sym_index() -> None:
+    """Build a O(1) lookup dict from equity instrument master.
+    Called lazily on first _display_symbol equity miss."""
+    if _equity_sym_index:
+        return  # already built
+    rows = _load_instruments('equity')
+    for inst in rows:
+        t_sym = (inst.get('TRADING_SYMBOL') or inst.get('tradingsymbol') or '').strip().upper()
+        if t_sym:
+            _equity_sym_index[t_sym] = (
+                inst.get('CUSTOM_SYMBOL') or inst.get('custom_symbol') or ''
+            ).strip()
 
 
 def _display_symbol(ticker: str) -> str:
@@ -183,24 +213,17 @@ def _display_symbol(ticker: str) -> str:
             return (inst.get('CUSTOM_SYMBOL') or inst.get('custom_symbol') or '').strip()
         return ''
 
-    # ── Equity path: TRADING_SYMBOL → CUSTOM_SYMBOL ─────────────────────────
-    candidates = {sym, sym.replace('.NS', '').replace('.BO', '')}
-    any_loaded = False
-    try:
-        rows = _load_instruments('equity')
-    except Exception:
-        rows = []
-    if rows:
-        any_loaded = True
-    for inst in rows:
-        t_sym = (inst.get('TRADING_SYMBOL') or inst.get('tradingsymbol') or '').strip().upper()
-        if t_sym and t_sym in candidates:
-            cs = (inst.get('CUSTOM_SYMBOL') or inst.get('custom_symbol') or '').strip()
+    # ── Equity path: TRADING_SYMBOL → CUSTOM_SYMBOL (O(1) via prebuilt index)
+    _build_equity_sym_index()
+    bare = sym.replace('.NS', '').replace('.BO', '')
+    for candidate in (sym, bare):
+        cs = _equity_sym_index.get(candidate)
+        if cs is not None:
             _display_cache[sym] = cs
             return cs
 
-    # Only cache the miss if we actually managed to read at least one master.
-    if any_loaded:
+    # Only cache the miss if index was populated (master loaded successfully).
+    if _equity_sym_index:
         _display_cache[sym] = ''
     return ''
 
@@ -366,7 +389,14 @@ def register_tick_callback(scrip_code_or_secid: str, fn) -> None:
 
 
 def unregister_tick_callback(scrip_code_or_secid: str, fn=None) -> None:
-    code = scrip_code_or_secid if '_' in scrip_code_or_secid else f"NSE_{scrip_code_or_secid}"
+    # Mirror the same resolution logic as register_tick_callback
+    code = scrip_code_or_secid
+    if '_' not in code and not code.isdigit():
+        code = _scrip_code(code) or ''
+    if not code and scrip_code_or_secid.isdigit():
+        code = f"NSE_{scrip_code_or_secid}"
+    if not code:
+        return
     with _callback_lock:
         if code not in _tick_callbacks:
             return
@@ -377,16 +407,18 @@ def unregister_tick_callback(scrip_code_or_secid: str, fn=None) -> None:
             except ValueError: pass
 
 _ws_msg_count  = 0                    # total messages received (for debug)
+_ws_stats_lock = threading.Lock()     # protects _ws_msg_count, _ws_last_tick_at, _ws_last_real_tick_at
 _ws_raw_sample: list = []             # first 5 raw messages for inspection
 
 
 def _ws_on_message(ws, message):
     global _ws_msg_count, _ws_last_tick_at, _ws_last_real_tick_at
     try:
-        _ws_msg_count += 1
         now = time.time()
-        _ws_last_tick_at      = now      # any source (used by /status liveness)
-        _ws_last_real_tick_at = now      # WS only (used by REST-poll suspend check)
+        with _ws_stats_lock:
+            _ws_msg_count += 1
+            _ws_last_tick_at      = now      # any source (used by /status liveness)
+            _ws_last_real_tick_at = now      # WS only (used by REST-poll suspend check)
         if len(_ws_raw_sample) < 5:
             _ws_raw_sample.append(message[:500])
 
@@ -706,10 +738,10 @@ def order_unsubscribe_sse(q: _queue.Queue) -> None:
 
 def _order_broadcast(payload: dict) -> None:
     """Fan-out an order event to every connected SSE listener."""
-    _order_event_log.append(payload)
-    if len(_order_event_log) > _ORDER_LOG_MAX:
-        del _order_event_log[: len(_order_event_log) - _ORDER_LOG_MAX]
     with _order_subs_lock:
+        _order_event_log.append(payload)
+        if len(_order_event_log) > _ORDER_LOG_MAX:
+            del _order_event_log[: len(_order_event_log) - _ORDER_LOG_MAX]
         dead = set()
         for q in _order_subs:
             try: q.put_nowait(payload)
@@ -719,6 +751,11 @@ def _order_broadcast(payload: dict) -> None:
 
 def _order_ws_on_open(ws):
     logger.info("INDmoney order-updates WebSocket connected")
+    try:
+        ws.send(json.dumps({"action": "subscribe", "mode": "order_updates"}))
+        logger.info("INDmoney order-updates WebSocket subscribed")
+    except Exception as e:
+        logger.error(f"order-ws subscribe failed: {e}")
 
 
 def _order_ws_on_message(ws, message):
@@ -800,10 +837,15 @@ def _start_order_ws():
 
         def _run():
             backoff = 5
+            last_tok = None
             while True:
                 tok = _access_token()
                 if not tok:
                     time.sleep(10); continue
+                # Reset backoff when token changes (fresh credential)
+                if tok != last_tok:
+                    backoff = 5
+                    last_tok = tok
                 try:
                     ws = _ws_lib.WebSocketApp(
                         WS_ORDER_URL,
@@ -814,6 +856,9 @@ def _start_order_ws():
                         on_error=_order_ws_on_error,
                     )
                     ws.run_forever(ping_interval=30, ping_timeout=10)
+                    # If run_forever returned cleanly after receiving data,
+                    # reset backoff — it was a transient disconnect, not a bad token
+                    backoff = 5
                 except Exception as e:
                     logger.error(f"INDmoney order-WS crashed: {e}")
                 time.sleep(min(backoff, 120))
@@ -860,7 +905,8 @@ def _ingest_rest_tick(code: str, ltp: float):
     }
     with _tick_lock:
         _tick_cache[code] = tick
-    _ws_last_tick_at = time.time()
+    with _ws_stats_lock:
+        _ws_last_tick_at = time.time()
 
     # Fire registered tick callbacks (used by tracked_monitor, etc.)
     with _callback_lock:
@@ -940,17 +986,30 @@ def _start_rest_poll():
                     _rest_poll_log_at = now
 
                 # IndStocks REST rejects batch requests (`scrip-codes=A,B`) so
-                # we have to fetch each code separately. Spacing reduces
-                # chance of hitting the per-second rate limit.
-                for code in codes:
-                    next_ok = backoff_404.get(code, 0)
-                    if next_ok and now < next_ok:
-                        continue
+                # we fetch each code separately. Use ThreadPoolExecutor to
+                # parallelize up to 4 concurrent requests (reduces total
+                # cycle time from N*150ms to ~N/4*150ms).
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                poll_codes = [c for c in codes
+                              if not (backoff_404.get(c, 0) and now < backoff_404.get(c, 0))]
+
+                def _fetch_one(code):
                     try:
                         r = _requests.get(f'{BASE_URL}/market/quotes/ltp',
                                           headers=_headers(),
                                           params={'scrip-codes': code},
                                           timeout=4)
+                        return code, r
+                    except Exception:
+                        return code, None
+
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    futures = {pool.submit(_fetch_one, c): c for c in poll_codes}
+                    for fut in as_completed(futures):
+                        code, r = fut.result()
+                        if r is None:
+                            continue
                         if r.ok:
                             backoff_404.pop(code, None)
                             data = r.json().get('data', {}) or {}
@@ -960,15 +1019,9 @@ def _start_rest_poll():
                                 if ltp:
                                     _ingest_rest_tick(code, float(ltp))
                         elif r.status_code == 400:
-                            # Known-bad scrip code (IndStocks 'Invalid scrip codes').
-                            # Back off this one for 5 min so we don't spam logs / quota.
                             backoff_404[code] = now + 300
                         elif r.status_code == 429:
-                            # Rate limited — sleep extra
                             time.sleep(2)
-                    except Exception:
-                        pass
-                    time.sleep(0.15)   # 150ms spacing between codes
             except Exception as e:
                 logger.warning(f"REST poll loop error: {e}")
                 time.sleep(5)
@@ -1006,20 +1059,23 @@ def _norm(ticker: str) -> str:
 
 # ── Public helper functions (importable by market.py, position_monitor.py) ───
 
+_cash_cache_lock = threading.Lock()
+_cash_cache: tuple[float, float] | None = None   # (timestamp, value)
+
+
 def _ind_available_cash() -> float | None:
     """
     Fetch available cash (free margin) from IndMoney /funds API.
     Returns the available balance in ₹, or None if unavailable.
     Cached for 60s to avoid hammering the API on every scan cycle.
     """
+    global _cash_cache
     if not _access_token():
         return None
-    # Simple time-based cache
-    import time as _t
-    now = _t.time()
-    prev = getattr(_ind_available_cash, '_cache', None)
-    if prev and now - prev[0] < 60:
-        return prev[1]
+    now = time.time()
+    with _cash_cache_lock:
+        if _cash_cache and now - _cash_cache[0] < 60:
+            return _cash_cache[1]
     try:
         r = _requests.get(f'{BASE_URL}/funds', headers=_headers(), timeout=5)
         if not r.ok:
@@ -1040,7 +1096,8 @@ def _ind_available_cash() -> float | None:
             drawn = float(data.get('funds_withdrawn', 0) or 0)
             cash  = sod + added - drawn
         cash = float(cash)
-        _ind_available_cash._cache = (now, cash)
+        with _cash_cache_lock:
+            _cash_cache = (now, cash)
         return cash
     except Exception as e:
         logger.warning(f"IndMoney /funds error: {e}")
@@ -1108,7 +1165,8 @@ def _ind_ltp(ticker: str) -> float | None:
     return None
 
 
-_candles_404_cache: dict[str, float] = {}   # scrip → next-allowed-time
+_candles_404_cache: dict[str, float] = {}   # "scrip|interval" → next-allowed-time
+_CANDLES_404_MAX = 500                      # evict oldest entries beyond this
 
 def _ind_candles(ticker: str, interval: str = '5m', days: int = 7) -> list[dict]:
     """
@@ -1168,6 +1226,12 @@ def _ind_candles(ticker: str, interval: str = '5m', days: int = 7) -> list[dict]
             # India VIX). Cache for 1h and silence the log so we don't spam.
             if r.status_code == 400 and 'Invalid scrip' in r.text:
                 _candles_404_cache[f"{code}|{interval}"] = time.time() + 3600
+                # Evict expired entries when cache grows too large
+                if len(_candles_404_cache) > _CANDLES_404_MAX:
+                    now = time.time()
+                    expired = [k for k, v in _candles_404_cache.items() if v < now]
+                    for k in expired:
+                        del _candles_404_cache[k]
                 logger.debug(
                     f"IndMoney candles {ticker} {interval}: not supported on "
                     f"historical endpoint — using yfinance fallback for 1h"
@@ -1222,6 +1286,34 @@ def _ind_candles(ticker: str, interval: str = '5m', days: int = 7) -> list[dict]
         return []
 
 
+_fno_sym_index: dict[str, list[dict]] = {}  # TRADING_SYMBOL/CUSTOM_SYMBOL → [inst rows]
+
+
+def _build_fno_sym_index() -> None:
+    """Build O(1) lookup dict keyed by TRADING_SYMBOL and CUSTOM_SYMBOL."""
+    if _fno_sym_index:
+        return
+    rows = _load_instruments('fno')
+    for inst in rows:
+        for key_field in ('TRADING_SYMBOL', 'tradingsymbol', 'CUSTOM_SYMBOL', 'custom_symbol'):
+            val = (inst.get(key_field) or '').strip().upper()
+            if val:
+                _fno_sym_index.setdefault(val, []).append(inst)
+
+
+def _parse_expiry(exp_raw: str):
+    """Parse IndStocks expiry date string → datetime or None."""
+    from datetime import datetime as _dt
+    exp_raw = exp_raw.strip()
+    try:
+        return _dt.strptime(exp_raw, '%m/%d/%Y %H:%M')
+    except Exception:
+        try:
+            return _dt.strptime(exp_raw[:10], '%m/%d/%Y')
+        except Exception:
+            return None
+
+
 def _resolve_fo_instrument(symbol: str) -> dict | None:
     """
     Resolve an F&O trading symbol to a single instrument-master row.
@@ -1230,34 +1322,31 @@ def _resolve_fo_instrument(symbol: str) -> dict | None:
     TRADING_SYMBOL — pick the one whose EXPIRY_DATE is the soonest still
     in the future.  Returns the master row dict, or None.
     """
+    _build_fno_sym_index()
     sym = symbol.upper()
     from datetime import datetime as _dt
     now = _dt.now()
+
+    matches = _fno_sym_index.get(sym)
+    if not matches:
+        return None
+
     candidates = []
-    for inst in _load_instruments('fno'):
-        t_sym = (inst.get('TRADING_SYMBOL') or inst.get('tradingsymbol') or '').strip().upper()
-        c_sym = (inst.get('CUSTOM_SYMBOL') or inst.get('custom_symbol') or '').strip().upper()
-        if t_sym != sym and c_sym != sym:
-            continue
-        # Parse expiry; master format "05/26/2026 14:00"
-        exp_raw = (inst.get('EXPIRY_DATE') or '').strip()
-        try:
-            exp_dt = _dt.strptime(exp_raw, '%m/%d/%Y %H:%M')
-        except Exception:
-            try:
-                exp_dt = _dt.strptime(exp_raw[:10], '%m/%d/%Y')
-            except Exception:
-                exp_dt = None
+    for inst in matches:
+        exp_dt = _parse_expiry(inst.get('EXPIRY_DATE') or '')
         if exp_dt and exp_dt >= now:
             candidates.append((exp_dt, inst))
+
     if not candidates:
         # Fall back: any match with parseable expiry, even if past (settlement day)
-        for inst in _load_instruments('fno'):
-            t_sym = (inst.get('TRADING_SYMBOL') or '').strip().upper()
-            c_sym = (inst.get('CUSTOM_SYMBOL') or '').strip().upper()
-            if t_sym == sym or c_sym == sym:
-                return inst
-        return None
+        # Sort by expiry descending so we return the most recent contract
+        fallback = []
+        for inst in matches:
+            exp_dt = _parse_expiry(inst.get('EXPIRY_DATE') or '') or _dt.min
+            fallback.append((exp_dt, inst))
+        fallback.sort(key=lambda x: x[0], reverse=True)
+        return fallback[0][1]
+
     candidates.sort(key=lambda x: x[0])
     return candidates[0][1]
 
@@ -1454,7 +1543,7 @@ def _nearest_nifty_future() -> dict | None:
     candidates.sort(key=lambda x: x[0])
     best    = candidates[0][1]
     sec_id  = best.get('SECURITY_ID', '').strip()
-    code    = f"NSE_{sec_id}"
+    code    = _fo_scrip_code(best)
     ltp     = None
     with _tick_lock:
         cached = _tick_cache.get(code)
@@ -1465,10 +1554,16 @@ def _nearest_nifty_future() -> dict | None:
         try:
             r = _requests.get(f'{BASE_URL}/market/quotes/ltp',
                               headers=_headers(),
-                              params={'scrip-codes': f'NSE:{sec_id}'}, timeout=4)
+                              params={'scrip-codes': code}, timeout=4)
             if r.ok:
-                d = (r.json().get('data') or [{}])[0]
-                p = d.get('ltp') or d.get('last_price')
+                raw = r.json().get('data') or {}
+                if isinstance(raw, dict):
+                    d = raw.get(code) or (next(iter(raw.values()), {}) if raw else {})
+                elif isinstance(raw, list):
+                    d = raw[0] if raw else {}
+                else:
+                    d = {}
+                p = d.get('ltp') or d.get('last_price') or d.get('live_price')
                 ltp = float(p) if p else None
         except Exception:
             pass
@@ -1489,6 +1584,8 @@ def ws_debug():
     DEV ONLY — show WebSocket state, raw message samples, and tick cache.
     Hit: GET /api/indmoney/ws-debug
     """
+    if not current_app.debug:
+        return jsonify({"error": "debug endpoints disabled in production"}), 403
     ws_alive = _ws_thread is not None and _ws_thread.is_alive()
     with _tick_lock:
         cache_snapshot = {k: v for k, v in list(_tick_cache.items())[:10]}
@@ -1510,6 +1607,8 @@ def debug_candles():
     DEV ONLY — try every known historical API format to find what IndStocks accepts.
     Hit: GET /api/indmoney/debug-candles?ticker=SBIN.NS
     """
+    if not current_app.debug:
+        return jsonify({"error": "debug endpoints disabled in production"}), 403
     if not _connected():
         return jsonify({"error": "INDMONEY_ACCESS_TOKEN not set"}), 401
     ticker = request.args.get('ticker', 'SBIN.NS')
@@ -1552,6 +1651,8 @@ def debug_instruments():
     DEV ONLY — returns raw instrument master response so we can see actual field names.
     Hit: GET /api/indmoney/debug-instruments
     """
+    if not current_app.debug:
+        return jsonify({"error": "debug endpoints disabled in production"}), 403
     if not _connected():
         return jsonify({"error": "INDMONEY_ACCESS_TOKEN not set"}), 401
     try:
@@ -1568,7 +1669,7 @@ def debug_instruments():
         else:
             return jsonify({"status": r.status_code, "error": r.text[:500]})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/debug-search', methods=['GET'])
@@ -1577,6 +1678,8 @@ def debug_search():
     DEV ONLY — search instrument master for a partial symbol.
     Hit: GET /api/indmoney/debug-search?q=TATA&source=equity
     """
+    if not current_app.debug:
+        return jsonify({"error": "debug endpoints disabled in production"}), 403
     if not _connected():
         return jsonify({"error": "INDMONEY_ACCESS_TOKEN not set"}), 401
     q      = request.args.get('q', '').upper()
@@ -1663,7 +1766,7 @@ def status():
             "available_cash":    _ind_available_cash(),
         }})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/candles/<path:ticker>', methods=['GET'])
@@ -1675,7 +1778,10 @@ def candles(ticker: str):
     if not _connected():
         return jsonify({"success": False, "error": "INDMONEY_ACCESS_TOKEN not set"}), 401
     interval = request.args.get('interval', '1d')
-    days     = int(request.args.get('days', 200))
+    try:
+        days = int(request.args.get('days', 200))
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "invalid 'days' parameter"}), 400
     data     = _ind_candles(ticker, interval, days)
     return jsonify({"success": True, "ticker": ticker, "interval": interval, "data": data})
 
@@ -1692,7 +1798,7 @@ def profile():
             "funds":   funds.json().get('data') if funds.ok else {},
         }})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/tick/<ticker>', methods=['GET'])
@@ -1734,7 +1840,7 @@ def tick(ticker: str):
             "timestamp":      datetime.now().isoformat(),
         }})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/stream/<ticker>', methods=['GET'])
@@ -1757,6 +1863,7 @@ def stream(ticker: str):
         _ws_subscribe([code])
 
         def generate_ws():
+            deadline = time.time() + _SSE_MAX_MINUTES * 60
             try:
                 last_emit = 0.0
                 def _emit_latest():
@@ -1777,7 +1884,7 @@ def stream(ticker: str):
                 if first:
                     yield first
 
-                while True:
+                while time.time() < deadline:
                     try:
                         payload = q.get(timeout=1.0)
                         yield f'data: {payload}\n\n'
@@ -1787,6 +1894,7 @@ def stream(ticker: str):
                             yield update
                         else:
                             yield 'data: {"heartbeat": true}\n\n'
+                yield f'data: {json.dumps({"type": "timeout", "message": "stream expired, please reconnect"})}\n\n'
             except GeneratorExit:
                 pass
             finally:
@@ -1805,7 +1913,8 @@ def stream(ticker: str):
     logger.warning(f"No scrip code for {ticker}, falling back to REST polling")
 
     def generate_rest():
-        while True:
+        deadline = time.time() + _SSE_MAX_MINUTES * 60
+        while time.time() < deadline:
             try:
                 # Use _ind_ltp helper which handles new scrip format + response shape
                 p = _ind_ltp(ticker)
@@ -1814,8 +1923,9 @@ def stream(ticker: str):
             except GeneratorExit:
                 break
             except Exception as e:
-                yield f'data: {{"error": "{str(e)}"}}\n\n'
+                yield f'data: {json.dumps({"error": _safe_error(e)})}\n\n'
                 time.sleep(5)
+        yield f'data: {json.dumps({"type": "timeout", "message": "stream expired, please reconnect"})}\n\n'
 
     return Response(generate_rest(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
@@ -1827,7 +1937,7 @@ def quote(ticker: str):
     if not _connected():
         return jsonify({"success": False, "error": "INDMONEY_ACCESS_TOKEN not set"}), 401
     code  = _scrip_code(ticker) or f"{_exchange(ticker)}_{ticker.replace('.NS','').replace('.BO','').upper()}"
-    scrip = code.replace('_', '_')
+    scrip = code
     try:
         r = _requests.get(f'{BASE_URL}/market/quotes/full',
                           headers=_headers(),
@@ -1843,7 +1953,7 @@ def quote(ticker: str):
             data = {}
         return jsonify({"success": True, "data": data})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/positions', methods=['GET'])
@@ -1854,7 +1964,7 @@ def positions():
         r = _requests.get(f'{BASE_URL}/positions', headers=_headers(), timeout=5)
         return jsonify({"success": r.ok, "data": r.json().get('data') if r.ok else r.text})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/holdings', methods=['GET'])
@@ -1865,7 +1975,7 @@ def holdings():
         r = _requests.get(f'{BASE_URL}/holdings', headers=_headers(), timeout=5)
         return jsonify({"success": r.ok, "data": r.json().get('data') if r.ok else r.text})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/order-book', methods=['GET'])
@@ -1876,7 +1986,7 @@ def order_book():
         r = _requests.get(f'{BASE_URL}/order-book', headers=_headers(), timeout=5)
         return jsonify({"success": r.ok, "data": r.json().get('data') if r.ok else r.text})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/order', methods=['POST'])
@@ -1939,7 +2049,7 @@ def place_order():
                            json=payload, timeout=10)
         return jsonify({"success": r.ok, "data": r.json()})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/order/cancel', methods=['POST'])
@@ -1958,7 +2068,7 @@ def cancel_order():
                            json={"order_id": order_id, "segment": segment}, timeout=10)
         return jsonify({"success": r.ok, "data": r.json()})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/order/fo', methods=['POST'])
@@ -2082,7 +2192,7 @@ def place_fo_order():
             'txn_type': txn_type, 'message': str(e),
             'timestamp': datetime.now().isoformat(),
         })
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": _safe_error(e)}), 500
 
 
 @indmoney_bp.route('/order-events/stream', methods=['GET'])
@@ -2096,14 +2206,16 @@ def order_events_stream():
     @stream_with_context
     def gen():
         q = order_subscribe_sse()
+        deadline = time.time() + _SSE_MAX_MINUTES * 60
         try:
             yield 'data: {"type":"order_events_connected"}\n\n'
-            while True:
+            while time.time() < deadline:
                 try:
                     payload = q.get(timeout=15.0)
                     yield f'data: {json.dumps(payload, default=str)}\n\n'
                 except Exception:
                     yield 'data: {"type":"heartbeat"}\n\n'
+            yield f'data: {json.dumps({"type": "timeout", "message": "stream expired, please reconnect"})}\n\n'
         except GeneratorExit:
             pass
         finally:

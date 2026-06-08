@@ -61,11 +61,10 @@
       <div
         class="ind-status connected"
         v-if="indmoneyConnected"
-        :title="indmoneyName || 'INDmoney connected'"
+        :title="'INDmoney connected' + (indmoneyName ? ' — ' + indmoneyName : '')"
       >
         <span class="ind-dot"></span>
-        <span class="ind-label">{{ indmoneyName || 'INDmoney' }}</span>
-        <span class="ind-price" v-if="indmoneyLivePrice">₹{{ fmtPrice(indmoneyLivePrice) }}</span>
+        <span class="ind-label">IND</span>
       </div>
       <div class="ind-cash" v-if="indmoneyConnected && indmoneyAvailableCash != null" :title="'Available cash in your INDmoney account'">
         <span class="ind-cash-label">Cash</span>
@@ -78,9 +77,9 @@
           {{ dailyPnl.total.net >= 0 ? '+' : '' }}₹{{ dailyPnl.total.net.toFixed(0) }}
         </span>
         <span class="pnl-badge-sep">|</span>
-        <span class="pnl-badge-swing" :class="dailyPnl.swing.net >= 0 ? 'up' : 'dn'" title="Swing trades">S:{{ dailyPnl.swing.net >= 0 ? '+' : '' }}{{ dailyPnl.swing.net.toFixed(0) }}</span>
+        <span class="pnl-badge-swing" :class="dailyPnl.swing.net >= 0 ? 'up' : 'dn'" title="Swing trades">Swing {{ dailyPnl.swing.net >= 0 ? '+' : '' }}{{ dailyPnl.swing.net.toFixed(0) }}</span>
         <span class="pnl-badge-sep">·</span>
-        <span class="pnl-badge-scalp" :class="dailyPnl.scalp.net >= 0 ? 'up' : 'dn'" title="Scalp trades">⏱{{ dailyPnl.scalp.net >= 0 ? '+' : '' }}{{ dailyPnl.scalp.net.toFixed(0) }}</span>
+        <span class="pnl-badge-scalp" :class="dailyPnl.scalp.net >= 0 ? 'up' : 'dn'" title="Scalp trades">Scalp {{ dailyPnl.scalp.net >= 0 ? '+' : '' }}{{ dailyPnl.scalp.net.toFixed(0) }}</span>
       </div>
       <button
         v-if="!indmoneyConnected"
@@ -105,8 +104,6 @@
         @click="$emit('toggle-theme')"
         :title="lightMode ? 'Switch to dark' : 'Switch to light'"
       >{{ lightMode ? '🌙' : '☀️' }}</button>
-      <span class="live-dot"></span>
-      <span class="live-label">LIVE</span>
       <button
         class="sim-btn"
         @click="$emit('simulate', chartTicker)"

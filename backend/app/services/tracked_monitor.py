@@ -218,7 +218,28 @@ def _trail_sl_and_targets(rec: dict, prem: float) -> None:
     hw = max(prev_hw, prem)
     _high_water[pid] = hw
 
+    # ── Scalp breakeven SL — DISABLED (can choke profits on tight moves) ──
+    # is_scalp = t.get('trade_mode') == 'scalp' or t.get('scalp_meta')
+    # if is_scalp:
+    #     try:
+    #         from .scalp_scanner import SCALP_BREAKEVEN_PROFIT_PTS
+    #         be_pts = SCALP_BREAKEVEN_PROFIT_PTS()
+    #         current_sl = float(ex.get('stop_loss_inr') or 0)
+    #         qty = int(rec.get('qty', 1) or 1)
+    #         brokerage_per_unit = 70.0 / max(qty, 1)
+    #         breakeven_sl = round(entry + brokerage_per_unit, 2)
+    #         if be_pts > 0 and prem >= entry + be_pts and current_sl < breakeven_sl:
+    #             ex['stop_loss_inr'] = breakeven_sl
+    #             ex['stop_loss_points'] = round(entry - breakeven_sl, 2)
+    #             changed = True
+    #             logger.info(f"[trailing] {t.get('trading_symbol')} BREAKEVEN SL: "
+    #                         f"₹{current_sl:.2f} → ₹{breakeven_sl:.2f} "
+    #                         f"(premium ₹{prem:.2f} ≥ entry+{be_pts}pts)")
+    #     except Exception as _be_err:
+    #         logger.debug(f"[trailing] Breakeven SL check failed: {_be_err}")
+
     # Only trail once premium has risen ≥20% above entry
+    # NOTE: Scalp-specific tighter trailing DISABLED — use same 20% threshold for all
     gain_pct = (hw - entry) / entry
     if gain_pct >= 0.20:
         from .order_executor import sl_max_points

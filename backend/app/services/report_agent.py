@@ -382,8 +382,11 @@ class ReportConsoleLogger:
             self._file_handler = None
     
     def __del__(self):
-        """Ensure the file handler is closed upon destruction"""
-        self.close()
+        """Best-effort cleanup — may fail during interpreter shutdown."""
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class ReportStatus(str, Enum):

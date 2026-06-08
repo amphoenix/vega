@@ -125,9 +125,16 @@ _daily_realized_pnl: float = 0.0
 _daily_kill_switch: bool = False
 
 def _load_trading_state() -> None:
-    """Load persisted runtime state (bumped limits) from SQLite into os.environ on server start."""
+    """Load persisted runtime state (bumped limits) from SQLite into os.environ on server start.
+    Only applies the DB value for same-day restarts; new-day resets happen in _restore_daily_pnl."""
     try:
-        from .pnl_store import get_trading_state
+        from .pnl_store import get_trading_state, last_trade_date
+        today_str = bu.now_ist().strftime('%Y-%m-%d')
+        last_date = last_trade_date()
+        if last_date and last_date < today_str:
+            # New day — ignore stale DB value, will be reset in _restore_daily_pnl
+            logger.info(f"[executor] New day (last trade {last_date}) — ignoring stale DB limit")
+            return
         val = get_trading_state('DAILY_LOSS_LIMIT_INR')
         if val:
             os.environ['DAILY_LOSS_LIMIT_INR'] = val
@@ -160,6 +167,21 @@ _force_exit_ids: set[str] = set()
 # In-flight BUY symbols: prevents TOCTOU duplicate orders when two scanner
 # cycles evaluate the same symbol concurrently and both pass the re-entry check.
 _inflight: set[str] = set()
+
+# Track which IST date the current in-memory P&L belongs to.
+# If the date rolls over (server stays up past midnight without _force_exit_loop
+# firing, or midnight reset thread not started yet), we detect it here.
+_pnl_date: str = bu.now_ist().strftime('%Y-%m-%d')
+
+
+def _check_day_rollover() -> None:
+    """If IST date changed since last trade, auto-reset daily state + limits."""
+    global _pnl_date
+    today = bu.now_ist().strftime('%Y-%m-%d')
+    if today != _pnl_date:
+        logger.info(f"[executor] Day rollover detected ({_pnl_date} → {today}) — resetting")
+        reset_daily()
+        _pnl_date = today
 
 
 def _restore_daily_pnl() -> None:
@@ -237,6 +259,7 @@ def record_exit_pnl(entry_premium: float, exit_premium: float, qty: int,
     """Record realized P&L from an exit. Pass net_pnl (after brokerage) when available.
     Triggers kill-switch if limit breached."""
     global _daily_realized_pnl, _daily_kill_switch
+    _check_day_rollover()
     pnl = net_pnl if net_pnl is not None else (exit_premium - entry_premium) * qty
     with _lock:
         _daily_realized_pnl += pnl
@@ -332,6 +355,9 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
       4. Re-entry limit not exceeded
       5. Not already tracking this symbol
     """
+    # ── Day rollover: reset limits if we crossed midnight ──
+    _check_day_rollover()
+
     # ── Monitor-only mode: scanner runs, signals display, no orders ──
     if not auto_trading_enabled():
         logger.info(f"[executor] MONITOR ONLY — skipping auto-entry for {signal.get('ticker')} "
@@ -342,6 +368,14 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
     if _daily_kill_switch:
         logger.warning(f"[executor] BLOCKED {signal.get('ticker')} — "
                        f"daily loss limit hit (₹{_daily_realized_pnl:+.2f})")
+        return None
+
+    # ── Headroom guard: reject if remaining budget before kill-switch is too thin ──
+    headroom = daily_loss_limit() + _daily_realized_pnl   # positive = room left
+    if headroom < 100:                                     # less than ₹100 room → not worth risking
+        logger.warning(f"[executor] BLOCKED {signal.get('ticker')} — "
+                       f"only ₹{headroom:.0f} headroom left "
+                       f"(pnl ₹{_daily_realized_pnl:+.0f}, limit ₹{daily_loss_limit():.0f})")
         return None
 
     conf = int(signal.get('confidence', 0))
@@ -440,6 +474,25 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
     num_lots = lots_per_trade()
     qty = lot_size * num_lots
     trading_symbol = ticket.get('trading_symbol', '')
+
+    # ── Daily budget guard: reject if worst-case SL loss would exceed remaining budget ──
+    _sl_pts = sl_max_points(ticket.get('underlying', ''))
+    _worst_case_loss = (_sl_pts * qty) + 70  # gross SL loss + ~₹70 estimated brokerage
+    headroom = daily_loss_limit() + _daily_realized_pnl
+    if _worst_case_loss > headroom:
+        from ..api.indmoney import _order_broadcast
+        logger.warning(f"[executor] BLOCKED {sym} — worst-case SL loss ₹{_worst_case_loss:.0f} "
+                       f"> remaining budget ₹{headroom:.0f} "
+                       f"(SL {_sl_pts}pts × {qty}qty + brokerage)")
+        _order_broadcast({
+            'type': 'order_update', 'severity': 'warning',
+            'title': f"Blocked: {ticket.get('display_symbol', sym)}",
+            'status': 'BUDGET_REJECT', 'symbol': sym,
+            'txn_type': 'BUY',
+            'message': f"Max SL loss ₹{_worst_case_loss:.0f} exceeds remaining daily budget ₹{headroom:.0f}",
+            'timestamp': bu.now_ist().isoformat(),
+        })
+        return None
 
     # ── Slippage guard: reject if current price moved too far from signal ────
     # Max allowed slippage (default 5%). If price moved more than this from
@@ -644,7 +697,8 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
                             hold_sec = (bu.now_ist() - datetime.fromisoformat(entered)).total_seconds()
                     except Exception:
                         pass
-                    record_scalp_pnl(net_pnl_amt, hold_sec)
+                    record_scalp_pnl(net_pnl_amt, hold_sec, exit_reason=status,
+                                     underlying=ticket.get('underlying', ''))
                     logger.info(f"[executor] Scalp P&L: gross ₹{gross_pnl:+.2f} "
                                 f"brokerage ₹{brokerage:.2f} net ₹{net_pnl_amt:+.2f} "
                                 f"(hold {hold_sec:.0f}s)")
@@ -790,6 +844,15 @@ def try_scalp_entry(signal: dict) -> Optional[dict]:
                        f"kill switch active (daily P&L ₹{_pnl:+.0f})")
         return None
 
+    # Scalp headroom guard — reject if remaining budget before kill-switch is too thin
+    _scalp_limit = _scalp_mod.SCALP_DAILY_LOSS()
+    _scalp_headroom = _scalp_limit + _pnl   # positive = room left
+    if _scalp_headroom < 50:
+        logger.warning(f"[executor] SCALP BLOCKED {signal.get('ticker')} — "
+                       f"only ₹{_scalp_headroom:.0f} headroom left "
+                       f"(pnl ₹{_pnl:+.0f}, limit ₹{_scalp_limit:.0f})")
+        return None
+
     ticket = signal.get('ticket')
     if not ticket:
         logger.info(f"[executor] Scalp skip {signal.get('ticker')} — no ticket")
@@ -812,9 +875,53 @@ def try_scalp_entry(signal: dict) -> Optional[dict]:
             return None
 
     lot_size = int(ticket.get('lot_size', 1) or 1)
+    trading_symbol = ticket.get('trading_symbol', '')
+
+    # ── Risk-based position sizing — DISABLED (using fixed lots for now) ──
+    # _scalp_sl_pts = float(ticket['exit'].get('stop_loss_points') or 8)
+    # max_risk = _scalp_mod.SCALP_MAX_RISK_PER_TRADE()
+    # if _scalp_sl_pts > 0 and max_risk > 0:
+    #     raw_qty = int(max_risk / _scalp_sl_pts)
+    #     qty = max(lot_size, (raw_qty // lot_size) * lot_size)
+    #     logger.info(f"[executor] Risk-based sizing: max_risk=₹{max_risk:.0f} / SL={_scalp_sl_pts:.1f}pts "
+    #                 f"→ qty={qty} (lot_size={lot_size})")
+    # else:
+    #     num_lots = lots_per_trade()
+    #     qty = lot_size * num_lots
+    _scalp_sl_pts = float(ticket['exit'].get('stop_loss_points') or 8)
     num_lots = lots_per_trade()
     qty = lot_size * num_lots
-    trading_symbol = ticket.get('trading_symbol', '')
+
+    # ── Scalp daily budget guard: reject if worst-case SL loss exceeds remaining budget ──
+    # Account for EXISTING open scalp positions' worst-case SL too,
+    # so we don't enter a new trade that, combined with existing exposure, can blow the limit.
+    _scalp_worst = (_scalp_sl_pts * qty) + 70  # gross SL + ~₹70 brokerage
+    _existing_exposure = 0
+    try:
+        for _rec in existing:
+            _t = _rec.get('ticket') or {}
+            if _t.get('trade_mode') != 'scalp':
+                continue
+            _esl = float((_t.get('exit') or {}).get('stop_loss_points', 8) or 8)
+            _eq = int(_rec.get('qty', 1) or 1)
+            _existing_exposure += (_esl * _eq) + 70
+    except Exception:
+        pass
+    _total_worst = _scalp_worst + _existing_exposure
+    if _total_worst > _scalp_headroom:
+        from ..api.indmoney import _order_broadcast
+        logger.warning(f"[executor] SCALP BLOCKED {sym} — total worst-case ₹{_total_worst:.0f} "
+                       f"(new ₹{_scalp_worst:.0f} + open ₹{_existing_exposure:.0f}) "
+                       f"> headroom ₹{_scalp_headroom:.0f}")
+        _order_broadcast({
+            'type': 'order_update', 'severity': 'warning',
+            'title': f"Scalp blocked: {ticket.get('display_symbol', sym)}",
+            'status': 'SCALP_BUDGET_REJECT', 'symbol': sym,
+            'txn_type': 'BUY',
+            'message': f"Max SL loss ₹{_scalp_worst:.0f} exceeds remaining daily budget ₹{_scalp_headroom:.0f}",
+            'timestamp': bu.now_ist().isoformat(),
+        })
+        return None
 
     logger.info(f"[executor] SCALP-ENTRY: BUY {trading_symbol} qty={qty} "
                 f"conf={conf}% SL_pts={ticket['exit'].get('stop_loss_points')}")

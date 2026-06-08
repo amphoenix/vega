@@ -6,6 +6,7 @@ export const triggerScalpScan      = () => service.post('/api/trade/scalp-scanne
 export const getScalpScannerStatus = () => service.get('/api/trade/scalp-scanner/status')
 export const getScalpScannerStats  = () => service.get('/api/trade/scalp-scanner/stats')
 export const getScalpScannerConfig = () => service.get('/api/trade/scalp-scanner/config')
+export const updateScalpConfig     = (params) => service.put('/api/trade/scalp-scanner/config', params)
 export const resetScalpDaily       = () => service.post('/api/trade/scalp-scanner/reset-daily')
 
 export const createScalpStream = () => {

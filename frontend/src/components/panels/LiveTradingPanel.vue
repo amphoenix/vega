@@ -4,7 +4,7 @@
       <span
         class="rs-title"
         title="Tick-driven trade tickets, option chain, and per-position monitor"
-        >⚡ LIVE</span
+        >📡 LIVE</span
       >
       <span
         class="lv-pulse"

@@ -1360,8 +1360,8 @@ def executor_force_exit(track_id: str):
     if not rec:
         return jsonify({"success": False, "message": f"Position {track_id} not found"})
 
-    _queue_force_exit(track_id)
-    
+    _queue_force_exit(track_id)  # add to _force_exit_ids so try_auto_exit sees is_forced=True
+
     def _do_exit():
         ticket = rec.get('ticket') or {}
         sym    = ticket.get('trading_symbol', '')
@@ -1620,12 +1620,8 @@ def scalp_reset_killswitch():
 
 @trade_bp.route('/scalp-scanner/config', methods=['GET'])
 def scalp_scanner_config():
-    """Get scalp scanner configuration (live env values)."""
-    from ..services.scalp_scanner import (
-        scalp_enabled, SCALP_SL_PTS, SCALP_T1_PTS, SCALP_MAX_HOLD_MIN,
-        SCALP_MAX_REENTRIES, SCALP_DAILY_LOSS, SCALP_MIN_CONF,
-        SCALP_VOL_MULT, SCALP_BREAKOUT_BARS, SCAN_INTERVAL,
-    )
+    """Get full scalp scanner configuration from DB (grouped, with labels for UI)."""
+    from ..services.scalp_scanner import get_all_config, scalp_enabled
     from ..api.indmoney import _live_trading_enabled
     from ..services.order_executor import scalp_auto_trading_enabled
     return jsonify({
@@ -1634,14 +1630,21 @@ def scalp_scanner_config():
             "enabled":       scalp_enabled(),
             "live_trading":  _live_trading_enabled(),
             "auto_trading":  scalp_auto_trading_enabled(),
-            "sl_pts":        SCALP_SL_PTS(),
-            "t1_pts":        SCALP_T1_PTS(),
-            "max_hold_min":  SCALP_MAX_HOLD_MIN(),
-            "max_reentries": SCALP_MAX_REENTRIES(),
-            "daily_loss":    SCALP_DAILY_LOSS(),
-            "min_conf":      SCALP_MIN_CONF(),
-            "vol_mult":      SCALP_VOL_MULT(),
-            "breakout_bars": SCALP_BREAKOUT_BARS(),
-            "scan_interval": SCAN_INTERVAL(),
+            "params":        get_all_config(),
         }
     })
+
+
+@trade_bp.route('/scalp-scanner/config', methods=['PUT'])
+def scalp_scanner_config_update():
+    """Update one or more scalp config params. Body: {"SCALP_SL_PTS": 10, ...}"""
+    from ..services.scalp_scanner import update_config, SCALP_CONFIG_SCHEMA
+    body = request.get_json(force=True, silent=True) or {}
+    if not body:
+        return jsonify({"success": False, "message": "No params provided"}), 400
+    # Filter only valid keys
+    valid = {k: v for k, v in body.items() if k in SCALP_CONFIG_SCHEMA}
+    if not valid:
+        return jsonify({"success": False, "message": f"No valid keys. Valid: {list(SCALP_CONFIG_SCHEMA.keys())}"}), 400
+    updated = update_config(valid)
+    return jsonify({"success": True, "data": {"params": updated}})

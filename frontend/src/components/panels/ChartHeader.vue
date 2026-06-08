@@ -15,7 +15,7 @@
       v-if="chartHeaderChangePct !== null"
     >{{ chartHeaderChangePct >= 0 ? '+' : '' }}{{ chartHeaderChangePct }}%</span>
     <span class="ch-vol" v-if="tickerStats.volume_ratio">Vol {{ tickerStats.volume_ratio }}x avg</span>
-    <span class="ch-live" v-if="!chartLoading"><span class="ch-live-dot"></span>LIVE</span>
+    <span class="ch-live" v-if="!chartLoading && indmoneyLivePrice"><span class="ch-live-dot"></span>LIVE</span>
     <span class="ch-live ch-loading" v-if="chartLoading">⟳</span>
     <span
       class="ch-fomo"
