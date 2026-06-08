@@ -9,7 +9,7 @@ import { playNotifSound } from './notifSound'
 
 export function snack({ severity = 'info', title = '', message = '', duration = 5000, sound = true } = {}) {
   if (sound) playNotifSound(severity)
-  window.dispatchEvent(new CustomEvent('phoenix:snack', {
+  window.dispatchEvent(new CustomEvent('vega:snack', {
     detail: { severity, title, message, duration }
   }))
 }

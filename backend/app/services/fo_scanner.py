@@ -34,7 +34,7 @@ from typing import Callable, Optional
 from ..utils.logger import get_logger
 from . import broker_utils as bu
 
-logger = get_logger('phoenixtrade.fo_scanner')
+logger = get_logger('vega.fo_scanner')
 
 # ── F&O universe ──────────────────────────────────────────────────────────────
 # Configurable via FO_UNIVERSE env var (comma-separated tickers in yfinance format).

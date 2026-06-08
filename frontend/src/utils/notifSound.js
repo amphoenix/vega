@@ -19,6 +19,21 @@
  */
 let _audioCtx = null
 
+// ── Global mute (persisted in localStorage) ────────────────────────────────
+// Lazy read — avoids ReferenceError in Node/SSR where localStorage is undefined.
+let _muted = false
+try { _muted = localStorage.getItem('vega_muted') === '1' } catch {}
+
+export function isMuted() { return _muted }
+
+export function setMuted(val) {
+  _muted = !!val
+  localStorage.setItem('vega_muted', _muted ? '1' : '0')
+  window.dispatchEvent(new CustomEvent('vega:mute-changed', { detail: _muted }))
+}
+
+export function toggleMute() { setMuted(!_muted); return _muted }
+
 function _ctx() {
   if (!_audioCtx) {
     _audioCtx = new (window.AudioContext || window.webkitAudioContext)()
@@ -28,6 +43,7 @@ function _ctx() {
 }
 
 function _beep(freq = 520, duration = 0.15, volume = 0.3, type = 'sine', delay = 0) {
+  if (_muted) return
   try {
     const ctx = _ctx()
     const osc = ctx.createOscillator()

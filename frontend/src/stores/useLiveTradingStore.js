@@ -43,16 +43,6 @@ export const useLiveTradingStore = defineStore('liveTrading', () => {
   const chainLoading = ref(false)
   const chainError = ref('')
 
-  // Portfolio allocator
-  const portfolioCapital = ref(10000)
-  const portfolioHorizon = ref('3m')
-  const portfolioScope = ref('all')
-  const portfolioLoading = ref(false)
-  const portfolioResult = ref(null)
-  const portfolioError = ref('')
-  const portfolioFeed = ref([])
-  const portfolioRound = ref(0)
-
   return {
     indmoneyConnected, indmoneyAvailable, indmoneyLivePrice, indmoneyName, indmoneyAvailableCash,
     liveSpots, liveSpotTickAt, liveTickAges,
@@ -60,7 +50,5 @@ export const useLiveTradingStore = defineStore('liveTrading', () => {
     trackedPositions, latestCommentary, liveConnected,
     missedAlerts, alertsConnected,
     optionChain, chainUnderlying, chainBuyOnly, chainLoading, chainError,
-    portfolioCapital, portfolioHorizon, portfolioScope,
-    portfolioLoading, portfolioResult, portfolioError, portfolioFeed, portfolioRound
   }
 })

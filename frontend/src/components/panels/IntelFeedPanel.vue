@@ -251,7 +251,7 @@ const positionRows = ref([])
 let _ordersTimer = null
 
 async function fetchOrders() {
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
   ordersLoading.value = true
   try {
     const [obResp, posResp] = await Promise.all([

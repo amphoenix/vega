@@ -42,7 +42,7 @@ from ..utils.logger import get_logger
 from ..utils.llm_client import LLMClient
 from ..config import Config
 
-logger = get_logger('phoenixtrade.api.market')
+logger = get_logger('vega.api.market')
 
 # ── Ticker resolver: auto-append .NS / .BO for bare Indian symbols ────────────
 _resolved_cache: dict = {}
@@ -1014,7 +1014,7 @@ def get_signals(ticker: str):
             if is_indian else
             ['wallstreetbets', 'stocks', 'investing', 'options']
         )
-        headers = {'User-Agent': 'PhoenixTrade/1.0 signal-fetcher'}
+        headers = {'User-Agent': 'Vega/1.0 signal-fetcher'}
 
         for sub in subreddits:
             try:
@@ -1060,7 +1060,7 @@ def get_signals(ticker: str):
                 import xml.etree.ElementTree as ET
                 import re as _re
                 mc_url = 'https://www.moneycontrol.com/rss/latestnews.xml'
-                mc_headers = {'User-Agent': 'PhoenixTrade/1.0 signal-fetcher',
+                mc_headers = {'User-Agent': 'Vega/1.0 signal-fetcher',
                               'Accept': 'application/rss+xml, text/xml'}
                 mc_resp = requests.get(mc_url, headers=mc_headers, timeout=6)
                 if mc_resp.ok:
@@ -1099,7 +1099,7 @@ def get_signals(ticker: str):
             ]
             for et_url in et_feeds:
                 try:
-                    et_resp = requests.get(et_url, headers={'User-Agent': 'PhoenixTrade/1.0'}, timeout=6)
+                    et_resp = requests.get(et_url, headers={'User-Agent': 'Vega/1.0'}, timeout=6)
                     if et_resp.ok:
                         et_root = ET.fromstring(et_resp.content)
                         for item in et_root.findall('.//item')[:30]:
@@ -1199,7 +1199,7 @@ def ai_predict(ticker: str):
         is_indian = ticker.endswith('.NS') or ticker.endswith('.BO')
         clean_q   = ticker.replace('.NS', '').replace('.BO', '')
         currency  = '₹' if is_indian else '$'
-        _hdrs     = {'User-Agent': 'PhoenixTrade/1.0 ai-predict'}
+        _hdrs     = {'User-Agent': 'Vega/1.0 ai-predict'}
 
         # ── 1. Full-year OHLCV + technicals (IndMoney first, yfinance fallback) ─
         from ..services.ta_utils import compute_all as _compute_all
@@ -1660,7 +1660,7 @@ def launch_quick_sim(ticker: str):
             pass
 
         reddit_items = []
-        headers = {'User-Agent': 'PhoenixTrade/1.0 quick-sim'}
+        headers = {'User-Agent': 'Vega/1.0 quick-sim'}
         for sub in ['wallstreetbets', 'stocks', 'investing']:
             try:
                 url = f'https://www.reddit.com/r/{sub}/search.json'
@@ -1970,7 +1970,7 @@ def get_mc_news():
     try:
         import xml.etree.ElementTree as ET
         headers = {
-            'User-Agent': 'PhoenixTrade/1.0 news-fetcher',
+            'User-Agent': 'Vega/1.0 news-fetcher',
             'Accept':     'application/rss+xml, application/xml, text/xml',
         }
         resp = requests.get(url, headers=headers, timeout=8)
@@ -2035,7 +2035,7 @@ def get_fundamentals(ticker: str):
     if is_indian:
         try:
             search_url = f'https://www.screener.in/api/company/search/?q={clean_ticker}&v=3'
-            headers    = {'User-Agent': 'PhoenixTrade/1.0 fundamentals-fetcher'}
+            headers    = {'User-Agent': 'Vega/1.0 fundamentals-fetcher'}
             resp = requests.get(search_url, headers=headers, timeout=6)
             if resp.ok:
                 companies = resp.json()
@@ -2179,7 +2179,7 @@ def get_entity_graph(ticker: str):
         except Exception:
             pass
 
-        headers = {'User-Agent': 'PhoenixTrade/1.0 graph-builder'}
+        headers = {'User-Agent': 'Vega/1.0 graph-builder'}
         for sub in ['wallstreetbets', 'stocks', 'investing']:
             try:
                 resp = requests.get(
@@ -2416,7 +2416,7 @@ def invest_analysis(ticker: str):
             pass
 
         reddit_posts = []
-        headers = {'User-Agent': 'PhoenixTrade/1.0 invest-analysis'}
+        headers = {'User-Agent': 'Vega/1.0 invest-analysis'}
         for sub in ['wallstreetbets', 'stocks', 'investing', 'SecurityAnalysis']:
             try:
                 resp = requests.get(
@@ -3460,7 +3460,7 @@ def _fetch_market_data(ticker: str) -> dict:
             sym_base   = ticker.replace('.NS', '').replace('.BO', '')
             for sub in subs[:2]:
                 url = f"https://www.reddit.com/r/{sub}/search.json?q={sym_base}&sort=hot&limit=5&t=week"
-                req = urllib.request.Request(url, headers={'User-Agent': 'PhoenixTrade/1.0'})
+                req = urllib.request.Request(url, headers={'User-Agent': 'Vega/1.0'})
                 try:
                     with urllib.request.urlopen(req, timeout=2) as resp:
                         rj = json.loads(resp.read())

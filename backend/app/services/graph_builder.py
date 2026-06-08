@@ -54,7 +54,7 @@ class GraphBuilderService:
         self,
         text: str,
         ontology: Dict[str, Any],
-        graph_name: str = "PhoenixTrade Graph",
+        graph_name: str = "Vega Graph",
         chunk_size: int = 500,
         chunk_overlap: int = 50,
         batch_size: int = 3
@@ -190,7 +190,7 @@ class GraphBuilderService:
         self.client.graph.create(
             graph_id=graph_id,
             name=name,
-            description="PhoenixTrade Social Intelligence Graph"
+            description="Vega Social Intelligence Graph"
         )
         
         return graph_id

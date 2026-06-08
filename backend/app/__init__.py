@@ -1,5 +1,5 @@
 """
-PhoenixTrade Backend - Flask application factory
+Vega Backend - Flask application factory
 """
 
 import os
@@ -25,7 +25,7 @@ def create_app(config_class=Config):
     if hasattr(app, 'json') and hasattr(app.json, 'ensure_ascii'):
         app.json.ensure_ascii = False
 
-    logger = setup_logger('phoenixtrade')
+    logger = setup_logger('vega')
 
     # Only log startup in the reloader subprocess to avoid printing twice in debug mode
     is_reloader_process = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
@@ -34,7 +34,7 @@ def create_app(config_class=Config):
 
     if should_log_startup:
         logger.info("=" * 50)
-        logger.info("PhoenixTrade Backend starting...")
+        logger.info("Vega Backend starting...")
         logger.info("=" * 50)
 
     # Enable CORS
@@ -56,17 +56,30 @@ def create_app(config_class=Config):
     except Exception as _e:
         logger.warning(f"F&O scanner auto-start failed: {_e}")
 
+    # Auto-start the scalp scanner if SCALP_ENABLED=true in .env
+    try:
+        from .services.scalp_scanner import scalp_enabled as _scalp_enabled, start as _start_scalp
+        if _scalp_enabled():
+            _start_scalp()
+            if should_log_startup:
+                logger.info("Scalp scanner auto-started")
+        else:
+            if should_log_startup:
+                logger.info("Scalp scanner disabled (SCALP_ENABLED != true)")
+    except Exception as _e:
+        logger.warning(f"Scalp scanner auto-start failed: {_e}")
+
     # Request logging middleware
     @app.before_request
     def log_request():
-        logger = get_logger('phoenixtrade.request')
+        logger = get_logger('vega.request')
         logger.debug(f"Request: {request.method} {request.path}")
         if request.content_type and 'json' in request.content_type:
             logger.debug(f"Body: {request.get_json(silent=True)}")
 
     @app.after_request
     def log_response(response):
-        logger = get_logger('phoenixtrade.request')
+        logger = get_logger('vega.request')
         logger.debug(f"Response: {response.status_code}")
         return response
 
@@ -82,7 +95,7 @@ def create_app(config_class=Config):
     # Health check
     @app.route('/health')
     def health():
-        return {'status': 'ok', 'service': 'PhoenixTrade Backend'}
+        return {'status': 'ok', 'service': 'Vega Backend'}
 
     # Auto-start the tracked-position watcher for any positions already pinned
     # before this server boot. Without this, alerts would only kick in after
@@ -94,7 +107,7 @@ def create_app(config_class=Config):
         logger.warning(f"tracked_monitor.sync() at boot failed: {_e}")
 
     if should_log_startup:
-        logger.info("PhoenixTrade Backend started")
+        logger.info("Vega Backend started")
 
     return app
 

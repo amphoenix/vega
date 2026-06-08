@@ -1,11 +1,11 @@
 [project]
-name = "phoenixtrade-backend"
+name = "vega-backend"
 version = "0.1.0"
-description = "PhoenixTrade - AI-Powered Trading Intelligence Platform"
+description = "Vega - AI-Powered Trading Intelligence Platform"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0" }
 authors = [
-    { name = "PhoenixTrade Team" }
+    { name = "Vega Team" }
 ]
 
 dependencies = [

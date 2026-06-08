@@ -314,6 +314,19 @@
   50% { opacity: 0.5; }
 }
 
+.lv-ks-reset-btn {
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  background: #f85149;
+  border: none;
+  padding: 2px 7px;
+  border-radius: 3px;
+  cursor: pointer;
+  letter-spacing: 0.3px;
+}
+.lv-ks-reset-btn:hover { background: #b91c1c; }
+
 /* Auto-trading toggle switch */
 .lv-toggle {
   display: flex;

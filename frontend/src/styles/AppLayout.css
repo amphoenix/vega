@@ -65,6 +65,21 @@
   gap: 16px;
 }
 
+.mute-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #E0E0E0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  color: #666;
+  transition: all 0.15s;
+}
+.mute-btn:hover { background: #F5F5F5; color: #333; }
+
 .workflow-step {
   display: flex;
   align-items: center;

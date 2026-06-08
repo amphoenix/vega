@@ -1,4 +1,4 @@
-"""PhoenixTrade Backend Entry Point — plain Flask threaded dev server.
+"""Vega Backend Entry Point — plain Flask threaded dev server.
 
 The 6-connection-per-origin browser cap is solved at the Vite layer:
 Vite proxies /api/* through the frontend dev server, which uses HTTP/2
@@ -32,7 +32,7 @@ def main() -> None:
     host = os.environ.get('FLASK_HOST', '0.0.0.0')
     port = int(os.environ.get('FLASK_PORT', 5001))
 
-    print(f"[phoenix] Flask threaded dev server on http://{host}:{port}")
+    print(f"[vega] Flask threaded dev server on http://{host}:{port}")
     app.run(host=host, port=port, debug=Config.DEBUG, threaded=True, use_reloader=False)
 
 

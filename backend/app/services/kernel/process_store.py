@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 
-_PERSIST_PATH = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'phoenixtrade-processes.json')
+_PERSIST_PATH = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'vega-processes.json')
 
 
 @dataclass

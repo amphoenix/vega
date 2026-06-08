@@ -22,7 +22,7 @@ def _ensure_utf8_stdout():
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
 
 
-def setup_logger(name: str = 'phoenixtrade', level: int = logging.DEBUG) -> logging.Logger:
+def setup_logger(name: str = 'vega', level: int = logging.DEBUG) -> logging.Logger:
     """
     Set up a logger with file and console handlers.
 
@@ -78,7 +78,7 @@ def setup_logger(name: str = 'phoenixtrade', level: int = logging.DEBUG) -> logg
     return logger
 
 
-def get_logger(name: str = 'phoenixtrade') -> logging.Logger:
+def get_logger(name: str = 'vega') -> logging.Logger:
     """
     Get or create a logger by name.
 

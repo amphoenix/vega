@@ -9,7 +9,7 @@ import functools
 from typing import Callable, Any, Optional, Type, Tuple
 from ..utils.logger import get_logger
 
-logger = get_logger('phoenixtrade.retry')
+logger = get_logger('vega.retry')
 
 
 def retry_with_backoff(

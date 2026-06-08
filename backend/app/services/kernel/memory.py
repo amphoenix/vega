@@ -25,7 +25,7 @@ from typing import List, Tuple, Optional, Dict, Any
 
 QDRANT_URL   = os.environ.get('QDRANT_URL', 'http://localhost:6333')
 EMBED_MODEL  = os.environ.get('EMBED_MODEL', 'nomic-embed-text')
-COLLECTION   = 'phoenixtrade_memory'
+COLLECTION   = 'vega_memory'
 VECTOR_DIM   = 768    # nomic-embed-text output dimension
 
 

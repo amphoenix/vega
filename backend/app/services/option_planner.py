@@ -60,7 +60,7 @@ from . import broker_utils as bu
 from . import greeks as gk
 from ..utils.logger import get_logger
 
-logger = get_logger('phoenixtrade.option_planner')
+logger = get_logger('vega.option_planner')
 
 # Strike steps per underlying (₹). Sourced from NSE; update if NSE re-fixes.
 _STRIKE_STEP = {

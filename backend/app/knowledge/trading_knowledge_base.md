@@ -1,5 +1,5 @@
 # Comprehensive Trading Knowledge Base
-## For AI Trading System — PhoenixTrade
+## For AI Trading System — Vega
 
 > Compiled from: Investopedia, StockCharts School, BabyPips, Zerodha Varsity, TradingView Wiki,
 > CMT Association materials, and standard technical analysis references.
@@ -2147,4 +2147,4 @@ Ultra-short-term trades: seconds to a few minutes. 1-min to 3-min charts.
 
 *End of Trading Knowledge Base*
 *Version: 1.0 | Date: 2026-04-02*
-*For use in PhoenixTrade AI Trading System *
+*For use in Vega AI Trading System *

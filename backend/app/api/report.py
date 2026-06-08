@@ -16,7 +16,7 @@ from ..models.project import ProjectManager
 from ..models.task import TaskManager, TaskStatus
 from ..utils.logger import get_logger
 
-logger = get_logger('phoenixtrade.api.report')
+logger = get_logger('vega.api.report')
 
 
 # ============== Report Generation Endpoints ==============
@@ -934,7 +934,7 @@ def search_graph_tool():
 
     Request (JSON):
         {
-            "graph_id": "phoenixtrade_xxxx",
+            "graph_id": "vega_xxxx",
             "query": "search query",
             "limit": 10
         }
@@ -985,7 +985,7 @@ def get_graph_statistics_tool():
 
     Request (JSON):
         {
-            "graph_id": "phoenixtrade_xxxx"
+            "graph_id": "vega_xxxx"
         }
     """
     try:

@@ -19,7 +19,7 @@ from ..config import Config
 from ..utils.logger import get_logger
 from .market import _resolve_ticker
 
-logger = get_logger('phoenixtrade.api.trade')
+logger = get_logger('vega.api.trade')
 
 # ── In-memory cache (shared pattern with market.py) ──────────────────────────
 _cache: dict = {}
@@ -392,6 +392,7 @@ def backtest(ticker: str):
 
     try:
         import backtrader as bt
+        import numpy as np
         import pandas as pd
 
         df = _fetch_ohlcv(ticker, days=days)
@@ -1349,10 +1350,29 @@ def fo_scanner_stream():
 
 @trade_bp.route('/executor/force-exit/<track_id>', methods=['POST'])
 def executor_force_exit(track_id: str):
-    """User override: queue a force-exit for the given tracked position."""
-    from ..services.order_executor import force_exit
-    force_exit(track_id)
-    return jsonify({"success": True, "message": f"Force-exit queued for {track_id}"})
+    """User override: immediately force-exit the given tracked position in a background thread."""
+    import threading as _threading
+    from ..services import tracked_positions as _tp
+    from ..services.order_executor import try_auto_exit, force_exit as _queue_force_exit
+    from ..api.indmoney import _ind_ltp
+
+    rec = next((r for r in _tp.list_tracked() if r.get('id') == track_id), None)
+    if not rec:
+        return jsonify({"success": False, "message": f"Position {track_id} not found"})
+
+    _queue_force_exit(track_id)
+    
+    def _do_exit():
+        ticket = rec.get('ticket') or {}
+        sym    = ticket.get('trading_symbol', '')
+        try:
+            prem = _ind_ltp(sym) or float((ticket.get('entry') or {}).get('expected_premium_inr', 0) or 0)
+            try_auto_exit(track_id, 'force_exit', rec, prem)
+        except Exception as _e:
+            logger.error(f"[trade] force-exit thread failed {track_id}: {_e}")
+
+    _threading.Thread(target=_do_exit, daemon=True).start()
+    return jsonify({"success": True, "message": f"Force-exit executing for {track_id}"})
 
 
 @trade_bp.route('/executor/block-entry', methods=['POST'])
@@ -1379,6 +1399,62 @@ def executor_unblock_entry():
     return jsonify({"success": True, "message": f"Auto-entry unblocked for {symbol}"})
 
 
+@trade_bp.route('/pnl/summary', methods=['GET'])
+def pnl_summary():
+    """Daily + monthly P&L summary split by swing/scalp with brokerage breakdown."""
+    from ..services.pnl_store import daily_summary, monthly_summary
+    from datetime import datetime as _dt
+    date  = request.args.get('date')  or _dt.now().strftime('%Y-%m-%d')
+    year  = int(request.args.get('year',  _dt.now().year))
+    month = int(request.args.get('month', _dt.now().month))
+
+    swing_live = 0.0
+    scalp_live = 0.0
+    try:
+        from ..services.order_executor import get_daily_pnl
+        swing_live = round(get_daily_pnl(), 2)
+    except Exception:
+        pass
+    try:
+        from ..services.scalp_scanner import get_scalp_stats
+        scalp_live = round(get_scalp_stats().get('daily_pnl', 0.0), 2)
+    except Exception:
+        pass
+
+    return jsonify({
+        'success': True,
+        'daily':   daily_summary(date),
+        'monthly': monthly_summary(year, month),
+        'live': {
+            'swing': swing_live,
+            'scalp': scalp_live,
+            'total': round(swing_live + scalp_live, 2),
+        },
+    })
+
+
+@trade_bp.route('/pnl/trades', methods=['GET'])
+def pnl_trades():
+    """Recent closed trades with gross P&L, brokerage, and net P&L."""
+    from ..services.pnl_store import recent_trades
+    limit = int(request.args.get('limit', 50))
+    mode  = request.args.get('mode') or None   # 'swing' | 'scalp' | None = all
+    return jsonify({'success': True, 'trades': recent_trades(limit, mode)})
+
+
+@trade_bp.route('/executor/reset-killswitch', methods=['POST'])
+def executor_reset_killswitch():
+    """Re-enable swing auto-trading after kill-switch fires, without zeroing P&L.
+    Bumps daily loss limit by ₹500 each call."""
+    from ..services.order_executor import reset_kill_switch, get_daily_pnl, daily_loss_limit
+    new_limit = reset_kill_switch()
+    return jsonify({"success": True,
+                    "message": f"Swing kill switch reset — limit now ₹{new_limit:.0f}",
+                    "new_limit": new_limit,
+                    "daily_pnl": get_daily_pnl(),
+                    "limit": new_limit})
+
+
 @trade_bp.route('/executor/reset-daily', methods=['POST'])
 def executor_reset_daily():
     """Reset daily P&L, kill-switch, and all executor state."""
@@ -1394,12 +1470,19 @@ def executor_status():
         _daily_ledger, _exit_fired, _partial_exited, _blocked_symbols,
         min_confidence, sl_max_points, allow_reentry, max_reentries,
         daily_loss_limit, get_daily_pnl, is_kill_switch_active,
-        auto_trading_enabled,
+        auto_trading_enabled, scalp_auto_trading_enabled,
     )
+    def _get_scalp_pnl():
+        try:
+            from ..services.scalp_scanner import get_scalp_stats
+            return get_scalp_stats().get('daily_pnl', 0.0)
+        except Exception:
+            return 0.0
     return jsonify({
         "success": True,
         "data": {
             "auto_trading_enabled": auto_trading_enabled(),
+            "scalp_auto_trading_enabled": scalp_auto_trading_enabled(),
             "min_confidence": min_confidence(),
             "sl_max_points_nifty": sl_max_points('^NSEI'),
             "sl_max_points_sensex": sl_max_points('^BSESN'),
@@ -1407,6 +1490,8 @@ def executor_status():
             "max_reentries": max_reentries(),
             "daily_loss_limit_inr": daily_loss_limit(),
             "daily_realized_pnl": round(get_daily_pnl(), 2),
+            "swing_realized_pnl": round(get_daily_pnl(), 2),
+            "scalp_realized_pnl": round(_get_scalp_pnl(), 2),
             "kill_switch_active": is_kill_switch_active(),
             "daily_ledger": dict(_daily_ledger),
             "exits_fired": dict(_exit_fired),
@@ -1427,3 +1512,136 @@ def executor_toggle_auto_trading():
     os.environ['AUTO_TRADING_ENABLED'] = 'true' if enabled else 'false'
     logger.info(f"Auto-trading {'ENABLED' if enabled else 'DISABLED'} via API")
     return jsonify({"success": True, "auto_trading_enabled": bool(enabled)})
+
+
+@trade_bp.route('/executor/scalp-auto-trading', methods=['POST'])
+def executor_toggle_scalp_auto_trading():
+    """Toggle scalp auto-trading on/off at runtime (without restarting server)."""
+    body = request.get_json(silent=True) or {}
+    enabled = body.get('enabled')
+    if enabled is None:
+        return jsonify({"success": False, "error": "'enabled' (bool) required"}), 400
+    import os
+    os.environ['SCALP_AUTO_TRADING_ENABLED'] = 'true' if enabled else 'false'
+    logger.info(f"Scalp auto-trading {'ENABLED' if enabled else 'DISABLED'} via API")
+    return jsonify({"success": True, "scalp_auto_trading_enabled": bool(enabled)})
+
+
+# ── Scalp Scanner endpoints ──────────────────────────────────────────────────
+
+@trade_bp.route('/scalp-scanner/start', methods=['POST'])
+def scalp_scanner_start():
+    """Start the scalp scanner background service."""
+    from ..services.scalp_scanner import start as _start
+    _start()
+    return jsonify({"success": True, "data": {"message": "Scalp scanner started"}})
+
+
+@trade_bp.route('/scalp-scanner/stop', methods=['POST'])
+def scalp_scanner_stop():
+    """Stop the scalp scanner."""
+    from ..services.scalp_scanner import stop as _stop
+    _stop()
+    return jsonify({"success": True, "data": {"message": "Scalp scanner stopped"}})
+
+
+@trade_bp.route('/scalp-scanner/trigger', methods=['POST'])
+def scalp_scanner_trigger():
+    """Force an immediate scalp scan cycle."""
+    from ..services.scalp_scanner import trigger_now
+    trigger_now()
+    return jsonify({"success": True, "data": {"message": "Scalp scan triggered"}})
+
+
+@trade_bp.route('/scalp-scanner/status', methods=['GET'])
+def scalp_scanner_status():
+    """Get scalp scanner state, config, and stats."""
+    from ..services.scalp_scanner import get_state as _get_state
+    return jsonify({"success": True, "data": _get_state()})
+
+
+@trade_bp.route('/scalp-scanner/stats', methods=['GET'])
+def scalp_scanner_stats():
+    """Get scalp trading stats: win/loss, avg hold time, daily P&L."""
+    from ..services.scalp_scanner import get_scalp_stats
+    return jsonify({"success": True, "data": get_scalp_stats()})
+
+
+@trade_bp.route('/scalp-scanner/stream', methods=['GET'])
+def scalp_scanner_stream():
+    """SSE stream of live scalp signals and events."""
+    from flask import Response, stream_with_context
+    from ..services.scalp_scanner import subscribe_sse, unsubscribe_sse, get_state as scanner_status
+    import queue as _queue
+    import json as _json
+
+    q = subscribe_sse()
+
+    def _gen():
+        try:
+            # Send initial state immediately so UI isn't blank
+            yield f"data: {_json.dumps({'type': 'scalp_state', **scanner_status()}, default=str)}\n\n"
+            while True:
+                try:
+                    msg = q.get(timeout=10)
+                    yield f"data: {msg}\n\n"
+                except _queue.Empty:
+                    # Send full state as heartbeat so UI stays live
+                    yield f"data: {_json.dumps({'type': 'scalp_state', **scanner_status()}, default=str)}\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            unsubscribe_sse(q)
+
+    return Response(stream_with_context(_gen()),
+                    mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@trade_bp.route('/scalp-scanner/reset-daily', methods=['POST'])
+def scalp_reset_daily():
+    """Reset scalp daily state: P&L, kill-switch, hold times."""
+    from ..services.scalp_scanner import reset_scalp_daily
+    reset_scalp_daily()
+    return jsonify({"success": True, "message": "Scalp daily state reset"})
+
+
+@trade_bp.route('/scalp-scanner/reset-killswitch', methods=['POST'])
+def scalp_reset_killswitch():
+    """Re-enable scalp trading after kill-switch fires, without zeroing P&L.
+    Bumps daily loss limit by ₹500 each call."""
+    from ..services.scalp_scanner import reset_kill_switch, get_scalp_stats
+    new_limit = reset_kill_switch()
+    return jsonify({"success": True,
+                    "message": f"Kill switch reset — limit now ₹{new_limit:.0f}",
+                    "new_limit": new_limit,
+                    "stats": get_scalp_stats()})
+
+
+@trade_bp.route('/scalp-scanner/config', methods=['GET'])
+def scalp_scanner_config():
+    """Get scalp scanner configuration (live env values)."""
+    from ..services.scalp_scanner import (
+        scalp_enabled, SCALP_SL_PTS, SCALP_T1_PTS, SCALP_MAX_HOLD_MIN,
+        SCALP_MAX_REENTRIES, SCALP_DAILY_LOSS, SCALP_MIN_CONF,
+        SCALP_VOL_MULT, SCALP_BREAKOUT_BARS, SCAN_INTERVAL,
+    )
+    from ..api.indmoney import _live_trading_enabled
+    from ..services.order_executor import scalp_auto_trading_enabled
+    return jsonify({
+        "success": True,
+        "data": {
+            "enabled":       scalp_enabled(),
+            "live_trading":  _live_trading_enabled(),
+            "auto_trading":  scalp_auto_trading_enabled(),
+            "sl_pts":        SCALP_SL_PTS(),
+            "t1_pts":        SCALP_T1_PTS(),
+            "max_hold_min":  SCALP_MAX_HOLD_MIN(),
+            "max_reentries": SCALP_MAX_REENTRIES(),
+            "daily_loss":    SCALP_DAILY_LOSS(),
+            "min_conf":      SCALP_MIN_CONF(),
+            "vol_mult":      SCALP_VOL_MULT(),
+            "breakout_bars": SCALP_BREAKOUT_BARS(),
+            "scan_interval": SCAN_INTERVAL(),
+        }
+    })

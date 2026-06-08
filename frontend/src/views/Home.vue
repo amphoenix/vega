@@ -107,12 +107,10 @@
       :currencySymbol="currencySymbol"
     />
 
-    <!-- ══ PORTFOLIO ALLOCATOR VIEW ═════════════════════════════════════════ -->
-    <PortfolioAllocator
-      v-show="viewMode === 'portfolio'"
-      @select-ticker="selectTicker"
+    <!-- ══ SCALP MODE VIEW ═══════════════════════════════════════════════════ -->
+    <ScalpPanel
+      v-if="viewMode === 'scalp'"
     />
-
 
   </div>
 </template>
@@ -134,7 +132,6 @@ import {
   getIndmoneyStatus,
   getIndmoneyTick,
 } from "../api/market";
-import PortfolioAllocator from "../components/panels/PortfolioAllocator.vue";
 import InvestmentAnalysis from "../components/panels/InvestmentAnalysis.vue";
 import BacktestPanel from "../components/panels/BacktestPanel.vue";
 import FoScannerPanel from "../components/panels/FoScannerPanel.vue";
@@ -145,6 +142,7 @@ import TopBar from "../components/panels/TopBar.vue"
 import ChartHeader from "../components/panels/ChartHeader.vue"
 import SignalLevelsPanel from "../components/panels/SignalLevelsPanel.vue"
 import LiveTradingPanel from "../components/panels/LiveTradingPanel.vue"
+import ScalpPanel from "../components/panels/ScalpPanel.vue"
 import { fmtTime } from "../utils/formatters";
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -269,16 +267,16 @@ const chartHeaderChangePct = computed(() => {
 });
 
 // ── View mode ─────────────────────────────────────────────────────────────────
-const viewMode = ref("chart"); // 'chart' | 'analysis'
+const viewMode = ref("chart"); // 'chart' | 'analysis' | 'scalp'
 
 // ── Left sidebar collapse ─────────────────────────────────────────────────────
 const sidebarCollapsed = ref(
-  localStorage.getItem("phoenix.sidebar.collapsed") !== "0",
+  localStorage.getItem("vega.sidebar.collapsed") !== "0",
 );
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value;
   localStorage.setItem(
-    "phoenix.sidebar.collapsed",
+    "vega.sidebar.collapsed",
     sidebarCollapsed.value ? "1" : "0",
   );
 }
@@ -852,7 +850,7 @@ onUnmounted(() => {
 // previously-opened singleton EventSources stashed on `window` so they
 // don't keep accumulating one extra connection per save.
 if (typeof window !== "undefined") {
-  const key = "__phoenix_foScannerES";
+  const key = "__vega_foScannerES";
   if (window[key]) {
     try { window[key].close?.(); } catch {}
     window[key] = null;

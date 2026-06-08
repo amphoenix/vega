@@ -33,7 +33,7 @@ from flask import request, jsonify, Response
 from . import indmoney_bp
 from ..utils.logger import get_logger
 
-logger = get_logger('phoenixtrade.api.indmoney')
+logger = get_logger('vega.api.indmoney')
 
 # ── Config ────────────────────────────────────────────────────────────────────
 # Token is read fresh on every use so editing .env + restarting just the

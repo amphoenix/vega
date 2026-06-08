@@ -36,9 +36,10 @@ import threading
 from datetime import datetime
 from typing import Optional
 
+from . import broker_utils as bu
 from ..utils.logger import get_logger
 
-logger = get_logger('phoenixtrade.services.order_executor')
+logger = get_logger('vega.services.order_executor')
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
@@ -57,8 +58,18 @@ def _cfg_float(key: str, default: float) -> float:
 
 
 def auto_trading_enabled() -> bool:
-    """Master toggle for auto-entry. When False, scanner still runs but no orders."""
+    """Master toggle for swing auto-entry. When False, scanner still runs but no orders."""
     return os.environ.get('AUTO_TRADING_ENABLED', 'true').strip().lower() in ('true', '1', 'yes')
+
+
+def scalp_auto_trading_enabled() -> bool:
+    """Separate toggle for scalp auto-entry. Falls back to AUTO_TRADING_ENABLED if not set."""
+    val = os.environ.get('SCALP_AUTO_TRADING_ENABLED', '').strip().lower()
+    if val in ('true', '1', 'yes'):
+        return True
+    if val in ('false', '0', 'no'):
+        return False
+    return auto_trading_enabled()  # fallback to shared toggle
 
 
 def min_confidence() -> int:
@@ -113,24 +124,91 @@ _daily_realized_pnl: float = 0.0
 # Kill-switch: set to True when daily loss limit breached. No more trades today.
 _daily_kill_switch: bool = False
 
+def _load_trading_state() -> None:
+    """Load persisted runtime state (bumped limits) from SQLite into os.environ on server start."""
+    try:
+        from .pnl_store import get_trading_state
+        val = get_trading_state('DAILY_LOSS_LIMIT_INR')
+        if val:
+            os.environ['DAILY_LOSS_LIMIT_INR'] = val
+            logger.info(f"[executor] Loaded trading_state: DAILY_LOSS_LIMIT_INR={val}")
+    except Exception as e:
+        logger.warning(f"[executor] Could not load trading state from DB: {e}")
+
+
+_load_trading_state()
+
+
+def _persist_state(key: str, value: str) -> None:
+    """Persist runtime state to SQLite trading_state table (replaces .env writes)."""
+    try:
+        from .pnl_store import set_trading_state
+        set_trading_state(key, value)
+    except Exception as e:
+        logger.warning(f"[executor] Could not persist {key} to DB: {e}")
+
+
+# Base loss limit as set in .env (never bumped) — restored every new day
+_DAILY_LOSS_LIMIT_BASE: float = _cfg_float('DAILY_LOSS_LIMIT_BASE', 1000.0)
+
 # Override: user-blocked symbols that should NOT auto-enter this session.
 _blocked_symbols: set[str] = set()
 
 # Override: user-forced exit IDs (frontend can push a force-exit).
 _force_exit_ids: set[str] = set()
 
+# In-flight BUY symbols: prevents TOCTOU duplicate orders when two scanner
+# cycles evaluate the same symbol concurrently and both pass the re-entry check.
+_inflight: set[str] = set()
+
+
+def _restore_daily_pnl() -> None:
+    """On server start: detect new day from last trade date, restore limit if needed,
+    then reload today's net swing P&L from SQLite."""
+    global _daily_realized_pnl, _daily_kill_switch
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    today_str = _dt.now(_tz(_td(hours=5, minutes=30))).strftime('%Y-%m-%d')
+
+    try:
+        from .pnl_store import today_net_by_mode, last_trade_date
+        last_date = last_trade_date()
+        if last_date and last_date < today_str:
+            # Trades exist but last one was before today → new day, restore limit to base
+            base = _DAILY_LOSS_LIMIT_BASE
+            os.environ['DAILY_LOSS_LIMIT_INR'] = str(int(base))
+            _persist_state('DAILY_LOSS_LIMIT_INR', str(int(base)))
+            logger.info(f"[executor] New day detected (last trade {last_date}) — swing limit restored to ₹{base:.0f}")
+            return  # P&L is 0, kill switch off
+        # Same day or no trades ever → restore today's net P&L
+        restored = today_net_by_mode().get('swing', 0.0)
+        if restored != 0.0:
+            _daily_realized_pnl = restored
+            if _daily_realized_pnl <= -daily_loss_limit():
+                _daily_kill_switch = True
+                logger.warning(f"[executor] Kill switch re-armed on boot: ₹{_daily_realized_pnl:.2f}")
+            logger.info(f"[executor] Restored daily swing net P&L: ₹{_daily_realized_pnl:+.2f}")
+    except Exception as _e:
+        logger.warning(f"[executor] Could not restore daily P&L: {_e}")
+
+_restore_daily_pnl()
+
 
 def reset_daily():
-    """Called at midnight IST (or on restart) to reset daily state."""
+    """Called at midnight IST to reset daily state. Restores loss limit to startup base."""
     global _daily_realized_pnl, _daily_kill_switch
     with _lock:
         _daily_ledger.clear()
         _exit_fired.clear()
         _partial_exited.clear()
         _force_exit_ids.clear()
+        _inflight.clear()
         _daily_realized_pnl = 0.0
         _daily_kill_switch = False
-    logger.info("[executor] Daily state reset (P&L zeroed, kill-switch off)")
+    # Restore limit to base
+    base = _DAILY_LOSS_LIMIT_BASE
+    os.environ['DAILY_LOSS_LIMIT_INR'] = str(int(base))
+    _persist_state('DAILY_LOSS_LIMIT_INR', str(int(base)))
+    logger.info(f"[executor] Daily state reset — swing limit restored to ₹{base:.0f}")
 
 
 def block_symbol(symbol: str):
@@ -154,13 +232,15 @@ def is_force_exit_pending(track_id: str) -> bool:
     return track_id in _force_exit_ids
 
 
-def record_exit_pnl(entry_premium: float, exit_premium: float, qty: int):
-    """Record realized P&L from an exit. Triggers kill-switch if limit breached."""
+def record_exit_pnl(entry_premium: float, exit_premium: float, qty: int,
+                    net_pnl: Optional[float] = None):
+    """Record realized P&L from an exit. Pass net_pnl (after brokerage) when available.
+    Triggers kill-switch if limit breached."""
     global _daily_realized_pnl, _daily_kill_switch
-    pnl = (exit_premium - entry_premium) * qty
+    pnl = net_pnl if net_pnl is not None else (exit_premium - entry_premium) * qty
     with _lock:
         _daily_realized_pnl += pnl
-        logger.info(f"[executor] Exit P&L: ₹{pnl:+.2f} | "
+        logger.info(f"[executor] Exit P&L (net): ₹{pnl:+.2f} | "
                     f"Daily total: ₹{_daily_realized_pnl:+.2f} | "
                     f"Limit: -₹{daily_loss_limit():.0f}")
         if _daily_realized_pnl <= -daily_loss_limit():
@@ -176,7 +256,7 @@ def record_exit_pnl(entry_premium: float, exit_premium: float, qty: int):
                     'message': (f"Total loss ₹{abs(_daily_realized_pnl):.0f} "
                                 f"≥ limit ₹{daily_loss_limit():.0f}. "
                                 f"All auto-trading stopped for today."),
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': bu.now_ist().isoformat(),
                 })
             except Exception:
                 pass
@@ -184,6 +264,20 @@ def record_exit_pnl(entry_premium: float, exit_premium: float, qty: int):
 
 def is_kill_switch_active() -> bool:
     return _daily_kill_switch
+
+
+def reset_kill_switch() -> float:
+    """Re-enable swing auto-trading after kill-switch fires, without zeroing P&L.
+    Also bumps the daily loss limit by ₹500 and persists it to SQLite. Returns the new limit."""
+    global _daily_kill_switch
+    with _lock:
+        _daily_kill_switch = False
+    current = daily_loss_limit()
+    new_limit = current + 500
+    os.environ['DAILY_LOSS_LIMIT_INR'] = str(new_limit)
+    _persist_state('DAILY_LOSS_LIMIT_INR', str(int(new_limit)))
+    logger.info(f"[executor] Swing kill switch reset — limit bumped ₹{current:.0f} → ₹{new_limit:.0f}")
+    return new_limit
 
 
 def get_daily_pnl() -> float:
@@ -278,7 +372,7 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
             'status': 'WINDOW_REJECT', 'symbol': sym,
             'txn_type': 'BUY',
             'message': f"Entry window: {entry_window}",
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': bu.now_ist().isoformat(),
         })
         return None
 
@@ -371,7 +465,7 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
                 'status': 'SLIPPAGE_REJECT', 'symbol': trading_symbol,
                 'txn_type': 'BUY',
                 'message': f"Price moved {slippage_pct:.1f}% from signal (₹{signal_price:.0f}→₹{current_price:.0f}). R:R invalid.",
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': bu.now_ist().isoformat(),
             })
             # Clear ticket cache so next scan gets a fresh signal at the new price
             try:
@@ -383,12 +477,24 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
                 pass
             return None
 
+    # Guard against TOCTOU: two concurrent scanner cycles passing all checks
+    # and both placing a BUY before either records the entry in the ledger.
+    with _lock:
+        if sym in _inflight:
+            logger.info(f"[executor] Skip {sym} — BUY already in-flight")
+            return None
+        _inflight.add(sym)
+
     logger.info(f"[executor] AUTO-ENTRY: BUY {trading_symbol} qty={qty} "
                 f"({num_lots} lot(s) × {lot_size}) "
                 f"conf={conf}% (threshold={threshold}%)")
 
     from ..api.indmoney import _order_broadcast
-    order_result = _place_fo_buy(trading_symbol, qty)
+    try:
+        order_result = _place_fo_buy(trading_symbol, qty)
+    finally:
+        with _lock:
+            _inflight.discard(sym)
 
     if order_result and order_result.get('success'):
         # In live mode, use actual market price for entry + SL/T1/T2
@@ -420,7 +526,7 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
             'status': 'ENTRY_PLACED', 'symbol': trading_symbol,
             'txn_type': 'BUY', 'qty': qty,
             'message': f"Confidence {conf}% — SL ₹{ticket['exit']['stop_loss_inr']:.2f}",
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': bu.now_ist().isoformat(),
         })
         logger.info(f"[executor] Entry success: {trading_symbol} tracked as {record.get('id')}")
         return record
@@ -432,7 +538,7 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
             'status': 'ENTRY_FAILED', 'symbol': trading_symbol,
             'txn_type': 'BUY', 'qty': qty,
             'message': str(err),
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': bu.now_ist().isoformat(),
         })
         logger.error(f"[executor] Entry failed: {trading_symbol} — {err}")
         return None
@@ -517,8 +623,50 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
 
         # ── Record realized P&L and check daily loss limit ───────────
         entry_prem = float((ticket.get('entry') or {}).get('expected_premium_inr', 0) or 0)
+        is_scalp = bool(ticket.get('trade_mode') == 'scalp' or ticket.get('scalp_meta'))
         if entry_prem > 0:
-            record_exit_pnl(entry_prem, premium, exit_qty)
+            gross_pnl = (premium - entry_prem) * exit_qty
+            # Compute net P&L (brokerage deducted) — in-memory trackers and kill switch use net
+            try:
+                from .pnl_store import _calc_brokerage
+                brokerage = _calc_brokerage(entry_prem, premium, exit_qty)
+            except Exception:
+                brokerage = 0.0
+            net_pnl_amt = round(gross_pnl - brokerage, 2)
+            if is_scalp:
+                # Route to scalp-specific P&L tracker
+                try:
+                    from .scalp_scanner import record_scalp_pnl
+                    hold_sec = 0
+                    try:
+                        entered = ticket.get('scalp_meta', {}).get('entered_at', '')
+                        if entered:
+                            hold_sec = (bu.now_ist() - datetime.fromisoformat(entered)).total_seconds()
+                    except Exception:
+                        pass
+                    record_scalp_pnl(net_pnl_amt, hold_sec)
+                    logger.info(f"[executor] Scalp P&L: gross ₹{gross_pnl:+.2f} "
+                                f"brokerage ₹{brokerage:.2f} net ₹{net_pnl_amt:+.2f} "
+                                f"(hold {hold_sec:.0f}s)")
+                except Exception as _e:
+                    logger.warning(f"[executor] record_scalp_pnl failed: {_e}")
+                try:
+                    from .pnl_store import record_trade as _rec_pnl
+                    _rec_pnl('scalp', sym, ticket.get('underlying', ''),
+                             entry_prem, premium, exit_qty,
+                             int(ticket.get('lot_size', 1) or 1), exit_type)
+                except Exception as _pe:
+                    logger.debug(f"[executor] pnl_store scalp record failed: {_pe}")
+            else:
+                # Swing P&L — pass net_pnl so kill switch threshold uses net
+                record_exit_pnl(entry_prem, premium, exit_qty, net_pnl_amt)
+                try:
+                    from .pnl_store import record_trade as _rec_pnl
+                    _rec_pnl('swing', sym, ticket.get('underlying', ''),
+                             entry_prem, premium, exit_qty,
+                             int(ticket.get('lot_size', 1) or 1), exit_type)
+                except Exception as _pe:
+                    logger.debug(f"[executor] pnl_store swing record failed: {_pe}")
 
         severity_map = {
             'sl_hit': 'error',
@@ -545,7 +693,7 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
             'symbol': sym,
             'txn_type': 'SELL', 'qty': exit_qty,
             'message': f"Premium ₹{premium:.2f} — {exit_type.replace('_', ' ')}",
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': bu.now_ist().isoformat(),
         })
 
         # For full exits, remove from tracked positions
@@ -579,7 +727,7 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
             'status': 'EXIT_FAILED', 'symbol': sym,
             'txn_type': 'SELL', 'qty': exit_qty,
             'message': f"{exit_type}: {err}",
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': bu.now_ist().isoformat(),
         })
         logger.error(f"[executor] Exit failed: {sym} ({exit_type}) — {err}")
         return False
@@ -617,12 +765,128 @@ def _trail_sl_to_breakeven(rec: dict, exited_qty: int):
     logger.info(f"[executor] {track_id} SL trailed to breakeven, remaining qty={remaining}")
 
 
+# ── Scalp entry ──────────────────────────────────────────────────────────────
+
+def try_scalp_entry(signal: dict) -> Optional[dict]:
+    """
+    Called by scalp_scanner when a momentum signal fires.
+    Uses scalp-specific gates: separate kill-switch, higher re-entry limits.
+    Returns the tracked record if entry was placed, else None.
+    """
+    if not scalp_auto_trading_enabled():
+        logger.info(f"[executor] SCALP MONITOR ONLY — skipping scalp entry for {signal.get('ticker')}")
+        return None
+
+    # Scalp kill-switch — only honour the flag, not the raw P&L.
+    # record_scalp_pnl() already sets the flag when limit is hit (inside _scalp_lock).
+    # Re-checking _pnl here would defeat a manual reset_kill_switch() call because
+    # the P&L is still negative after reset — that's intentional (user acknowledged loss).
+    from . import scalp_scanner as _scalp_mod
+    with _scalp_mod._scalp_lock:
+        _ks = _scalp_mod._scalp_kill_switch
+        _pnl = _scalp_mod._scalp_daily_pnl
+    if _ks:
+        logger.warning(f"[executor] SCALP BLOCKED {signal.get('ticker')} — "
+                       f"kill switch active (daily P&L ₹{_pnl:+.0f})")
+        return None
+
+    ticket = signal.get('ticket')
+    if not ticket:
+        logger.info(f"[executor] Scalp skip {signal.get('ticker')} — no ticket")
+        return None
+
+    sym = (ticket.get('trading_symbol') or '').strip().upper()
+    if not sym:
+        logger.info(f"[executor] Scalp skip {signal.get('ticker')} — empty trading_symbol")
+        return None
+
+    conf = int(signal.get('confidence', 0))
+
+    # Check not already tracking this symbol
+    from . import tracked_positions as tp
+    existing = tp.list_tracked()
+    for rec in existing:
+        t = (rec.get('ticket') or {}).get('trading_symbol', '').strip().upper()
+        if t == sym:
+            logger.info(f"[executor] Skip scalp {sym} — already tracked")
+            return None
+
+    lot_size = int(ticket.get('lot_size', 1) or 1)
+    num_lots = lots_per_trade()
+    qty = lot_size * num_lots
+    trading_symbol = ticket.get('trading_symbol', '')
+
+    logger.info(f"[executor] SCALP-ENTRY: BUY {trading_symbol} qty={qty} "
+                f"conf={conf}% SL_pts={ticket['exit'].get('stop_loss_points')}")
+
+    from ..api.indmoney import _order_broadcast
+    order_result = _place_fo_buy(trading_symbol, qty)
+
+    if order_result and order_result.get('success'):
+        record = tp.add_tracked(ticket, qty=qty,
+                                notes=f"Scalp entry conf={conf}% | {signal.get('ticker')}")
+
+        _order_broadcast({
+            'type': 'order_update', 'severity': 'success',
+            'title': f"⏱ Scalp BUY: {ticket.get('display_symbol', trading_symbol)}",
+            'status': 'SCALP_ENTRY', 'symbol': trading_symbol,
+            'txn_type': 'BUY', 'qty': qty,
+            'message': f"Conf {conf}% — SL ₹{ticket['exit']['stop_loss_inr']:.2f} | "
+                       f"T1 ₹{ticket['exit']['target_1_inr']:.2f} | "
+                       f"Max hold {ticket.get('scalp_meta', {}).get('max_hold_min', '?')}m",
+            'timestamp': bu.now_ist().isoformat(),
+        })
+        logger.info(f"[executor] Scalp entry success: {trading_symbol} → {record.get('id')}")
+        return record
+    else:
+        err = (order_result or {}).get('error', 'Unknown error')
+        _order_broadcast({
+            'type': 'order_update', 'severity': 'error',
+            'title': f"Scalp BUY FAILED: {trading_symbol}",
+            'status': 'SCALP_ENTRY_FAILED', 'symbol': trading_symbol,
+            'txn_type': 'BUY', 'qty': qty,
+            'message': str(err),
+            'timestamp': bu.now_ist().isoformat(),
+        })
+        logger.error(f"[executor] Scalp entry failed: {trading_symbol} — {err}")
+        return None
+
+
+def check_scalp_hold_timeout(track_id: str, rec: dict, premium: float) -> bool:
+    """
+    Check if a scalp position has exceeded its max hold time.
+    Called by tracked_monitor on every poll cycle for scalp positions.
+    Returns True if timeout exit was triggered.
+    """
+    ticket = rec.get('ticket') or {}
+    scalp_meta = ticket.get('scalp_meta')
+    if not scalp_meta:
+        return False  # not a scalp position
+
+    entered_at_str = scalp_meta.get('entered_at', '')
+    max_hold = int(scalp_meta.get('max_hold_min', 10))
+
+    try:
+        entered_at = datetime.fromisoformat(entered_at_str)
+    except (ValueError, TypeError):
+        return False
+
+    elapsed = bu.now_ist() - entered_at
+    elapsed_min = elapsed.total_seconds() / 60.0
+
+    if elapsed_min >= max_hold:
+        logger.info(f"[executor] SCALP TIMEOUT: {ticket.get('trading_symbol')} "
+                    f"held {elapsed_min:.1f}m ≥ {max_hold}m — forcing exit")
+        return try_auto_exit(track_id, 'time_exit', rec, premium)
+
+    return False
+
+
 # ── Internal order helpers ────────────────────────────────────────────────────
 
 def _place_fo_buy(trading_symbol: str, qty: int) -> dict:
     """Place a BUY MARKET order for an F&O instrument."""
     try:
-        from flask import Flask
         from ..api.indmoney import (
             _live_trading_enabled, _connected, _resolve_fo_instrument,
             _fo_scrip_code, _headers, _order_broadcast, BASE_URL,
@@ -640,7 +904,7 @@ def _place_fo_buy(trading_symbol: str, qty: int) -> dict:
                 'status': 'SIMULATED', 'symbol': trading_symbol,
                 'txn_type': 'BUY', 'qty': qty,
                 'message': 'LIVE_TRADING_ENABLED=false — order not sent',
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': bu.now_ist().isoformat(),
             })
             return {'success': True, 'data': {'order_id': 'PAPER', 'status': 'SIMULATED'}}
 
@@ -694,7 +958,7 @@ def _place_fo_sell(trading_symbol: str, qty: int) -> dict:
                 'status': 'SIMULATED', 'symbol': trading_symbol,
                 'txn_type': 'SELL', 'qty': qty,
                 'message': 'LIVE_TRADING_ENABLED=false — order not sent',
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': bu.now_ist().isoformat(),
             })
             return {'success': True, 'data': {'order_id': 'PAPER', 'status': 'SIMULATED'}}
 

@@ -44,6 +44,9 @@ export function bsPrice(S, K, dteDays, sigma, type = 'CE', r = RISK_FREE_RATE) {
 
 /** All Greeks + theoretical price at (S, K, dte, sigma). */
 export function bsGreeks(S, K, dteDays, sigma, type = 'CE', r = RISK_FREE_RATE) {
+  if (!S || !K || sigma <= 0) {
+    return { price: 0, delta: 0, gamma: 0, theta_per_day: 0, vega_per_volpt: 0, iv_used: sigma }
+  }
   const T = Math.max(1e-6, dteDays / 365)
   const sqrtT = Math.sqrt(T)
   const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrtT)

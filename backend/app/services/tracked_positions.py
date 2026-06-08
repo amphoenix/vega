@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import uuid
 from datetime import datetime
@@ -23,22 +24,45 @@ _DATA_DIR  = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
 _FILE_PATH = os.path.abspath(os.path.join(_DATA_DIR, 'tracked_positions.json'))
 _lock      = threading.Lock()
 
+# In-memory read cache: invalidated on every _write(), avoids ~20 disk reads/min.
+_cache: Optional[List[dict]] = None
+
 
 def _read() -> List[dict]:
+    global _cache
+    if _cache is not None:
+        return _cache
     if not os.path.exists(_FILE_PATH):
-        return []
+        _cache = []
+        return _cache
     try:
         with open(_FILE_PATH, 'r') as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        _cache = data if isinstance(data, list) else []
+        return _cache
     except Exception:
         return []
 
 
 def _write(items: List[dict]) -> None:
+    global _cache
     os.makedirs(_DATA_DIR, exist_ok=True)
-    with open(_FILE_PATH, 'w') as f:
-        json.dump(items, f, indent=2, default=str)
+    # Atomic write: write to temp file, fsync, then rename over the target.
+    # Prevents a corrupt/empty JSON file on crash mid-write.
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=_DATA_DIR, suffix='.tmp')
+    try:
+        with os.fdopen(tmp_fd, 'w') as f:
+            json.dump(items, f, indent=2, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, _FILE_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    _cache = items
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

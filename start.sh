@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# PhoenixTrade — start backend, frontend, or both
+# Vega — start backend, frontend, or both
 # Usage:
 #   ./start.sh            — start both
 #   ./start.sh --backend  — backend only
@@ -11,9 +11,9 @@ cd "$ROOT_DIR"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
-info()  { echo -e "${GREEN}[phoenix]${NC} $1"; }
-warn()  { echo -e "${YELLOW}[phoenix]${NC} $1"; }
-error() { echo -e "${RED}[phoenix]${NC} $1"; }
+info()  { echo -e "${GREEN}[vega]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[vega]${NC} $1"; }
+error() { echo -e "${RED}[vega]${NC} $1"; }
 
 MODE="both"
 case "$1" in
@@ -151,7 +151,7 @@ if [[ "$MODE" != "backend" ]]; then
 fi
 
 echo ""
-[[ "$MODE" == "both" ]]     && echo -e "${GREEN}PhoenixTrade is running.${NC} Press Ctrl+C to stop."
+[[ "$MODE" == "both" ]]     && echo -e "${GREEN}Vega is running.${NC} Press Ctrl+C to stop."
 [[ "$MODE" == "backend" ]]  && echo -e "${GREEN}Backend running.${NC} Press Ctrl+C to stop."
 [[ "$MODE" == "frontend" ]] && echo -e "${GREEN}Frontend running.${NC} Press Ctrl+C to stop."
 echo ""
@@ -173,4 +173,4 @@ if [[ "$MODE" != "backend" ]] && [[ "${NO_OPEN:-0}" != "1" ]]; then
   fi
 fi
 
-wait $BE_PID $FE_PID
+wait $BE_PID $FE_PID $NGINX_PID

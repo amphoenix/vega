@@ -72,11 +72,11 @@ function onSnack(e) {
 }
 
 onMounted(() => {
-  window.addEventListener('phoenix:snack', onSnack)
+  window.addEventListener('vega:snack', onSnack)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('phoenix:snack', onSnack)
+  window.removeEventListener('vega:snack', onSnack)
 })
 
 defineExpose({ push })

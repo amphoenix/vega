@@ -16,12 +16,21 @@ else:
     load_dotenv(override=True)
 
 
+_DEFAULT_SECRET = 'vega-secret-key'
+
 class Config:
     """Flask configuration"""
 
     # Flask
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'phoenixtrade-secret-key')
-    DEBUG = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
+    SECRET_KEY = os.environ.get('SECRET_KEY', _DEFAULT_SECRET)
+    DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+
+    if SECRET_KEY == _DEFAULT_SECRET:
+        import warnings
+        warnings.warn(
+            "SECRET_KEY is the insecure default value. Set SECRET_KEY in your .env file.",
+            stacklevel=2,
+        )
 
     # Disable ASCII escaping in JSON responses so non-ASCII characters render correctly
     JSON_AS_ASCII = False

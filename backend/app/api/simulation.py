@@ -16,7 +16,7 @@ from ..services.simulation_runner import SimulationRunner, RunnerStatus
 from ..utils.logger import get_logger
 from ..models.project import ProjectManager
 
-logger = get_logger('phoenixtrade.api.simulation')
+logger = get_logger('vega.api.simulation')
 
 
 # Interview prompt optimization prefix
@@ -171,7 +171,7 @@ def create_simulation():
     Request (JSON):
         {
             "project_id": "proj_xxxx",           // required
-            "graph_id": "phoenixtrade_xxxx",     // optional, retrieved from project if not provided
+            "graph_id": "vega_xxxx",     // optional, retrieved from project if not provided
             "enable_twitter": true,               // optional, default true
             "enable_reddit": true                 // optional, default true
         }
@@ -182,7 +182,7 @@ def create_simulation():
             "data": {
                 "simulation_id": "sim_xxxx",
                 "project_id": "proj_xxxx",
-                "graph_id": "phoenixtrade_xxxx",
+                "graph_id": "vega_xxxx",
                 "status": "created",
                 "enable_twitter": true,
                 "enable_reddit": true,
@@ -1378,7 +1378,7 @@ def generate_profiles():
 
     Request (JSON):
         {
-            "graph_id": "phoenixtrade_xxxx",  // required
+            "graph_id": "vega_xxxx",  // required
             "entity_types": ["Student"],        // optional
             "use_llm": true,                    // optional
             "platform": "reddit"                // optional

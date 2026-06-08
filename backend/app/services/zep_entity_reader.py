@@ -13,7 +13,7 @@ from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
 
-logger = get_logger('phoenixtrade.zep_entity_reader')
+logger = get_logger('vega.zep_entity_reader')
 
 # Generic return type variable
 T = TypeVar('T')

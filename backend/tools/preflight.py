@@ -200,7 +200,7 @@ def main():
     base_map = {'^NSEI': 'NIFTY', '^NSEBANK': 'BANKNIFTY'}
     base = base_map.get(args.ticker, args.ticker.upper())
 
-    print(f"\n{'='*68}\nPHOENIX-TRADE PREMARKET PREFLIGHT — {args.ticker} {args.bias}\n{'='*68}")
+    print(f"\n{'='*68}\nVEGA PREMARKET PREFLIGHT — {args.ticker} {args.bias}\n{'='*68}")
 
     _check("Broker token + connectivity",      _t_broker_token)
     _check("F&O instrument master + columns",   _t_instrument_master)

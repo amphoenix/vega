@@ -29,7 +29,7 @@ from .zep_tools import (
     InterviewResult
 )
 
-logger = get_logger('phoenixtrade.report_agent')
+logger = get_logger('vega.report_agent')
 
 
 class ReportLogger:
@@ -353,8 +353,8 @@ class ReportConsoleLogger:
         
         # Attach to report_agent-related loggers
         loggers_to_attach = [
-            'phoenixtrade.report_agent',
-            'phoenixtrade.zep_tools',
+            'vega.report_agent',
+            'vega.zep_tools',
         ]
 
         for logger_name in loggers_to_attach:
@@ -369,8 +369,8 @@ class ReportConsoleLogger:
 
         if self._file_handler:
             loggers_to_detach = [
-                'phoenixtrade.report_agent',
-                'phoenixtrade.zep_tools',
+                'vega.report_agent',
+                'vega.zep_tools',
             ]
             
             for logger_name in loggers_to_detach:

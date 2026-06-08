@@ -1,4 +1,4 @@
-# PhoenixTrade
+# Vega
 
 **AI-Powered F&O Intraday Trading Terminal**
 
@@ -12,7 +12,7 @@ A professional-grade trading terminal combining real-time IndStocks broker WebSo
 
 ## What it does
 
-PhoenixTrade gives you a complete research-to-decision workflow for F&O intraday trading:
+Vega gives you a complete research-to-decision workflow for F&O intraday trading:
 
 1. **Watch** live candlestick charts — broker WebSocket candles across 6 intervals (5M/30M/1H/1D/1W/1Y), default 5M; Y-axis on left, price-level labels on right; mouse-wheel zoom + reset controls
 2. **Scan** the index F&O universe (NIFTY 50, SENSEX) every cycle — two-stage pipeline (pure-Python prefilter + Cerebrum LLM) emits BUY/SELL CE/PE signals when confidence ≥ threshold; in Auto mode, qualifying signals trigger paper/live orders via `order_executor`
@@ -101,6 +101,35 @@ Background service that cycles through the F&O universe and emits trade signals 
 
 **SSE events streamed to frontend:**
 `scan_start` → `scan_progress` → `scan_signal` → `scan_complete`
+
+### Scalp Scanner (`scalp_scanner.py`)
+
+Fast momentum-based scalp trading on 1-minute candles — **no LLM, pure technical**. Runs as a separate background thread alongside the F&O scanner. Designed for quick in-and-out trades (≤10 min hold) on NIFTY/SENSEX ATM options.
+
+**Detection pipeline (per scan cycle):**
+1. Fetch last 30 × 1-min candles via IndStocks historical API
+2. Compute Donchian channel (N-bar high/low), RSI(14), volume spike ratio
+3. Signal when: close breaks above/below channel + RSI confirms + volume spike (indices get volume-free compensation since they report volume=0)
+4. Confidence scoring: base 50–55 + volume spike (+15) + RSI confirm (+10) + breakout strength (+10/+5) + momentum bars (+10), capped at 95
+5. If confidence ≥ `SCALP_MIN_CONFIDENCE` → build ATM option ticket with fixed-point SL/T1
+6. Auto-entry via `order_executor.try_scalp_entry()` (paper or live depending on `LIVE_TRADING_ENABLED`)
+
+**Risk controls:**
+| Control | Detail |
+|---|---|
+| **Daily loss kill-switch** | Blocks all scalp entries when daily P&L ≤ `-SCALP_DAILY_LOSS_LIMIT` (default ₹500) |
+| **Max re-entries** | `SCALP_MAX_REENTRIES` per symbol per day (default 10) |
+| **Max hold timer** | Auto-exit after `SCALP_MAX_HOLD_MIN` minutes (default 10) |
+| **Fixed SL/T1** | Points-based: `SCALP_SL_PTS` (8pt) / `SCALP_T1_PTS` (15pt) — no percentage, no drift |
+
+**UI (Scalp Mode tab):**
+- 3-pane chart grid: NIFTY 50, SENSEX, and the active scalp ticker (5-min candles via `HomeChart`)
+- All live via SSE — no polling. Live prices from `liveSpots` store, scanner state every 10s
+- Momentum signal cards (click to focus 3rd chart pane)
+- Active position cards with hold-time progress bar
+- Live trade feed showing entries, exits, paper fills from order event SSE
+
+**SSE events:** `scalp_state` (initial + every 10s) → `scalp_scan_start` → `scalp_signal` → `scalp_scan_complete`
 
 ### Position Tracker & Auto-Execution
 
@@ -246,6 +275,9 @@ backend/                          Flask (port 5001)
                                   (technical prefilter + Cerebrum confirmation), Stage-1 trust
                                   override, ticket build via option_planner, capital gate,
                                   forwards qualifying signals to order_executor
+      scalp_scanner.py            Momentum scalp scanner — 1-min candles, Donchian breakout +
+                                  RSI + volume spike detection, fixed-point SL/T1, auto-entry
+                                  via executor, daily loss kill-switch, max hold timer
       option_planner.py           plan_option_trade() — delta-targeted strike resolution against
                                   broker F&O master, BS-derived premium SL/T1/T2 from spot
                                   targets, ATM IV back-solve, full Greeks on every ticket
@@ -404,6 +436,7 @@ Browser clicks "Run Analysis" (or scanner triggers internally)
                        ┌──────────────────────────────────┐
                        │  Background services (threads)   │
                        │  ─ FOScanner (3-min cycles)      │
+                       │  ─ ScalpScanner (60s cycles)     │
                        │  ─ PositionMonitor (5s polls)    │
                        │  ─ TrackedMonitor (3s polls)     │
                        │  ─ IndMoney WS subscriber        │
@@ -421,7 +454,7 @@ Browser clicks "Run Analysis" (or scanner triggers internally)
 
 ### Why nginx in front
 
-The browser caps **6 simultaneous connections per origin** over HTTP/1.1. PhoenixTrade keeps ~7 long-lived SSE streams open (scanner feed, position monitor, live-feed, alerts, plus per-underlying tick streams). Without HTTP/2 the 6-cap exhausts every available socket, leaving zero capacity for normal XHRs (`/api/market/ohlcv`, `/api/market/search`, `POST /api/trade/tracked`) — they queue indefinitely and the UI appears frozen.
+The browser caps **6 simultaneous connections per origin** over HTTP/1.1. Vega keeps ~7 long-lived SSE streams open (scanner feed, position monitor, live-feed, alerts, plus per-underlying tick streams). Without HTTP/2 the 6-cap exhausts every available socket, leaving zero capacity for normal XHRs (`/api/market/ohlcv`, `/api/market/search`, `POST /api/trade/tracked`) — they queue indefinitely and the UI appears frozen.
 
 nginx terminates **TLS + HTTP/2** on `:47291` and multiplexes every stream over a single TCP connection, removing the 6-cap entirely. Backend stays simple Flask (no async refactor, no ASGI bridge).
 
@@ -432,7 +465,8 @@ start.sh (parent shell, traps SIGINT)
 ├── nginx                               ←  $NGINX_PID
 │   └── -p $ROOT_DIR -c nginx.conf
 ├── python run.py  (Flask threaded)     ←  $BE_PID
-│   ├── FOScanner thread
+│   ├── FOScanner thread (swing, 3-min cycles)
+│   ├── ScalpScanner thread (momentum, 60s cycles)
 │   ├── OrderExecutor (auto-entry/exit within scanner + monitor)
 │   ├── TrackedMonitor poller (3s — alerts, trailing SL, auto-exit)
 │   ├── IndMoney WS thread
@@ -447,7 +481,7 @@ start.sh (parent shell, traps SIGINT)
 
 | Concern | How it's handled |
 |---|---|
-| **Duplicate streams across HMR reloads** | `EventSource` registries pinned to `window.__phoenix*`; on every `<script setup>` re-eval the previous instance's streams are explicitly closed before a fresh registry replaces them |
+| **Duplicate streams across HMR reloads** | `EventSource` registries pinned to `window.__vega*`; on every `<script setup>` re-eval the previous instance's streams are explicitly closed before a fresh registry replaces them |
 | **Per-underlying tick streams** | Opened only for tracked WATCHING positions and the currently charted ticker — non-watched underlyings rely on `/api/trade/live-feed` for ticks (no duplicate work) |
 | **DOM reuse bugs in scanner feed** | `:key="ticker+type+timestamp"` on `v-for` so foFeed mutations don't reuse stale bindings on the Watch button |
 | **Self-signed cert acceptance** | One-time `Advanced → Proceed` per browser at `https://localhost:47291`, persisted indefinitely |
@@ -456,7 +490,7 @@ start.sh (parent shell, traps SIGINT)
 
 ## Math Reference
 
-All formulas used by PhoenixTrade for option pricing, Greeks, P&L, position sizing, and signal scoring. Mirrors `backend/app/services/greeks.py` (Python) and `frontend/src/utils/blackScholes.js` (JS) — both implementations are unit-verified to match SciPy ground truth within rounding tolerance (< ₹0.01 on premium, < 1e-5 on Greeks).
+All formulas used by Vega for option pricing, Greeks, P&L, position sizing, and signal scoring. Mirrors `backend/app/services/greeks.py` (Python) and `frontend/src/utils/blackScholes.js` (JS) — both implementations are unit-verified to match SciPy ground truth within rounding tolerance (< ₹0.01 on premium, < 1e-5 on Greeks).
 
 ### Black-Scholes option pricing
 
@@ -874,7 +908,7 @@ Each row also displays **cost per lot** (`premium × lot_size`) and **breakeven 
 | All `/api/*` requests stuck `(pending)` | nginx not running or listening on wrong port | `lsof -nP -iTCP:47291` should show nginx LISTEN; if not, restart `./start.sh` |
 | `nginx: [emerg] bind() to 0.0.0.0:47291 failed (98: Address already in use)` | Previous nginx not killed cleanly | `pkill -f nginx` then re-run |
 | Multiple SSE rows pinging the same URL in DevTools | HMR orphaned old streams | Hard-refresh (`Cmd+Shift+R`); window-pinned cleanup will close stale ones automatically next save |
-| `Cerebrum failed (litellm.APIConnectionError: cannot switch to a different thread)` | Stale gevent monkey-patch from a previous version | Ensure `PHOENIX_USE_GEVENT` is unset; gevent has been removed from deps |
+| `Cerebrum failed (litellm.APIConnectionError: cannot switch to a different thread)` | Stale gevent monkey-patch from a previous version | Ensure `VEGA_USE_GEVENT` is unset; gevent has been removed from deps |
 | Watch button click does nothing | Vite saved a file mid-click and HMR aborted the in-flight POST | Don't edit code while clicking; the click handler shows an alert if the symbol is already tracked / in-flight |
 | Flask reloads constantly on file save | Werkzeug auto-reloader was enabled | We disabled `use_reloader=False` in `run.py` — if you re-enable it, the SSE generators will be killed every save |
 

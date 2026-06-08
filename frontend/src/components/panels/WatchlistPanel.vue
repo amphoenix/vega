@@ -69,7 +69,7 @@ const emit = defineEmits(['select-ticker'])
 const store = useMarketStore()
 const { watchlist, allAssets, chartTicker } = storeToRefs(store)
 
-const WATCHLIST_KEY = 'phoenix.watchlist.v1'
+const WATCHLIST_KEY = 'vega.watchlist.v1'
 const wlInput = ref('')
 
 const displayName = computed(() =>

@@ -44,7 +44,7 @@ from . import greeks as gk
 from . import tracked_positions as tp
 from ..utils.logger import get_logger
 
-logger = get_logger('phoenixtrade.tracked_monitor')
+logger = get_logger('vega.tracked_monitor')
 
 # ── Tunables ──────────────────────────────────────────────────────────────────
 POLL_INTERVAL_S   = 3.0      # spot fetch cadence per underlying
@@ -71,20 +71,23 @@ _force_exit_thread: Optional[threading.Thread] = None
 _force_exit_stop  = threading.Event()
 _force_exit_fired_today = False
 
+_sync_lock = threading.Lock()  # serialises concurrent sync() calls
+
 
 # ── SSE plumbing ──────────────────────────────────────────────────────────────
 def subscribe_sse() -> _queue.Queue:
     """Frontend opens an SSE connection — returns a Queue to drain."""
     q: _queue.Queue = _queue.Queue(maxsize=200)
-    with _subs_lock:
-        _subscribers.add(q)
-    # Replay current statuses so a reconnecting client immediately sees any
-    # position already in an alert state (e.g. SL hit while their tab was closed).
+    # Snapshot BEFORE adding to subscribers so broadcasts that arrive between
+    # snapshot and subscribe don't interleave with replay payloads in the wrong order.
+    # Any events fired in that gap are re-broadcast within POLL_INTERVAL_S (3s).
     with _status_lock:
         snapshot = list(_last_payload.values())
     for payload in snapshot:
         try: q.put_nowait(payload)
         except _queue.Full: pass
+    with _subs_lock:
+        _subscribers.add(q)
     return q
 
 
@@ -253,7 +256,7 @@ def _trail_sl_and_targets(rec: dict, prem: float) -> None:
             't1':  ex.get('target_1_inr'),
             't2':  ex.get('target_2_inr'),
             'high_water': hw,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': bu.now_ist().isoformat(),
         })
 
 
@@ -285,7 +288,7 @@ def _build_payload(rec: dict, prem: float, status: str, spot: float) -> dict:
         'sl'             : (t.get('exit') or {}).get('stop_loss_inr'),
         't1'             : (t.get('exit') or {}).get('target_1_inr'),
         't2'             : (t.get('exit') or {}).get('target_2_inr'),
-        'timestamp'      : datetime.now().isoformat(),
+        'timestamp'      : bu.now_ist().isoformat(),
     }
 
 
@@ -369,6 +372,16 @@ def _poll_once() -> None:
                             f"(src={prem_source})")
                 _broadcast(payload)
 
+            # ── Scalp hold-timeout check ───────────────────────────────
+            # For scalp positions, exit if held longer than max_hold_min.
+            if t.get('trade_mode') == 'scalp' or t.get('scalp_meta'):
+                try:
+                    from .order_executor import check_scalp_hold_timeout
+                    if check_scalp_hold_timeout(pid, rec, prem):
+                        continue  # exit already triggered
+                except Exception as _sh:
+                    logger.debug(f"[tracked_monitor] scalp timeout check: {_sh}")
+
             # ── Auto-exit via order executor ──────────────────────────
             # Run on EVERY poll where status is an exit trigger, not just
             # on transitions. This ensures exit retries if the first
@@ -389,7 +402,7 @@ def _poll_once() -> None:
             'realized': round(get_daily_pnl(), 2),
             'kill_switch': is_kill_switch_active(),
             'limit': daily_loss_limit(),
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': bu.now_ist().isoformat(),
         })
     except Exception:
         pass
@@ -411,7 +424,7 @@ def _push_funds_update() -> None:
         _broadcast({
             'type': 'funds_update',
             'available_cash': cash,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': bu.now_ist().isoformat(),
         })
     except Exception as e:
         logger.debug(f"funds_update broadcast failed: {e}")
@@ -433,9 +446,23 @@ def _poll_loop() -> None:
 def _force_exit_loop() -> None:
     """One-shot daemon: at 15:00 IST emit time_exit for every open position."""
     global _force_exit_fired_today
+    _midnight_reset_fired = False
     while not _force_exit_stop.is_set():
         now_ist = bu.now_ist()
-        # Reset the once-per-day flag at midnight
+        # Auto daily reset at midnight — zeroes P&L, restores loss limits to base
+        if now_ist.hour == 0 and not _midnight_reset_fired:
+            try:
+                from .order_executor import reset_daily
+                from .scalp_scanner import reset_scalp_daily
+                reset_daily()
+                reset_scalp_daily()
+                logger.info("[monitor] Midnight daily reset fired")
+            except Exception as _e:
+                logger.warning(f"[monitor] Midnight reset failed: {_e}")
+            _midnight_reset_fired = True
+        elif now_ist.hour != 0:
+            _midnight_reset_fired = False
+
         if now_ist.hour == 0 and _force_exit_fired_today:
             _force_exit_fired_today = False
 
@@ -475,6 +502,11 @@ def sync() -> None:
     Idempotent: ensures the poller + force-exit threads are running iff there
     is at least one tracked position. Call after every add/remove.
     """
+    with _sync_lock:
+        _sync_inner()
+
+
+def _sync_inner() -> None:
     global _poller_thread, _force_exit_thread
 
     positions = tp.list_tracked()

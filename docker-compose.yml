@@ -1,7 +1,7 @@
 services:
-  phoenixtrade:
+  vega:
     build: .
-    container_name: phoenixtrade
+    container_name: vega
     env_file:
       - .env
     ports:

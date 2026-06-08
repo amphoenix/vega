@@ -351,6 +351,7 @@
         >Limit: -₹{{ dailyPnlComputed.limit }}</span
       >
       <span v-if="dailyPnlComputed.kill_switch" class="lv-daily-kill">🛑 KILL SWITCH</span>
+      <button v-if="dailyPnlComputed.kill_switch" class="lv-ks-reset-btn" @click="resetSwingKillSwitch" title="Re-enable swing trading (P&L not reset)">Reset</button>
     </div>
 
     <!-- ═ WATCHING — positions the user manually entered, persists across refreshes -->
@@ -913,7 +914,7 @@ import { repriceTicket, GLOSSARY } from '../../utils/blackScholes'
 import { fmtIndian, fmtTime } from '../../utils/formatters'
 import { getOptionChain } from '../../api/market'
 import { snack } from '../../utils/snack'
-import { playNotifSound } from '../../utils/notifSound'
+import { playNotifSound, isMuted } from '../../utils/notifSound'
 
 const { chartTicker } = storeToRefs(useMarketStore())
 const { foAnalysing, foScannerState } = storeToRefs(useFoScannerStore())
@@ -945,34 +946,34 @@ const _prevTrackStatus = {}
 const _trackInFlight = new Set()
 const _trackExitArmed = ref(new Set())
 const _chainPrevPrices = { value: {} }
-const _MISSED_KEY = 'phoenix_missed_alerts_v1'
+const _MISSED_KEY = 'vega_missed_alerts_v1'
 
 // Close any leftover singleton streams from a previous HMR reload
 if (typeof window !== 'undefined') {
-  if (window.__phoenix_alertsES) {
-    try { window.__phoenix_alertsES.close?.() } catch {}
-    window.__phoenix_alertsES = null
+  if (window.__vega_alertsES) {
+    try { window.__vega_alertsES.close?.() } catch {}
+    window.__vega_alertsES = null
   }
 }
 
 // Per-underlying SSE stream registry — keyed on window so HMR reloads
 // kill old streams before the new module opens fresh ones.
 if (typeof window !== 'undefined') {
-  const prev = window.__phoenixTicketStreams
+  const prev = window.__vegaTicketStreams
   if (prev) {
     for (const k of Object.keys(prev)) {
       try { prev[k]?.close?.() } catch {}
     }
   }
-  window.__phoenixTicketStreams = {}
+  window.__vegaTicketStreams = {}
 }
 const _ticketStreams =
-  typeof window !== 'undefined' ? window.__phoenixTicketStreams : {}
+  typeof window !== 'undefined' ? window.__vegaTicketStreams : {}
 
 // ── Stream management ──────────────────────────────────────────────────────
 function _openTicketStream(symbol) {
   if (!symbol || _ticketStreams[symbol]) return
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
   const es = new EventSource(
     `${base}/api/indmoney/stream/${encodeURIComponent(symbol)}`,
   )
@@ -1004,7 +1005,7 @@ function _closeAllTicketStreams() {
 }
 
 function _registerSingletonStream(name, es) {
-  if (typeof window !== 'undefined') window[`__phoenix_${name}`] = es
+  if (typeof window !== 'undefined') window[`__vega_${name}`] = es
   return es
 }
 
@@ -1016,10 +1017,10 @@ const autoTradingEnabled = ref(false)
 
 async function _loadDailyPnl() {
   try {
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
     const r = await fetch(`${base}/api/trade/executor/status`).then((x) => x.json())
     if (r.success) {
-      _dailyRealized.value = r.data.daily_realized_pnl || 0
+      _dailyRealized.value = r.data.swing_realized_pnl ?? r.data.daily_realized_pnl ?? 0
       _dailyKillSwitch.value = r.data.kill_switch_active || false
       _dailyLimit.value = r.data.daily_loss_limit_inr || 1000
       if (r.data.auto_trading_enabled !== undefined) {
@@ -1033,7 +1034,7 @@ async function _loadDailyPnl() {
 
 async function toggleAutoTrading() {
   try {
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
     const next = !autoTradingEnabled.value
     const r = await fetch(`${base}/api/trade/executor/auto-trading`, {
       method: 'POST',
@@ -1065,7 +1066,7 @@ const dailyPnlComputed = computed(() => {
 // ── Tracked-position persistence ───────────────────────────────────────────
 async function _loadTracked() {
   try {
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
     const r = await fetch(`${base}/api/trade/tracked`).then((x) => x.json())
     if (r.success) trackedPositions.value = r.data || []
   } catch (e) {
@@ -1093,7 +1094,7 @@ async function trackEntered(ticket) {
   }
   _trackInFlight.add(ticket.trading_symbol)
   try {
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
     const resp = await fetch(`${base}/api/trade/tracked`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1123,7 +1124,7 @@ async function trackExited(card) {
     return
   }
   try {
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
     const qs = new URLSearchParams({
       exit_premium: String(card.now_premium ?? ''),
       exit_reason: 'manual',
@@ -1146,12 +1147,12 @@ function isExitArmed(id) {
 
 async function forceExit(card) {
   if (!confirm(`⚡ Force-exit ${card.display_symbol || card.trading_symbol}?\n\nThis will place a SELL MARKET order immediately.`)) return
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
   try {
     const r = await fetch(`${base}/api/trade/executor/force-exit/${card.id}`, { method: 'POST' })
     const data = await r.json()
     if (data.success) {
-      snack.warning('Force exit queued', `${card.display_symbol || card.trading_symbol} — will sell on next poll`)
+      snack.warning('Force exit executing', `${card.display_symbol || card.trading_symbol} — selling at market now`)
     } else {
       snack.error('Force exit failed', data.error || 'Unknown error')
     }
@@ -1163,6 +1164,7 @@ async function forceExit(card) {
 // ── Audio alerts ───────────────────────────────────────────────────────────
 function _beep(freq = 880, duration = 0.18, volume = 0.18, type = 'sine') {
   try {
+    if (isMuted()) return
     if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)()
     if (_audioCtx.state === 'suspended') _audioCtx.resume()
     const osc = _audioCtx.createOscillator()
@@ -1196,10 +1198,14 @@ function _playExitAlert(status) {
 
 function _maybeAlert(cards) {
   const ALERT_STATES = new Set(['sl_hit', 'time_exit', 'past_t1', 'past_t2', 'near_sl', 'near_t1'])
+  const currentIds = new Set(cards.map(c => c.id))
   for (const c of cards) {
     const prev = _prevTrackStatus[c.id]
     if (c.status !== prev && ALERT_STATES.has(c.status)) _playExitAlert(c.status)
     _prevTrackStatus[c.id] = c.status
+  }
+  for (const id of Object.keys(_prevTrackStatus)) {
+    if (!currentIds.has(id)) delete _prevTrackStatus[id]
   }
 }
 
@@ -1234,7 +1240,7 @@ async function requestNotifPermission() {
     const p = await Notification.requestPermission()
     notifPermission.value = p
     if (p === 'granted') {
-      new Notification('PhoenixTrade alerts enabled', {
+      new Notification('Vega alerts enabled', {
         body: 'You will get a desktop popup on SL / T1 / T2 / 15:00 events even when this tab is hidden.',
         icon: '/favicon.ico',
       })
@@ -1289,13 +1295,20 @@ function _onTrackedAlert(payload) {
 
 function _openTrackedAlertsStream() {
   if (_alertsES) return
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
   _alertsES = _registerSingletonStream(
     'alertsES',
     new EventSource(`${base}/api/trade/tracked/alerts/stream`),
   )
   _alertsES.onopen = () => { alertsConnected.value = true }
-  _alertsES.onerror = () => { alertsConnected.value = false }
+  _alertsES.onerror = () => {
+    alertsConnected.value = false
+    // If EventSource reached CLOSED state (readyState 2) it won't auto-retry.
+    // Null the ref so the next call to _openTrackedAlertsStream() recreates it.
+    if (_alertsES && _alertsES.readyState === EventSource.CLOSED) {
+      _alertsES = null
+    }
+  }
   _alertsES.onmessage = (e) => {
     try {
       const m = JSON.parse(e.data)
@@ -1490,11 +1503,15 @@ const liveTicketCards = computed(() => {
 // ── Tracked position cards ──────────────────────────────────────────────────
 const trackedCards = computed(() => {
   const out = []
-  const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
-  const istMins = nowIST.getHours() * 60 + nowIST.getMinutes()
+  const _now = new Date()
+  const _utc = _now.getTime() + _now.getTimezoneOffset() * 60000
+  const _ist = new Date(_utc + 5.5 * 3600000)  // IST = UTC+5:30
+  const istMins = _ist.getHours() * 60 + _ist.getMinutes()
 
   for (const rec of trackedPositions.value) {
     const t = rec.ticket || {}
+    // Skip scalp positions — they have their own panel
+    if (t.trade_mode === 'scalp' || t.scalp_meta) continue
     const under = t.underlying
     const spot =
       Number(liveSpots.value[under]) ||
@@ -1566,8 +1583,24 @@ function ladderPct(s, which) {
 }
 
 async function triggerScan() {
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
   await fetch(`${base}/api/trade/fo-scanner/trigger`, { method: 'POST' }).catch(() => {})
+}
+
+async function resetSwingKillSwitch() {
+  try {
+    const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
+    const res = await fetch(`${base}/api/trade/executor/reset-killswitch`, { method: 'POST' })
+    const data = await res.json()
+    if (data.success) {
+      _dailyKillSwitch.value = false
+      snack({ severity: 'success', title: 'Kill Switch', message: 'Swing trading re-enabled' })
+    } else {
+      snack({ severity: 'error', title: 'Kill Switch', message: 'Reset failed' })
+    }
+  } catch {
+    snack({ severity: 'error', title: 'Kill Switch', message: 'Reset failed' })
+  }
 }
 
 // ── Order events SSE stream ────────────────────────────────────────────────
@@ -1575,7 +1608,7 @@ let _orderES = null
 
 function _openOrderEventsStream() {
   if (_orderES) return
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
   _orderES = new EventSource(`${base}/api/indmoney/order-events/stream`)
   _orderES.onmessage = (e) => {
     try {
@@ -1705,6 +1738,7 @@ onUnmounted(() => {
   if (_liveClockTimer) clearInterval(_liveClockTimer)
   if (_alertsES) { _alertsES.close(); _alertsES = null }
   if (_orderES)  { _orderES.close();  _orderES = null }
+  if (_audioCtx) { try { _audioCtx.close() } catch {} ; _audioCtx = null }
 })
 </script>
 

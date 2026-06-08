@@ -391,7 +391,7 @@ async function trackEntered(ticket) {
   }
   _trackInFlight.add(ticket.trading_symbol)
   try {
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
     const resp = await fetch(`${base}/api/trade/tracked`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -455,7 +455,7 @@ let _foScannerES = null
 
 function _openFoScannerStream() {
   if (_foScannerES) return
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+  const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
 
   fetch(`${base}/api/trade/fo-scanner/status`)
     .then((r) => r.json())
@@ -479,7 +479,7 @@ function _openFoScannerStream() {
     .catch(() => {})
 
   _foScannerES = new EventSource(`${base}/api/trade/fo-scanner/stream`)
-  if (typeof window !== 'undefined') window.__phoenix_foScannerES = _foScannerES
+  if (typeof window !== 'undefined') window.__vega_foScannerES = _foScannerES
 
   _foScannerES.onmessage = (e) => {
     try {
@@ -526,7 +526,7 @@ function _openFoScannerStream() {
 
 async function startScanner() {
   try {
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
     await fetch(`${base}/api/trade/fo-scanner/start`, { method: 'POST' })
     scannerRunning.value = true
     _openFoScannerStream()
@@ -535,7 +535,7 @@ async function startScanner() {
 
 async function stopScanner() {
   try {
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
     await fetch(`${base}/api/trade/fo-scanner/stop`, { method: 'POST' })
     scannerRunning.value = false
   } catch (e) { console.error('stopScanner', e) }
@@ -543,7 +543,7 @@ async function stopScanner() {
 
 async function triggerScan() {
   try {
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+    const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
     await fetch(`${base}/api/trade/fo-scanner/trigger`, { method: 'POST' })
     scannerRunning.value = true
     _openFoScannerStream()
@@ -558,7 +558,7 @@ onMounted(() => {
 onUnmounted(() => {
   clearInterval(_clockTimer)
   if (_foScannerES) { _foScannerES.close(); _foScannerES = null }
-  if (typeof window !== 'undefined') window.__phoenix_foScannerES = null
+  if (typeof window !== 'undefined') window.__vega_foScannerES = null
 })
 </script>
 

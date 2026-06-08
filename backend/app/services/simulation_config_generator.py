@@ -22,7 +22,7 @@ from ..config import Config
 from ..utils.logger import get_logger
 from .zep_entity_reader import EntityNode, ZepEntityReader
 
-logger = get_logger('phoenixtrade.simulation_config')
+logger = get_logger('vega.simulation_config')
 
 # Chinese daily schedule configuration (Beijing time)
 CHINA_TIMEZONE_CONFIG = {
