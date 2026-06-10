@@ -575,20 +575,71 @@ function _updateMarkers(candles) {
   )
 }
 
-// ── Live price update ─────────────────────────────────────────────────────────
+// ── Live price update (tick-driven, creates new candles automatically) ────────
+function _intervalMinutes() {
+  const m = { '1m': 1, '5m': 5, '30m': 30, '1h': 60 }
+  return m[props.interval] || 0  // 0 = daily/weekly, no auto-candle
+}
+
+function _candleDateStr(date) {
+  // Format Date to 'YYYY-MM-DD HH:MM' in IST
+  const ist = new Date(date.getTime() + 5.5 * 3600000)
+  const y = ist.getUTCFullYear()
+  const mo = String(ist.getUTCMonth() + 1).padStart(2, '0')
+  const d = String(ist.getUTCDate()).padStart(2, '0')
+  const h = String(ist.getUTCHours()).padStart(2, '0')
+  const mi = String(ist.getUTCMinutes()).padStart(2, '0')
+  return `${y}-${mo}-${d} ${h}:${mi}`
+}
+
 function _applyLivePrice(price) {
   if (!price || !ohlcv.value.length || !_candleSeries) return
+
+  const intMin = _intervalMinutes()
   const candles = [...ohlcv.value]
-  const last = { ...candles[candles.length - 1] }
-  last.close = price
-  if (price > last.high) last.high = price
-  if (price < last.low) last.low = price
-  candles[candles.length - 1] = last
+  const last = candles[candles.length - 1]
+
+  // Check if we need a new candle (tick crossed into next period)
+  if (intMin > 0 && last.date) {
+    const now = new Date()
+    const istNow = new Date(now.getTime() + 5.5 * 3600000)
+    const nowMin = istNow.getUTCHours() * 60 + istNow.getUTCMinutes()
+    // Parse last candle's minute from 'YYYY-MM-DD HH:MM'
+    const parts = last.date.split(' ')
+    if (parts.length === 2) {
+      const [lh, lm] = parts[1].split(':').map(Number)
+      const lastMin = lh * 60 + lm
+      const lastBucket = Math.floor(lastMin / intMin)
+      const nowBucket = Math.floor(nowMin / intMin)
+      if (nowBucket > lastBucket || parts[0] !== `${istNow.getUTCFullYear()}-${String(istNow.getUTCMonth()+1).padStart(2,'0')}-${String(istNow.getUTCDate()).padStart(2,'0')}`) {
+        // New candle period — create a new bar
+        const bucketMin = nowBucket * intMin
+        const newH = Math.floor(bucketMin / 60)
+        const newM = bucketMin % 60
+        const dateStr = `${parts[0].length > 8 ? `${istNow.getUTCFullYear()}-${String(istNow.getUTCMonth()+1).padStart(2,'0')}-${String(istNow.getUTCDate()).padStart(2,'0')}` : parts[0]} ${String(newH).padStart(2,'0')}:${String(newM).padStart(2,'0')}`
+        const newCandle = { date: dateStr, open: price, high: price, low: price, close: price, volume: 0 }
+        candles.push(newCandle)
+        ohlcv.value = candles
+        const t = toTime(dateStr)
+        _candleSeries.update({ time: t, open: price, high: price, low: price, close: price })
+        _volumeSeries.update({ time: t, value: 0, color: `${GREEN}44` })
+        _updateLevels()
+        return
+      }
+    }
+  }
+
+  // Update current candle
+  const updated = { ...last }
+  updated.close = price
+  if (price > updated.high) updated.high = price
+  if (price < updated.low) updated.low = price
+  candles[candles.length - 1] = updated
   ohlcv.value = candles
 
-  const t = toTime(last.date)
-  _candleSeries.update({ time: t, open: last.open, high: last.high, low: last.low, close: last.close })
-  _volumeSeries.update({ time: t, value: Number(last.volume) || 0, color: last.close >= last.open ? `${GREEN}44` : `${RED}44` })
+  const t = toTime(updated.date)
+  _candleSeries.update({ time: t, open: updated.open, high: updated.high, low: updated.low, close: updated.close })
+  _volumeSeries.update({ time: t, value: Number(updated.volume) || 0, color: updated.close >= updated.open ? `${GREEN}44` : `${RED}44` })
   _updateLevels()
 }
 
@@ -611,7 +662,8 @@ function _apiInterval() {
 }
 
 function _candleRefreshMs() {
-  return props.interval === '5m' ? 30_000 : props.interval === '30m' ? 90_000 : props.interval === '1h' ? 120_000 : 60_000
+  // Candles are created live from ticks — this is just a background sync for volume/corrections
+  return props.interval === '1m' ? 60_000 : props.interval === '5m' ? 60_000 : 120_000
 }
 
 function _startCandleRefresh() {

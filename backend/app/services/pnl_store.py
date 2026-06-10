@@ -177,6 +177,8 @@ def daily_summary(date_str: Optional[str] = None) -> dict:
     except sqlite3.OperationalError:
         _init()  # table may have been deleted — recreate
         return _daily_summary_inner(date_str)
+    except Exception:
+        return {'date': date_str, 'swing': _zero(), 'scalp': _zero(), 'total': _zero()}
 
 
 def _daily_summary_inner(date_str: str) -> dict:

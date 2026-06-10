@@ -1318,22 +1318,15 @@ class SimulationRunner:
             if cls._processes or cls._graph_memory_enabled:
                 logger.info(f"Signal {signum} received, starting cleanup...")
             cls.cleanup_all_simulations()
-           
-            # Call the original signal handler to let Flask exit normally
+
+            # Delegate to original handler; if not callable, just return
+            # (cleanup is done, Python/Flask will handle the actual exit)
             if signum == signal.SIGINT and callable(original_sigint):
                 original_sigint(signum, frame)
             elif signum == signal.SIGTERM and callable(original_sigterm):
                 original_sigterm(signum, frame)
-            elif has_sighup and signum == signal.SIGHUP:
-                # SIGHUP: sent when terminal closes
-                if callable(original_sighup):
-                    original_sighup(signum, frame)
-                else:
-                    # Default behavior: normal exit
-                    sys.exit(0)
-            else:
-                # If original handler is not callable (e.g. SIG_DFL), exit cleanly
-                sys.exit(0)
+            elif has_sighup and signum == signal.SIGHUP and callable(original_sighup):
+                original_sighup(signum, frame)
 
         # Register atexit handler (as fallback)
         atexit.register(cls.cleanup_all_simulations)

@@ -915,6 +915,7 @@ import { fmtIndian, fmtTime } from '../../utils/formatters'
 import { getOptionChain } from '../../api/market'
 import { snack } from '../../utils/snack'
 import { playNotifSound, isMuted } from '../../utils/notifSound'
+import { onOrderEvent, onTrackedAlert } from '../../composables/useSSE'
 
 const { chartTicker } = storeToRefs(useMarketStore())
 const { foAnalysing, foScannerState } = storeToRefs(useFoScannerStore())
@@ -936,10 +937,8 @@ const notifPermission = ref(
   typeof Notification !== 'undefined' ? Notification.permission : 'denied',
 )
 
-let _dailyPnlTimer = null
 let _liveClockTimer = null
 let _ticketAgeTimer = null
-let _alertsES = null
 let _audioCtx = null
 
 const _prevTrackStatus = {}
@@ -947,14 +946,6 @@ const _trackInFlight = new Set()
 const _trackExitArmed = ref(new Set())
 const _chainPrevPrices = { value: {} }
 const _MISSED_KEY = 'vega_missed_alerts_v1'
-
-// Close any leftover singleton streams from a previous HMR reload
-if (typeof window !== 'undefined') {
-  if (window.__vega_alertsES) {
-    try { window.__vega_alertsES.close?.() } catch {}
-    window.__vega_alertsES = null
-  }
-}
 
 // Per-underlying SSE stream registry — keyed on window so HMR reloads
 // kill old streams before the new module opens fresh ones.
@@ -1004,10 +995,6 @@ function _closeAllTicketStreams() {
   Object.keys(_ticketStreams).forEach(_closeTicketStream)
 }
 
-function _registerSingletonStream(name, es) {
-  if (typeof window !== 'undefined') window[`__vega_${name}`] = es
-  return es
-}
 
 // ── Daily P&L ──────────────────────────────────────────────────────────────
 const _dailyRealized = ref(0)
@@ -1153,6 +1140,7 @@ async function forceExit(card) {
     const data = await r.json()
     if (data.success) {
       snack.warning('Force exit executing', `${card.display_symbol || card.trading_symbol} — selling at market now`)
+      setTimeout(() => window.dispatchEvent(new Event('vega:pnl-changed')), 2000)
     } else {
       snack.error('Force exit failed', data.error || 'Unknown error')
     }
@@ -1293,52 +1281,30 @@ function _onTrackedAlert(payload) {
   }
 }
 
-function _openTrackedAlertsStream() {
-  if (_alertsES) return
-  const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
-  _alertsES = _registerSingletonStream(
-    'alertsES',
-    new EventSource(`${base}/api/trade/tracked/alerts/stream`),
-  )
-  _alertsES.onopen = () => { alertsConnected.value = true }
-  _alertsES.onerror = () => {
-    alertsConnected.value = false
-    // If EventSource reached CLOSED state (readyState 2) it won't auto-retry.
-    // Null the ref so the next call to _openTrackedAlertsStream() recreates it.
-    if (_alertsES && _alertsES.readyState === EventSource.CLOSED) {
-      _alertsES = null
-    }
+// ── Shared SSE: tracked alerts (replaces _openTrackedAlertsStream) ──────────
+onTrackedAlert((m) => {
+  if (m.type === 'alerts_connected') { alertsConnected.value = true; return }
+  if (m.type === 'heartbeat') return
+  if (m.type === 'funds_update') { indmoneyAvailableCash.value = m.available_cash ?? null; return }
+  if (m.type === 'daily_pnl') {
+    _dailyRealized.value = m.realized ?? 0
+    _dailyKillSwitch.value = m.kill_switch ?? false
+    _dailyLimit.value = m.limit ?? 1000
+    return
   }
-  _alertsES.onmessage = (e) => {
-    try {
-      const m = JSON.parse(e.data)
-      if (m.type === 'alerts_connected') { alertsConnected.value = true; return }
-      if (m.type === 'heartbeat') return
-      if (m.type === 'funds_update') { indmoneyAvailableCash.value = m.available_cash ?? null; return }
-      if (m.type === 'daily_pnl') {
-        _dailyRealized.value = m.realized ?? 0
-        _dailyKillSwitch.value = m.kill_switch ?? false
-        _dailyLimit.value = m.limit ?? 1000
-        return
+  if (m.type === 'tracked_update') {
+    for (const rec of trackedPositions.value) {
+      if (rec.id === m.id && rec.ticket?.exit) {
+        if (m.sl != null) rec.ticket.exit.stop_loss_inr = m.sl
+        if (m.t1 != null) rec.ticket.exit.target_1_inr = m.t1
+        if (m.t2 != null) rec.ticket.exit.target_2_inr = m.t2
+        break
       }
-      if (m.type === 'tracked_update') {
-        // Live SL/T1/T2 update from server trailing — patch local position
-        for (const rec of trackedPositions.value) {
-          if (rec.id === m.id && rec.ticket?.exit) {
-            if (m.sl != null) rec.ticket.exit.stop_loss_inr = m.sl
-            if (m.t1 != null) rec.ticket.exit.target_1_inr = m.t1
-            if (m.t2 != null) rec.ticket.exit.target_2_inr = m.t2
-            break
-          }
-        }
-        return
-      }
-      if (m.type === 'tracked_alert') _onTrackedAlert(m)
-    } catch (err) {
-      console.warn('alerts SSE parse', err)
     }
+    return
   }
-}
+  if (m.type === 'tracked_alert') _onTrackedAlert(m)
+})
 
 // ── Option chain ───────────────────────────────────────────────────────────
 async function _fetchOptionChain(sym) {
@@ -1603,64 +1569,40 @@ async function resetSwingKillSwitch() {
   }
 }
 
-// ── Order events SSE stream ────────────────────────────────────────────────
-let _orderES = null
-
-function _openOrderEventsStream() {
-  if (_orderES) return
-  const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
-  _orderES = new EventSource(`${base}/api/indmoney/order-events/stream`)
-  _orderES.onmessage = (e) => {
-    try {
-      const m = JSON.parse(e.data)
-      if (m.type === 'order_events_connected' || m.type === 'heartbeat') return
-      if (m.type === 'order_update') {
-        // Map order status to specific sound type
-        const statusSoundMap = {
-          'ENTRY_PLACED': 'entry_buy',
-          'SL_HIT':       'sl_exit',
-          'PAST_T1':      't1_exit',
-          'PAST_T2':      't2_exit',
-          'TIME_EXIT':    'time_exit',
-          'THESIS_FLIP':  'thesis_exit',
-          'SLIPPAGE_REJECT': 'slippage_reject',
-          'SIMULATED':    'entry_buy',
-        }
-        const soundType = statusSoundMap[m.status] || m.severity || 'info'
-        playNotifSound(soundType)
-        snack({
-          severity: m.severity || 'info',
-          title:    m.title || `Order ${m.status}`,
-          message:  m.message || '',
-          duration: m.severity === 'error' ? 8000 : 5000,
-          sound: false,
-        })
-        // Refresh tracked positions + daily P&L on any order event
-        _loadTracked()
-        _loadDailyPnl()
-      }
-    } catch {}
+// ── Shared SSE: order events (replaces _openOrderEventsStream) ──────────────
+onOrderEvent((m) => {
+  if (m.type === 'order_events_connected' || m.type === 'heartbeat') return
+  if (m.type === 'order_update') {
+    const statusSoundMap = {
+      'ENTRY_PLACED': 'entry_buy',
+      'SL_HIT':       'sl_exit',
+      'PAST_T1':      't1_exit',
+      'PAST_T2':      't2_exit',
+      'TIME_EXIT':    'time_exit',
+      'THESIS_FLIP':  'thesis_exit',
+      'SLIPPAGE_REJECT': 'slippage_reject',
+      'SIMULATED':    'entry_buy',
+    }
+    const soundType = statusSoundMap[m.status] || m.severity || 'info'
+    playNotifSound(soundType)
+    snack({
+      severity: m.severity || 'info',
+      title:    m.title || `Order ${m.status}`,
+      message:  m.message || '',
+      duration: m.severity === 'error' ? 8000 : 5000,
+      sound: false,
+    })
+    _loadTracked()
+    _loadDailyPnl()
   }
-  _orderES.onerror = () => {
-    // Auto-reconnect is built into EventSource
-  }
-}
+})
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 onMounted(() => {
   _loadTracked()
   _loadDailyPnl()
   _loadMissedAlerts()
-  _openTrackedAlertsStream()
-  _openOrderEventsStream()
-  // Daily P&L + tracked updates now arrive via SSE (every 3s from server).
-  // Keep a slow fallback poll for SSE reconnect gaps only.
-  _dailyPnlTimer = setInterval(() => {
-    if (!alertsConnected.value) {
-      _loadDailyPnl()
-      _loadTracked()
-    }
-  }, 30_000)
+  // Shared SSE for order events + tracked alerts is auto-connected via composable
 
   const tickClock = () => {
     liveClock.value = fmtTime(new Date()) + ' IST'
@@ -1733,11 +1675,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   _closeAllTicketStreams()
-  if (_dailyPnlTimer)  clearInterval(_dailyPnlTimer)
   if (_ticketAgeTimer) clearInterval(_ticketAgeTimer)
   if (_liveClockTimer) clearInterval(_liveClockTimer)
-  if (_alertsES) { _alertsES.close(); _alertsES = null }
-  if (_orderES)  { _orderES.close();  _orderES = null }
   if (_audioCtx) { try { _audioCtx.close() } catch {} ; _audioCtx = null }
 })
 </script>

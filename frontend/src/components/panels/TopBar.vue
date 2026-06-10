@@ -124,6 +124,7 @@ import { useMarketStore } from '../../stores/useMarketStore'
 import { searchTicker, getPnlSummary } from '../../api/market'
 import { fmtPrice } from '../../utils/formatters'
 import { isMuted, toggleMute } from '../../utils/notifSound'
+import { onOrderEvent } from '../../composables/useSSE'
 
 function fmtCash(v) {
   if (v == null) return '—'
@@ -159,11 +160,9 @@ const timeframes = [
 // ── Daily P&L badge ──────────────────────────────────────────────────────────
 const _zeroPnl = () => ({ trades: 0, gross: 0, brokerage: 0, net: 0 })
 const dailyPnl = ref({ swing: _zeroPnl(), scalp: _zeroPnl(), total: _zeroPnl() })
-let _pnlTimer = null
 
 async function _fetchDailyPnl() {
   try {
-    // axios interceptor returns response.data directly — res IS the payload, not {data: payload}
     const res = await getPnlSummary()
     if (res?.success) {
       const live = res.live || {}
@@ -185,18 +184,27 @@ async function _fetchDailyPnl() {
 
 function round2(v) { return Math.round(v * 100) / 100 }
 
+// ── Live PnL via shared SSE (order events) ────────────────────────────────
+onOrderEvent((d) => {
+  if (d.type === 'order_events_connected') return
+  const txt = ((d.title || '') + (d.status || '') + (d.type || '')).toUpperCase()
+  if (/EXIT|SL_HIT|T1|T2|FILLED|COMPLETE/i.test(txt)) {
+    setTimeout(_fetchDailyPnl, 1500)
+  }
+})
+
 // ── Mute toggle ─────────────────────────────────────────────────────────────
 const muted = ref(isMuted())
 function onToggleMute() { toggleMute(); muted.value = isMuted() }
 function _onMuteChanged(e) { muted.value = !!e.detail }
 onMounted(() => {
   window.addEventListener('vega:mute-changed', _onMuteChanged)
+  window.addEventListener('vega:pnl-changed', _fetchDailyPnl)
   _fetchDailyPnl()
-  _pnlTimer = setInterval(_fetchDailyPnl, 30000)
 })
 onUnmounted(() => {
   window.removeEventListener('vega:mute-changed', _onMuteChanged)
-  clearInterval(_pnlTimer)
+  window.removeEventListener('vega:pnl-changed', _fetchDailyPnl)
 })
 
 let searchTimer = null

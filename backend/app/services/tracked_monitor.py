@@ -224,30 +224,36 @@ def _trail_sl_and_targets(rec: dict, prem: float) -> None:
     hw = max(prev_hw, prem)
     _high_water[pid] = hw
 
-    # ── Scalp breakeven SL — DISABLED (can choke profits on tight moves) ──
-    # is_scalp = t.get('trade_mode') == 'scalp' or t.get('scalp_meta')
-    # if is_scalp:
-    #     try:
-    #         from .scalp_scanner import SCALP_BREAKEVEN_PROFIT_PTS
-    #         be_pts = SCALP_BREAKEVEN_PROFIT_PTS()
-    #         current_sl = float(ex.get('stop_loss_inr') or 0)
-    #         qty = int(rec.get('qty', 1) or 1)
-    #         brokerage_per_unit = 70.0 / max(qty, 1)
-    #         breakeven_sl = round(entry + brokerage_per_unit, 2)
-    #         if be_pts > 0 and prem >= entry + be_pts and current_sl < breakeven_sl:
-    #             ex['stop_loss_inr'] = breakeven_sl
-    #             ex['stop_loss_points'] = round(entry - breakeven_sl, 2)
-    #             changed = True
-    #             logger.info(f"[trailing] {t.get('trading_symbol')} BREAKEVEN SL: "
-    #                         f"₹{current_sl:.2f} → ₹{breakeven_sl:.2f} "
-    #                         f"(premium ₹{prem:.2f} ≥ entry+{be_pts}pts)")
-    #     except Exception as _be_err:
-    #         logger.debug(f"[trailing] Breakeven SL check failed: {_be_err}")
+    # ── Scalp trailing SL — aggressive trailing for quick trades ──
+    is_scalp = t.get('trade_mode') == 'scalp' or bool(t.get('scalp_meta'))
+    if is_scalp:
+        current_sl = float(ex.get('stop_loss_inr') or 0)
+        qty = int(rec.get('qty', 1) or 1)
+        brokerage_per_unit = 70.0 / max(qty, 1)
+        breakeven_sl = round(entry + brokerage_per_unit, 2)
+        gain_pts = hw - entry
 
-    # Only trail once premium has risen ≥20% above entry
-    # NOTE: Scalp-specific tighter trailing DISABLED — use same 20% threshold for all
+        # Step 1: Once +3pts in profit → move SL to breakeven (covers brokerage)
+        if gain_pts >= 3.0 and current_sl < breakeven_sl:
+            ex['stop_loss_inr'] = breakeven_sl
+            changed = True
+            logger.info(f"[trailing] {t.get('trading_symbol')} SCALP BREAKEVEN: "
+                        f"SL ₹{current_sl:.2f} → ₹{breakeven_sl:.2f} "
+                        f"(HWM ₹{hw:.2f}, +{gain_pts:.1f}pts)")
+
+        # Step 2: Once +5pts → trail SL at HWM - 3pts (lock profits)
+        if gain_pts >= 5.0:
+            trail_sl = round(hw - 3.0, 2)
+            if trail_sl > current_sl:
+                ex['stop_loss_inr'] = trail_sl
+                changed = True
+                logger.info(f"[trailing] {t.get('trading_symbol')} SCALP TRAIL: "
+                            f"SL ₹{current_sl:.2f} → ₹{trail_sl:.2f} "
+                            f"(HWM ₹{hw:.2f}, locking {gain_pts - 3:.1f}pts)")
+
+    # Only trail once premium has risen ≥20% above entry (swing trades)
     gain_pct = (hw - entry) / entry
-    if gain_pct >= 0.20:
+    if not is_scalp and gain_pct >= 0.20:
         from .order_executor import sl_max_points
         underlying = t.get('underlying', '')
         trail_drop = sl_max_points(underlying)

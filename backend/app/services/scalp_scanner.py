@@ -81,10 +81,7 @@ SCALP_CONFIG_SCHEMA: dict[str, dict] = {
     'SCALP_ATR_T1_MULT':         {'default': 2.0,  'type': float, 'label': 'ATR T1 Multiplier',   'group': 'Trade Levels'},
     'SCALP_MAX_SPREAD_PCT':      {'default': 2.0,  'type': float, 'label': 'Max Spread (%)',       'group': 'Filters'},
     'SCALP_REENTRY_COOLDOWN_SEC': {'default': 120, 'type': int,   'label': 'Re-entry Cooldown (s)', 'group': 'Limits'},
-    # DISABLED features — code is commented out, hiding from UI
-    # 'SCALP_PROFIT_LOCK_DRAWDOWN': {'default': 1000, 'type': float, 'label': 'Profit Lock DD (₹)',  'group': 'Risk'},
-    # 'SCALP_MAX_RISK_PER_TRADE':  {'default': 500,  'type': float, 'label': 'Max Risk/Trade (₹)',   'group': 'Risk'},
-    # 'SCALP_BREAKEVEN_PROFIT_PTS': {'default': 5,   'type': float, 'label': 'Breakeven After (pts)', 'group': 'Risk'},
+    'SCALP_LOTS_PER_TRADE':      {'default': 1,    'type': int,   'label': 'Lots per Trade',         'group': 'Trade Levels'},
     'SCALP_ZEROHERO_EXIT_MIN':   {'default': 50,   'type': int,   'label': 'Zero-Hero Exit (14:MM)', 'group': 'Zero-Hero'},
     'SCALP_ZEROHERO_REENTER_MIN': {'default': 0,   'type': int,   'label': 'Zero-Hero Re-enter (15:MM)', 'group': 'Zero-Hero'},
     'SCALP_ZEROHERO_FINAL_MIN':  {'default': 20,   'type': int,   'label': 'Zero-Hero Final (15:MM)', 'group': 'Zero-Hero'},
@@ -92,18 +89,29 @@ SCALP_CONFIG_SCHEMA: dict[str, dict] = {
 
 
 def _load_config_cache() -> None:
-    """Load all scalp config from DB into in-memory cache. Seed missing keys."""
+    """Load all scalp config from DB into in-memory cache.
+    
+    Priority: .env override > SCALP_CONFIG_SCHEMA default.
+    DB is just a persistence layer for UI edits — schema is the source of truth
+    for defaults, .env is for per-deployment overrides.
+    """
     try:
         from .pnl_store import get_trading_state, set_trading_state
         with _config_cache_lock:
             for key, meta in SCALP_CONFIG_SCHEMA.items():
-                val = get_trading_state(key)
-                if val:
-                    _config_cache[key] = val
+                # .env override takes top priority (explicit per-deployment setting)
+                env_val = os.environ.get(key)
+                if env_val is not None:
+                    _config_cache[key] = env_val
+                    set_trading_state(key, env_val)
+                    continue
+                # DB has a value (from UI edit) — use it
+                db_val = get_trading_state(key)
+                if db_val:
+                    _config_cache[key] = db_val
                 else:
-                    # Seed from .env or default
-                    env_val = os.environ.get(key)
-                    seed = env_val if env_val is not None else str(meta['default'])
+                    # Seed from schema default
+                    seed = str(meta['default'])
                     set_trading_state(key, seed)
                     _config_cache[key] = seed
         logger.info(f"[scalp] Config cache loaded: {len(_config_cache)} keys")
@@ -153,39 +161,37 @@ def _scalp_universe() -> list[str]:
     return [t.strip() for t in raw.split(',') if t.strip()]
 
 
-SCALP_SL_PTS        = lambda: _cfg('SCALP_SL_PTS', 8, float)
-SCALP_T1_PTS        = lambda: _cfg('SCALP_T1_PTS', 15, float)
-# Per-underlying overrides (SENSEX options are more volatile)
-SCALP_SL_PTS_SENSEX = lambda: _cfg('SCALP_SL_PTS_SENSEX', 0, float)  # 0 = use global
-SCALP_T1_PTS_SENSEX = lambda: _cfg('SCALP_T1_PTS_SENSEX', 0, float)
-SCALP_SL_PTS_NIFTY  = lambda: _cfg('SCALP_SL_PTS_NIFTY', 0, float)
-SCALP_T1_PTS_NIFTY  = lambda: _cfg('SCALP_T1_PTS_NIFTY', 0, float)
-SCALP_MAX_HOLD_MIN  = lambda: _cfg('SCALP_MAX_HOLD_MIN', 10, int)
-SCALP_MAX_REENTRIES = lambda: _cfg('SCALP_MAX_REENTRIES', 10, int)
-SCALP_DAILY_LOSS    = lambda: _cfg('SCALP_DAILY_LOSS_LIMIT', 1000, float)  # day starts at 1000, bumps +500 on each kill-switch reset
-SCALP_MIN_CONF      = lambda: _cfg('SCALP_MIN_CONFIDENCE', 70, int)
-SCALP_VOL_MULT      = lambda: _cfg('SCALP_VOLUME_MULT', 2.0, float)
-SCALP_BREAKOUT_BARS = lambda: _cfg('SCALP_BREAKOUT_BARS', 3, int)
-# SCAN_INTERVAL removed — tick-driven scanner, no polling
+# ── Config accessors — SCALP_CONFIG_SCHEMA is the SINGLE source of truth ──
+# Defaults and types live ONLY in SCALP_CONFIG_SCHEMA above.
+# These lambdas just read from there. Never hardcode defaults here.
+def _s(key: str):
+    """Read scalp config. Default & type come from SCALP_CONFIG_SCHEMA."""
+    schema = SCALP_CONFIG_SCHEMA[key]
+    return _cfg(key, schema['default'], schema['type'])
 
-# ── New filter configs ─────────────────────────────────────────────────────
-SCALP_ADX_MIN       = lambda: _cfg('SCALP_ADX_MIN', 18, float)       # ADX below this = no trend, skip
-SCALP_OPENING_SKIP_MIN = lambda: _cfg('SCALP_OPENING_SKIP_MIN', 5, int) # skip first N min after open
-SCALP_MAX_CONCURRENT = lambda: _cfg('SCALP_MAX_CONCURRENT', 2, int)  # max simultaneous scalp positions
-SCALP_ATR_SL_MULT   = lambda: _cfg('SCALP_ATR_SL_MULT', 1.5, float) # SL = ATR × this multiplier
-SCALP_ATR_T1_MULT   = lambda: _cfg('SCALP_ATR_T1_MULT', 2.0, float) # T1 = ATR × this multiplier
+SCALP_SL_PTS        = lambda: _s('SCALP_SL_PTS')
+SCALP_T1_PTS        = lambda: _s('SCALP_T1_PTS')
+SCALP_SL_PTS_SENSEX = lambda: _s('SCALP_SL_PTS_SENSEX')
+SCALP_T1_PTS_SENSEX = lambda: _s('SCALP_T1_PTS_SENSEX')
+SCALP_SL_PTS_NIFTY  = lambda: _s('SCALP_SL_PTS_NIFTY')
+SCALP_T1_PTS_NIFTY  = lambda: _s('SCALP_T1_PTS_NIFTY')
+SCALP_MAX_HOLD_MIN  = lambda: _s('SCALP_MAX_HOLD_MIN')
+SCALP_MAX_REENTRIES = lambda: _s('SCALP_MAX_REENTRIES')
+SCALP_DAILY_LOSS    = lambda: _s('SCALP_DAILY_LOSS_LIMIT')
+SCALP_MIN_CONF      = lambda: _s('SCALP_MIN_CONFIDENCE')
+SCALP_VOL_MULT      = lambda: _s('SCALP_VOLUME_MULT')
+SCALP_BREAKOUT_BARS = lambda: _s('SCALP_BREAKOUT_BARS')
+SCALP_ADX_MIN       = lambda: _s('SCALP_ADX_MIN')
+SCALP_OPENING_SKIP_MIN = lambda: _s('SCALP_OPENING_SKIP_MIN')
+SCALP_MAX_CONCURRENT = lambda: _s('SCALP_MAX_CONCURRENT')
+SCALP_ATR_SL_MULT   = lambda: _s('SCALP_ATR_SL_MULT')
+SCALP_ATR_T1_MULT   = lambda: _s('SCALP_ATR_T1_MULT')
 SCALP_USE_ATR_SL    = lambda: os.environ.get('SCALP_USE_ATR_SL', 'true').strip().lower() in ('true', '1', 'yes')
-SCALP_MAX_SPREAD_PCT = lambda: _cfg('SCALP_MAX_SPREAD_PCT', 2.0, float)  # max bid-ask spread % of premium
-
-# ── Profit lock & risk sizing ─────────────────────────────────────────────
-SCALP_PROFIT_LOCK_DRAWDOWN = lambda: _cfg('SCALP_PROFIT_LOCK_DRAWDOWN', 1000, float)  # max drawdown from peak P&L before kill
-SCALP_MAX_RISK_PER_TRADE   = lambda: _cfg('SCALP_MAX_RISK_PER_TRADE', 500, float)     # max ₹ risk per single trade
-SCALP_BREAKEVEN_PROFIT_PTS = lambda: _cfg('SCALP_BREAKEVEN_PROFIT_PTS', 5, float)     # move SL to breakeven after N pts profit
-
-# ── Zero-hero 3 PM window ────────────────────────────────────────────────
-SCALP_ZEROHERO_EXIT_MIN    = lambda: _cfg('SCALP_ZEROHERO_EXIT_MIN', 50, int)         # exit all at 14:MM (default 14:50)
-SCALP_ZEROHERO_REENTER_MIN = lambda: _cfg('SCALP_ZEROHERO_REENTER_MIN', 0, int)       # re-enter at 15:MM (default 15:00)
-SCALP_ZEROHERO_FINAL_MIN   = lambda: _cfg('SCALP_ZEROHERO_FINAL_MIN', 20, int)        # final exit at 15:MM (default 15:20)
+SCALP_MAX_SPREAD_PCT = lambda: _s('SCALP_MAX_SPREAD_PCT')
+SCALP_LOTS_PER_TRADE = lambda: _s('SCALP_LOTS_PER_TRADE')
+SCALP_ZEROHERO_EXIT_MIN    = lambda: _s('SCALP_ZEROHERO_EXIT_MIN')
+SCALP_ZEROHERO_REENTER_MIN = lambda: _s('SCALP_ZEROHERO_REENTER_MIN')
+SCALP_ZEROHERO_FINAL_MIN   = lambda: _s('SCALP_ZEROHERO_FINAL_MIN')
 
 # ── Thread state ──────────────────────────────────────────────────────────────
 
@@ -217,6 +223,7 @@ _last_signal_candle: dict = {}  # {ticker: candle_date_str}
 _recent_exits: list[dict] = []          # [{time: float, reason: str}, ...]
 _loss_streak_pause_until: float = 0.0   # epoch — no new scalps until this time
 _last_exit_time: dict = {}              # {ticker: epoch} — cooldown after exit per ticker
+_last_status_broadcast: dict = {}       # {ticker+reason: epoch} — throttle status broadcasts
 SCALP_REENTRY_COOLDOWN_SEC = lambda: _cfg('SCALP_REENTRY_COOLDOWN_SEC', 120, int)  # wait N sec before re-entering same ticker
 
 # ── SSE plumbing ──────────────────────────────────────────────────────────────
@@ -246,6 +253,25 @@ def unsubscribe_sse(q):
             _sse_subscribers.remove(q)
         except ValueError:
             pass
+
+
+def _broadcast_status(ticker: str, reason: str, detail: str = ''):
+    """Broadcast a scanner_status event to the trade feed, throttled to once per 30s per ticker+reason."""
+    import time as _t
+    key = f"{ticker}:{reason}"
+    now = _t.time()
+    if now - _last_status_broadcast.get(key, 0) < 30:
+        return
+    _last_status_broadcast[key] = now
+    evt = {
+        'type': 'scanner_status',
+        'ticker': ticker,
+        'reason': reason,
+        'detail': detail,
+        'timestamp': bu.now_ist().isoformat(),
+    }
+    logger.info(f"[scalp] BROADCAST scanner_status: {ticker} {reason} (subs={len(_sse_subscribers)})")
+    _broadcast(evt)
 
 
 def _broadcast(event: dict):
@@ -514,6 +540,37 @@ def get_scalp_stats() -> dict:
     }
 
 
+# ── VIX momentum bias (cached 30s) ───────────────────────────────────────────
+_vix_bias_cache: dict = {'bias': None, 'ts': 0.0}
+
+def _get_vix_bias(ticker: str) -> Optional[str]:
+    """Return 'BUY' | 'SELL' | None based on VIX 5-bar ROC. Cached 30s."""
+    import time
+    now = time.time()
+    if now - _vix_bias_cache['ts'] < 30:
+        return _vix_bias_cache['bias']
+    bias = None
+    try:
+        from ..api.indmoney import _ind_candles
+        vix_candles = _ind_candles('^INDIAVIX', '1m', days=1)
+        if vix_candles and len(vix_candles) >= 5:
+            v5 = [float(c.get('close', 0)) for c in vix_candles[-5:]]
+            vix_roc = ((v5[-1] - v5[0]) / v5[0]) * 100 if v5[0] else 0
+            if vix_roc > 0.3:
+                bias = 'SELL'
+                logger.debug(f"[scalp] {ticker} VIX rising {vix_roc:+.2f}% → bearish bias")
+            elif vix_roc < -0.3:
+                bias = 'BUY'
+                logger.debug(f"[scalp] {ticker} VIX falling {vix_roc:+.2f}% → bullish bias")
+            else:
+                logger.debug(f"[scalp] {ticker} VIX flat {vix_roc:+.2f}% → no bias")
+    except Exception:
+        pass
+    _vix_bias_cache['bias'] = bias
+    _vix_bias_cache['ts'] = now
+    return bias
+
+
 # ── Momentum detection (pure technical, no LLM) ─────────────────────────────
 
 def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
@@ -578,6 +635,7 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
         market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
         if now_ist < market_open + timedelta(minutes=skip_min):
             logger.debug(f"[scalp] {ticker} OPENING RANGE: first {skip_min}m — skipping")
+            _broadcast_status(ticker, 'Opening Range', f'First {skip_min}m after open — waiting for price to settle')
             return None
 
     # ── India VIX filter ──
@@ -589,12 +647,19 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
         if _vix is not None:
             if _vix < 12:
                 logger.debug(f"[scalp] {ticker} VIX={_vix:.1f} < 12 — market too flat, skipping")
+                _broadcast_status(ticker, 'VIX Low', f'VIX {_vix:.1f} — market too flat to scalp')
                 return None
             if _vix > 25:
                 logger.debug(f"[scalp] {ticker} VIX={_vix:.1f} > 25 — too volatile, skipping")
+                _broadcast_status(ticker, 'VIX High', f'VIX {_vix:.1f} — too volatile, SL will get blown')
                 return None
     except Exception:
         pass  # VIX unavailable — proceed without filter
+
+    # ── India VIX momentum (directional bias) ──
+    # VIX rising → market fear → bearish (favours SELL/PE)
+    # VIX falling → market calm → bullish (favours BUY/CE)
+    _vix_bias = _get_vix_bias(ticker)
 
     # ── ADX trend filter ──
     # ADX < threshold means no clear trend, scalping into chop
@@ -602,6 +667,7 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
     adx_min = SCALP_ADX_MIN()
     if adx is not None and adx < adx_min:
         logger.debug(f"[scalp] {ticker} ADX={adx:.1f} < {adx_min} — no trend, skipping")
+        _broadcast_status(ticker, 'Weak Trend', f'ADX {adx:.1f} (need {adx_min}) — no clear direction')
         return None
 
     # ── VWAP filter ──
@@ -630,6 +696,7 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
             flip_count += 1
     if flip_count >= 5:  # 5+ flips in 10 bars = choppy market
         logger.debug(f"[scalp] {ticker} WHIPSAW: {flip_count} flips in 10 bars — skipping")
+        _broadcast_status(ticker, 'Choppy Market', f'{flip_count}/10 candles flipping — breakouts are fake-outs')
         return None
 
     # ── Signal detection ──
@@ -713,6 +780,14 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
     # Bollinger squeeze bonus — breakout after squeeze is high-confidence
     if bb_squeeze:
         conf += 5
+    # VIX momentum bias — confirms or contradicts direction
+    if _vix_bias is not None:
+        if _vix_bias == direction:
+            conf += 5  # VIX confirms our direction
+            logger.debug(f"[scalp] {ticker} VIX bias confirms {direction} → conf +5")
+        else:
+            conf -= 10  # VIX contradicts — penalty
+            logger.debug(f"[scalp] {ticker} VIX bias {_vix_bias} contradicts {direction} → conf -10")
 
     # Consecutive momentum bars
     momentum_count = 0
@@ -751,6 +826,7 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
         'ema21':           round(ema21, 2) if ema21 is not None else None,
         'atr':             round(atr, 2) if atr is not None else None,
         'bb_squeeze':      bb_squeeze,
+        'vix_bias':        _vix_bias,
         'ema_aligned':     ema_aligned,
         'breakout_bars':   n_bars,
         'trade_mode':      'scalp',
@@ -1082,6 +1158,7 @@ def _process_signal(ticker: str, signal: dict, candles: list[dict]):
 
         # Loss-streak cooldown
         if _loss_streak_pause_until and _time.time() < _loss_streak_pause_until:
+            _broadcast_status(ticker, 'Loss Streak', '3+ losses in 5min — cooling off before next entry')
             return
         elif _loss_streak_pause_until and _time.time() >= _loss_streak_pause_until:
             _loss_streak_pause_until = 0.0
@@ -1089,12 +1166,15 @@ def _process_signal(ticker: str, signal: dict, candles: list[dict]):
 
         # Kill switch
         if _scalp_kill_switch:
+            _broadcast_status(ticker, 'Kill Switch', 'Daily loss limit hit — all entries blocked')
             return
 
         # Per-ticker re-entry cooldown
         last_exit = _last_exit_time.get(ticker, 0)
         cooldown = SCALP_REENTRY_COOLDOWN_SEC()
+        remaining = int(cooldown - (_time.time() - last_exit)) if last_exit else 0
         if last_exit and _time.time() - last_exit < cooldown:
+            _broadcast_status(ticker, 'Cooldown', f'Just exited — waiting {remaining}s before re-entering')
             return
 
         # Zero-hero window check
@@ -1117,6 +1197,7 @@ def _process_signal(ticker: str, signal: dict, candles: list[dict]):
         scalp_count = sum(1 for r in existing
                           if (r.get('ticket') or {}).get('trade_mode') == 'scalp')
         if scalp_count >= SCALP_MAX_CONCURRENT():
+            _broadcast_status(ticker, 'Slots Full', f'{scalp_count} scalp positions open — max reached')
             return
 
         # Re-entry limits
@@ -1231,6 +1312,53 @@ def _check_adverse_exit(candles: list[dict], ticker: str):
         logger.warning(f"[scalp] adverse exit check failed: {e}")
 
 
+_thesis_flip_fired: set = set()  # track IDs already flipped (prevent re-fire)
+
+def _check_thesis_flip(candles: list[dict], ticker: str, ltp: float):
+    """Check if EMA direction contradicts held scalp position — exit if so.
+    Runs on EVERY tick, independent of signal generation.
+    Uses the same _fast_ema() as _detect_momentum for consistency."""
+    try:
+        from . import tracked_positions as tp
+        from .order_executor import try_auto_exit
+        from ..api.indmoney import _ind_ltp
+        items = tp._read()
+        scalp_positions = [
+            r for r in items
+            if (r.get('ticket') or {}).get('trade_mode') == 'scalp'
+            and (r.get('ticket') or {}).get('underlying', '') == ticker
+            and r.get('id') not in _thesis_flip_fired
+        ]
+        if not scalp_positions:
+            return
+
+        # Use the same EMA function and input as _detect_momentum
+        all_closes = [float(c.get('close', 0)) for c in candles]
+        ema9 = _fast_ema(all_closes, 9)
+        ema21 = _fast_ema(all_closes, 21)
+        if ema9 is None or ema21 is None:
+            return
+
+        # EMA9 > EMA21 → bullish (CE), EMA9 < EMA21 → bearish (PE)
+        current_bias = 'CE' if ema9 > ema21 else 'PE'
+
+        for rec in scalp_positions:
+            ticket = rec.get('ticket') or {}
+            held_opt = ticket.get('option_type', '').upper()
+            if not held_opt or held_opt == current_bias:
+                continue  # same direction, no flip
+            sym = ticket.get('trading_symbol', '')
+            pid = rec.get('id')
+            prem = _ind_ltp(sym) or ltp
+            logger.warning(f"[scalp] THESIS FLIP: {ticker} EMA bias now {current_bias} "
+                           f"(ema9={ema9:.1f} vs ema21={ema21:.1f}), "
+                           f"held {held_opt} — auto-exiting {sym} @ ₹{prem:.2f}")
+            _thesis_flip_fired.add(pid)
+            try_auto_exit(pid, 'thesis_flip', rec, prem)
+    except Exception as e:
+        logger.debug(f"[scalp] thesis flip check: {e}")
+
+
 def _on_tick(tick: dict, ticker: str):
     """Live tick callback — instant breakout detection. Called from WS thread."""
     if _stop_event.is_set():
@@ -1265,6 +1393,9 @@ def _on_tick(tick: dict, ticker: str):
     #    force-exit any open scalp position for this ticker immediately.
     #    This prevents bleeding to SL in choppy markets.
     _check_adverse_exit(live_candles, ticker)
+
+    # ── Thesis flip: if EMA direction contradicts held position, exit
+    _check_thesis_flip(live_candles, ticker, ltp)
 
     # Run signal detection with live-updated candles
     signal = _detect_momentum(live_candles, ticker)

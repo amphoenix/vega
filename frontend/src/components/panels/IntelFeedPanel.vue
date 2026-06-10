@@ -162,6 +162,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { onOrderEvent } from '../../composables/useSSE'
 
 const props = defineProps({
   chartTicker: { type: String, default: '' },
@@ -248,7 +249,6 @@ function hideFeedTooltip() {
 const ordersLoading = ref(false)
 const orderRows = ref([])
 const positionRows = ref([])
-let _ordersTimer = null
 
 async function fetchOrders() {
   const base = import.meta.env.VITE_API_BASE_URL || 'https://localhost:47291'
@@ -283,17 +283,13 @@ function fmtOrderTime(ts) {
   } catch { return ts }
 }
 
-watch(intelTab, (tab) => {
-  if (tab === 'ORDERS') {
-    fetchOrders()
-    _ordersTimer = setInterval(fetchOrders, 10000)
-  } else {
-    if (_ordersTimer) { clearInterval(_ordersTimer); _ordersTimer = null }
-  }
+// Shared SSE: refresh orders on any order event
+onOrderEvent(() => {
+  if (intelTab.value === 'ORDERS') fetchOrders()
 })
 
-onUnmounted(() => {
-  if (_ordersTimer) clearInterval(_ordersTimer)
+watch(intelTab, (tab) => {
+  if (tab === 'ORDERS') fetchOrders()
 })
 </script>
 

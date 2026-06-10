@@ -877,19 +877,8 @@ def try_scalp_entry(signal: dict) -> Optional[dict]:
     lot_size = int(ticket.get('lot_size', 1) or 1)
     trading_symbol = ticket.get('trading_symbol', '')
 
-    # ── Risk-based position sizing — DISABLED (using fixed lots for now) ──
-    # _scalp_sl_pts = float(ticket['exit'].get('stop_loss_points') or 8)
-    # max_risk = _scalp_mod.SCALP_MAX_RISK_PER_TRADE()
-    # if _scalp_sl_pts > 0 and max_risk > 0:
-    #     raw_qty = int(max_risk / _scalp_sl_pts)
-    #     qty = max(lot_size, (raw_qty // lot_size) * lot_size)
-    #     logger.info(f"[executor] Risk-based sizing: max_risk=₹{max_risk:.0f} / SL={_scalp_sl_pts:.1f}pts "
-    #                 f"→ qty={qty} (lot_size={lot_size})")
-    # else:
-    #     num_lots = lots_per_trade()
-    #     qty = lot_size * num_lots
     _scalp_sl_pts = float(ticket['exit'].get('stop_loss_points') or 8)
-    num_lots = lots_per_trade()
+    num_lots = _scalp_mod.SCALP_LOTS_PER_TRADE()
     qty = lot_size * num_lots
 
     # ── Scalp per-trade budget guard: worst-case SL + open exposure must fit ──
@@ -920,7 +909,7 @@ def try_scalp_entry(signal: dict) -> Optional[dict]:
         record = tp.add_tracked(ticket, qty=qty,
                                 notes=f"Scalp entry conf={conf}% | {signal.get('ticker')}")
 
-        _order_broadcast({
+        evt = {
             'type': 'order_update', 'severity': 'success',
             'title': f"⏱ Scalp BUY: {ticket.get('display_symbol', trading_symbol)}",
             'status': 'SCALP_ENTRY', 'symbol': trading_symbol,
@@ -929,19 +918,23 @@ def try_scalp_entry(signal: dict) -> Optional[dict]:
                        f"T1 ₹{ticket['exit']['target_1_inr']:.2f} | "
                        f"Max hold {ticket.get('scalp_meta', {}).get('max_hold_min', '?')}m",
             'timestamp': bu.now_ist().isoformat(),
-        })
+        }
+        _order_broadcast(evt)
+        _scalp_mod._broadcast(evt)
         logger.info(f"[executor] Scalp entry success: {trading_symbol} → {record.get('id')}")
         return record
     else:
         err = (order_result or {}).get('error', 'Unknown error')
-        _order_broadcast({
+        evt = {
             'type': 'order_update', 'severity': 'error',
             'title': f"Scalp BUY FAILED: {trading_symbol}",
             'status': 'SCALP_ENTRY_FAILED', 'symbol': trading_symbol,
             'txn_type': 'BUY', 'qty': qty,
             'message': str(err),
             'timestamp': bu.now_ist().isoformat(),
-        })
+        }
+        _order_broadcast(evt)
+        _scalp_mod._broadcast(evt)
         logger.error(f"[executor] Scalp entry failed: {trading_symbol} — {err}")
         return None
 

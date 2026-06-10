@@ -127,6 +127,9 @@ if [[ "$MODE" != "backend" ]]; then
 fi
 
 if [[ "$MODE" != "frontend" ]]; then
+  # Clear stale bytecode so Python always loads latest source
+  find "$ROOT_DIR/backend" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
+  find "$ROOT_DIR/backend" -name "*.pyc" -delete 2>/dev/null
   info "Starting Backend  →  http://127.0.0.1:${FLASK_INTERNAL_PORT}  (Flask, internal)"
   cd "$ROOT_DIR/backend" && FLASK_PORT="$FLASK_INTERNAL_PORT" FLASK_HOST="127.0.0.1" .venv/bin/python run.py &
   BE_PID=$!
