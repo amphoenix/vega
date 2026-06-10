@@ -172,6 +172,14 @@ def _zero() -> dict:
 
 def daily_summary(date_str: Optional[str] = None) -> dict:
     date_str = date_str or _now_ist().strftime('%Y-%m-%d')
+    try:
+        return _daily_summary_inner(date_str)
+    except sqlite3.OperationalError:
+        _init()  # table may have been deleted — recreate
+        return _daily_summary_inner(date_str)
+
+
+def _daily_summary_inner(date_str: str) -> dict:
     with _conn() as c:
         rows = c.execute(
             '''SELECT mode,

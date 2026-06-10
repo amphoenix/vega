@@ -74,7 +74,7 @@ SCALP_CONFIG_SCHEMA: dict[str, dict] = {
     'SCALP_MIN_CONFIDENCE':      {'default': 70,   'type': int,   'label': 'Min Confidence (%)',   'group': 'Filters'},
     'SCALP_VOLUME_MULT':         {'default': 2.0,  'type': float, 'label': 'Volume Multiplier',   'group': 'Filters'},
     'SCALP_BREAKOUT_BARS':       {'default': 3,    'type': int,   'label': 'Breakout Bars',        'group': 'Filters'},
-    'SCALP_ADX_MIN':             {'default': 12,   'type': float, 'label': 'ADX Minimum',          'group': 'Filters'},
+    'SCALP_ADX_MIN':             {'default': 18,   'type': float, 'label': 'ADX Minimum',          'group': 'Filters'},
     'SCALP_OPENING_SKIP_MIN':    {'default': 5,    'type': int,   'label': 'Opening Skip (min)',   'group': 'Filters'},
     'SCALP_MAX_CONCURRENT':      {'default': 2,    'type': int,   'label': 'Max Concurrent',       'group': 'Limits'},
     'SCALP_ATR_SL_MULT':         {'default': 1.5,  'type': float, 'label': 'ATR SL Multiplier',   'group': 'Trade Levels'},
@@ -169,7 +169,7 @@ SCALP_BREAKOUT_BARS = lambda: _cfg('SCALP_BREAKOUT_BARS', 3, int)
 # SCAN_INTERVAL removed — tick-driven scanner, no polling
 
 # ── New filter configs ─────────────────────────────────────────────────────
-SCALP_ADX_MIN       = lambda: _cfg('SCALP_ADX_MIN', 12, float)       # ADX below this = no trend, skip (12 for 1-min bars; 20 is for daily)
+SCALP_ADX_MIN       = lambda: _cfg('SCALP_ADX_MIN', 18, float)       # ADX below this = no trend, skip
 SCALP_OPENING_SKIP_MIN = lambda: _cfg('SCALP_OPENING_SKIP_MIN', 5, int) # skip first N min after open
 SCALP_MAX_CONCURRENT = lambda: _cfg('SCALP_MAX_CONCURRENT', 2, int)  # max simultaneous scalp positions
 SCALP_ATR_SL_MULT   = lambda: _cfg('SCALP_ATR_SL_MULT', 1.5, float) # SL = ATR × this multiplier
@@ -580,6 +580,22 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
             logger.debug(f"[scalp] {ticker} OPENING RANGE: first {skip_min}m — skipping")
             return None
 
+    # ── India VIX filter ──
+    # VIX too low = dead flat market (no movement to scalp)
+    # VIX too high = wild swings, SL gets blown instantly
+    try:
+        from ..api.indmoney import _ind_ltp
+        _vix = _ind_ltp('^INDIAVIX')
+        if _vix is not None:
+            if _vix < 12:
+                logger.debug(f"[scalp] {ticker} VIX={_vix:.1f} < 12 — market too flat, skipping")
+                return None
+            if _vix > 25:
+                logger.debug(f"[scalp] {ticker} VIX={_vix:.1f} > 25 — too volatile, skipping")
+                return None
+    except Exception:
+        pass  # VIX unavailable — proceed without filter
+
     # ── ADX trend filter ──
     # ADX < threshold means no clear trend, scalping into chop
     adx = _fast_adx(candles, 14)
@@ -612,7 +628,7 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
         curr_dir = float(flip_lookback[i].get('close', 0)) - float(flip_lookback[i].get('open', 0))
         if prev_dir * curr_dir < 0:  # sign change = direction flip
             flip_count += 1
-    if flip_count >= 7:  # 7+ flips in 10 bars = pure chop
+    if flip_count >= 5:  # 5+ flips in 10 bars = choppy market
         logger.debug(f"[scalp] {ticker} WHIPSAW: {flip_count} flips in 10 bars — skipping")
         return None
 
@@ -622,8 +638,8 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
     vol_spike     = avg_vol > 0 and last_vol >= avg_vol * vol_mult
     is_index      = ticker.startswith('^')
 
-    # Alternative trigger: strong rate-of-change (>0.08% in 5 bars for indices)
-    roc_threshold = 0.08 if is_index else 0.12
+    # Alternative trigger: strong rate-of-change (>0.15% in 5 bars for indices)
+    roc_threshold = 0.15 if is_index else 0.20
     roc_up   = roc_5 > roc_threshold
     roc_down = roc_5 < -roc_threshold
 
