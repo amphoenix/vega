@@ -270,20 +270,17 @@
   min-height: 0;
 }
 
-/* ── 2/3-pane chart grid (mirrors ChartGrid.css) ─────────────────────── */
+/* ── 3-pane chart grid: NIFTY top-wide, SENSEX + VIX bottom row ──────── */
 .scalp-chart-grid {
   display: grid;
-  grid-template-rows: 1fr 1fr;
+  grid-template-rows: 1fr;
   gap: 6px;
   height: 100%;
   min-height: 0;
 }
 .scalp-chart-grid.three-pane {
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-}
-.scalp-chart-grid.three-pane .chart-pane:first-child {
-  grid-column: 1 / -1;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr;
 }
 
 .scalp-view .chart-pane {

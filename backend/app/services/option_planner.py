@@ -465,10 +465,17 @@ def plan_option_trade(
     # spot SL was very close to current spot, collapsing the option to ~zero),
     # we override it with a 50% premium floor — you walk away with half your
     # premium, not zero.
-    SL_MAX_LOSS_PCT = 0.50    # SL premium ≥ 50% of entry  → max loss 50%
-    SL_MIN_LOSS_PCT = 0.15    # SL premium ≤ 85% of entry  → at least 15% noise buffer
-    T1_MIN_GAIN_PCT = 0.30    # T1 ≥ 1.30× entry           → at least +30% target
-    T2_MIN_OVER_T1  = 1.40    # T2 ≥ 1.40× T1              → meaningful 2-leg
+    # DTE-aware loss/gain limits — short-dated options get tighter bands
+    if dte_d <= 2:
+        SL_MAX_LOSS_PCT = 0.30    # 1-2 DTE: max 30% loss (not 50%)
+        SL_MIN_LOSS_PCT = 0.10    # at least 10% noise buffer
+        T1_MIN_GAIN_PCT = 0.20    # T1 ≥ 1.20× entry — realistic for intraday
+        T2_MIN_OVER_T1  = 1.30    # T2 ≥ 1.30× T1
+    else:
+        SL_MAX_LOSS_PCT = 0.50    # SL premium ≥ 50% of entry  → max loss 50%
+        SL_MIN_LOSS_PCT = 0.15    # SL premium ≤ 85% of entry  → at least 15% noise buffer
+        T1_MIN_GAIN_PCT = 0.30    # T1 ≥ 1.30× entry           → at least +30% target
+        T2_MIN_OVER_T1  = 1.40    # T2 ≥ 1.40× T1              → meaningful 2-leg
 
     # SL: hit early (1 day from now), so theta has barely moved.
     if spot_stop_loss is not None and spot_stop_loss > 0:

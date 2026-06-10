@@ -110,6 +110,11 @@ _lock = threading.Lock()
 # Key: trading_symbol, Value: { 'entries': int, 'sl_exits': int, 'last_entry_id': str }
 _daily_ledger: dict[str, dict] = {}
 
+# Track SL exits by underlying+direction to block same-direction re-entry.
+# Key: "UNDERLYING:CE" or "UNDERLYING:PE", Value: count of SL exits
+_sl_direction_ledger: dict[str, int] = {}
+_MAX_SL_PER_DIRECTION = 1  # After 1 SL hit on same underlying+direction, block re-entry
+
 # Positions where we've already fired an exit order (avoid duplicate exits).
 # Key: tracked_position_id, Value: exit_type (sl_hit, past_t1, past_t2, time_exit)
 _exit_fired: dict[str, str] = {}
@@ -220,6 +225,7 @@ def reset_daily():
     global _daily_realized_pnl, _daily_kill_switch
     with _lock:
         _daily_ledger.clear()
+        _sl_direction_ledger.clear()
         _exit_fired.clear()
         _partial_exited.clear()
         _force_exit_ids.clear()
@@ -370,14 +376,6 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
                        f"daily loss limit hit (₹{_daily_realized_pnl:+.2f})")
         return None
 
-    # ── Headroom guard: reject if remaining budget before kill-switch is too thin ──
-    headroom = daily_loss_limit() + _daily_realized_pnl   # positive = room left
-    if headroom < 100:                                     # less than ₹100 room → not worth risking
-        logger.warning(f"[executor] BLOCKED {signal.get('ticker')} — "
-                       f"only ₹{headroom:.0f} headroom left "
-                       f"(pnl ₹{_daily_realized_pnl:+.0f}, limit ₹{daily_loss_limit():.0f})")
-        return None
-
     conf = int(signal.get('confidence', 0))
     threshold = min_confidence()
     ticket = signal.get('ticket')
@@ -410,14 +408,19 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
         })
         return None
 
-    # Check re-entry limits
-    with _lock:
-        ledger = _daily_ledger.get(sym, {'entries': 0, 'sl_exits': 0})
-        if ledger['sl_exits'] > 0 and not allow_reentry():
-            logger.info(f"[executor] Skip {sym} — re-entry disabled after SL exit")
-            return None
-        if ledger['entries'] >= (max_reentries() + 1):  # initial + re-entries
-            logger.info(f"[executor] Skip {sym} — max entries ({ledger['entries']}) reached today")
+    # ── Direction-based re-entry block: if we got stopped out on
+    #    the same underlying+direction (e.g. NIFTY CE), block any
+    #    new CE entry for NIFTY regardless of strike. Prevents
+    #    re-entering a losing direction with a different strike.
+    _underlying = (ticket or {}).get('underlying', '')
+    _opt_type = (ticket or {}).get('option_type', '').upper()
+    if _underlying and _opt_type in ('CE', 'PE'):
+        _dir_key = f"{_underlying}:{_opt_type}"
+        with _lock:
+            _dir_sl_count = _sl_direction_ledger.get(_dir_key, 0)
+        if _dir_sl_count >= _MAX_SL_PER_DIRECTION:
+            logger.warning(f"[executor] BLOCKED {sym} — {_dir_key} already hit SL "
+                           f"{_dir_sl_count}x today. No more {_opt_type} entries for {_underlying}.")
             return None
 
     # Check not already tracking
@@ -475,23 +478,13 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
     qty = lot_size * num_lots
     trading_symbol = ticket.get('trading_symbol', '')
 
-    # ── Daily budget guard: reject if worst-case SL loss would exceed remaining budget ──
+    # ── Daily budget guard: reject if worst-case SL loss exceeds remaining budget ──
     _sl_pts = sl_max_points(ticket.get('underlying', ''))
-    _worst_case_loss = (_sl_pts * qty) + 70  # gross SL loss + ~₹70 estimated brokerage
+    _worst_case_loss = (_sl_pts * qty) + 70   # +70 for brokerage
     headroom = daily_loss_limit() + _daily_realized_pnl
     if _worst_case_loss > headroom:
-        from ..api.indmoney import _order_broadcast
-        logger.warning(f"[executor] BLOCKED {sym} — worst-case SL loss ₹{_worst_case_loss:.0f} "
-                       f"> remaining budget ₹{headroom:.0f} "
-                       f"(SL {_sl_pts}pts × {qty}qty + brokerage)")
-        _order_broadcast({
-            'type': 'order_update', 'severity': 'warning',
-            'title': f"Blocked: {ticket.get('display_symbol', sym)}",
-            'status': 'BUDGET_REJECT', 'symbol': sym,
-            'txn_type': 'BUY',
-            'message': f"Max SL loss ₹{_worst_case_loss:.0f} exceeds remaining daily budget ₹{headroom:.0f}",
-            'timestamp': bu.now_ist().isoformat(),
-        })
+        logger.warning(f"[executor] BUDGET BLOCK {sym} — worst-case loss ₹{_worst_case_loss:.0f} "
+                       f"> headroom ₹{headroom:.0f} (P&L ₹{_daily_realized_pnl:+.0f})")
         return None
 
     # ── Slippage guard: reject if current price moved too far from signal ────
@@ -673,6 +666,14 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
                 ledger = _daily_ledger.get(sym.upper(), {'entries': 0, 'sl_exits': 0})
                 ledger['sl_exits'] += 1
                 _daily_ledger[sym.upper()] = ledger
+                # Also track by underlying+direction to block same-direction re-entry
+                _und = ticket.get('underlying', '')
+                _otype = ticket.get('option_type', '').upper()
+                if _und and _otype in ('CE', 'PE'):
+                    _dk = f"{_und}:{_otype}"
+                    _sl_direction_ledger[_dk] = _sl_direction_ledger.get(_dk, 0) + 1
+                    logger.warning(f"[executor] SL direction ledger: {_dk} = "
+                                   f"{_sl_direction_ledger[_dk]} (max {_MAX_SL_PER_DIRECTION})")
 
         # ── Record realized P&L and check daily loss limit ───────────
         entry_prem = float((ticket.get('entry') or {}).get('expected_premium_inr', 0) or 0)
@@ -844,13 +845,12 @@ def try_scalp_entry(signal: dict) -> Optional[dict]:
                        f"kill switch active (daily P&L ₹{_pnl:+.0f})")
         return None
 
-    # Scalp headroom guard — reject if remaining budget before kill-switch is too thin
+    # Scalp headroom guard — block entry if remaining budget too thin
     _scalp_limit = _scalp_mod.SCALP_DAILY_LOSS()
-    _scalp_headroom = _scalp_limit + _pnl   # positive = room left
+    _scalp_headroom = _scalp_limit + _pnl
     if _scalp_headroom < 50:
-        logger.warning(f"[executor] SCALP BLOCKED {signal.get('ticker')} — "
-                       f"only ₹{_scalp_headroom:.0f} headroom left "
-                       f"(pnl ₹{_pnl:+.0f}, limit ₹{_scalp_limit:.0f})")
+        logger.warning(f"[executor] SCALP BUDGET BLOCK — only ₹{_scalp_headroom:.0f} headroom "
+                       f"(P&L ₹{_pnl:+.0f}, limit ₹{_scalp_limit:.0f})")
         return None
 
     ticket = signal.get('ticket')
@@ -892,35 +892,22 @@ def try_scalp_entry(signal: dict) -> Optional[dict]:
     num_lots = lots_per_trade()
     qty = lot_size * num_lots
 
-    # ── Scalp daily budget guard: reject if worst-case SL loss exceeds remaining budget ──
-    # Account for EXISTING open scalp positions' worst-case SL too,
-    # so we don't enter a new trade that, combined with existing exposure, can blow the limit.
-    _scalp_worst = (_scalp_sl_pts * qty) + 70  # gross SL + ~₹70 brokerage
+    # ── Scalp per-trade budget guard: worst-case SL + open exposure must fit ──
+    _scalp_worst = (_scalp_sl_pts * qty) + 70
     _existing_exposure = 0
     try:
         for _rec in existing:
             _t = _rec.get('ticket') or {}
-            if _t.get('trade_mode') != 'scalp':
-                continue
+            if _t.get('trade_mode') != 'scalp': continue
             _esl = float((_t.get('exit') or {}).get('stop_loss_points', 8) or 8)
             _eq = int(_rec.get('qty', 1) or 1)
             _existing_exposure += (_esl * _eq) + 70
-    except Exception:
-        pass
+    except Exception: pass
     _total_worst = _scalp_worst + _existing_exposure
     if _total_worst > _scalp_headroom:
-        from ..api.indmoney import _order_broadcast
-        logger.warning(f"[executor] SCALP BLOCKED {sym} — total worst-case ₹{_total_worst:.0f} "
+        logger.warning(f"[executor] SCALP BUDGET BLOCK {sym} — worst ₹{_total_worst:.0f} "
                        f"(new ₹{_scalp_worst:.0f} + open ₹{_existing_exposure:.0f}) "
                        f"> headroom ₹{_scalp_headroom:.0f}")
-        _order_broadcast({
-            'type': 'order_update', 'severity': 'warning',
-            'title': f"Scalp blocked: {ticket.get('display_symbol', sym)}",
-            'status': 'SCALP_BUDGET_REJECT', 'symbol': sym,
-            'txn_type': 'BUY',
-            'message': f"Max SL loss ₹{_scalp_worst:.0f} exceeds remaining daily budget ₹{_scalp_headroom:.0f}",
-            'timestamp': bu.now_ist().isoformat(),
-        })
         return None
 
     logger.info(f"[executor] SCALP-ENTRY: BUY {trading_symbol} qty={qty} "

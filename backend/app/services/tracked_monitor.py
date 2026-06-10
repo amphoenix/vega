@@ -183,12 +183,18 @@ def _trail_sl_and_targets(rec: dict, prem: float) -> None:
 
     # ── Sanity-cap T1/T2 (fixes legacy positions with planner's loose targets) ─
     # Scale max targets by DTE: shorter expiry → tighter caps.
-    # DTE=1: T1 ≤ 1.5× entry, T2 ≤ 2.2× | DTE=7+: T1 ≤ 2.0×, T2 ≤ 3.5×
+    # 1DTE: T1 ≤ 1.25× (+25%), T2 ≤ 1.55× (+55%)  — realistic for single-session
+    # 3DTE: T1 ≤ 1.45×, T2 ≤ 2.15×
+    # 7DTE+: T1 ≤ 2.0×, T2 ≤ 3.5×
     import math
     dte = max(1, int(t.get('days_to_expiry') or 1))
     dte_scale = min(1.0, math.sqrt(dte / 7.0))  # 1DTE→0.38, 3DTE→0.65, 7+→1.0
-    t1_max_mult = 1.30 + 0.70 * dte_scale   # 1DTE: 1.57×  7DTE: 2.0×
-    t2_max_mult = 1.80 + 1.70 * dte_scale   # 1DTE: 2.44×  7DTE: 3.5×
+    t1_max_mult = 1.15 + 0.85 * dte_scale   # 1DTE: 1.47→1.47×  3DTE: 1.70×  7DTE: 2.0×
+    t2_max_mult = 1.35 + 2.15 * dte_scale   # 1DTE: 2.17→2.17×  3DTE: 2.75×  7DTE: 3.5×
+    # Extra tightening for very short DTE (1-2 days)
+    if dte <= 2:
+        t1_max_mult = min(t1_max_mult, 1.30)  # max +30% for 1-2 DTE
+        t2_max_mult = min(t2_max_mult, 1.60)  # max +60% for 1-2 DTE
 
     current_t1 = float(ex.get('target_1_inr') or 0)
     current_t2 = float(ex.get('target_2_inr') or 0)

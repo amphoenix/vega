@@ -81,9 +81,10 @@ SCALP_CONFIG_SCHEMA: dict[str, dict] = {
     'SCALP_ATR_T1_MULT':         {'default': 2.0,  'type': float, 'label': 'ATR T1 Multiplier',   'group': 'Trade Levels'},
     'SCALP_MAX_SPREAD_PCT':      {'default': 2.0,  'type': float, 'label': 'Max Spread (%)',       'group': 'Filters'},
     'SCALP_REENTRY_COOLDOWN_SEC': {'default': 120, 'type': int,   'label': 'Re-entry Cooldown (s)', 'group': 'Limits'},
-    'SCALP_PROFIT_LOCK_DRAWDOWN': {'default': 1000, 'type': float, 'label': 'Profit Lock DD (₹)',  'group': 'Risk'},
-    'SCALP_MAX_RISK_PER_TRADE':  {'default': 500,  'type': float, 'label': 'Max Risk/Trade (₹)',   'group': 'Risk'},
-    'SCALP_BREAKEVEN_PROFIT_PTS': {'default': 5,   'type': float, 'label': 'Breakeven After (pts)', 'group': 'Risk'},
+    # DISABLED features — code is commented out, hiding from UI
+    # 'SCALP_PROFIT_LOCK_DRAWDOWN': {'default': 1000, 'type': float, 'label': 'Profit Lock DD (₹)',  'group': 'Risk'},
+    # 'SCALP_MAX_RISK_PER_TRADE':  {'default': 500,  'type': float, 'label': 'Max Risk/Trade (₹)',   'group': 'Risk'},
+    # 'SCALP_BREAKEVEN_PROFIT_PTS': {'default': 5,   'type': float, 'label': 'Breakeven After (pts)', 'group': 'Risk'},
     'SCALP_ZEROHERO_EXIT_MIN':   {'default': 50,   'type': int,   'label': 'Zero-Hero Exit (14:MM)', 'group': 'Zero-Hero'},
     'SCALP_ZEROHERO_REENTER_MIN': {'default': 0,   'type': int,   'label': 'Zero-Hero Re-enter (15:MM)', 'group': 'Zero-Hero'},
     'SCALP_ZEROHERO_FINAL_MIN':  {'default': 20,   'type': int,   'label': 'Zero-Hero Final (15:MM)', 'group': 'Zero-Hero'},
@@ -359,6 +360,7 @@ def reset_scalp_daily():
         _recent_exits.clear()
         _loss_streak_pause_until = 0.0
         _last_exit_time.clear()
+        _adverse_exit_fired.clear()
     _persist_state('SCALP_PEAK_PNL', '0')
     # Restore limit to startup base
     base = _SCALP_LOSS_LIMIT_BASE
@@ -1165,6 +1167,54 @@ def _process_signal(ticker: str, signal: dict, candles: list[dict]):
             _tick_processing[ticker] = False
 
 
+_adverse_exit_fired: set[str] = set()  # track_id → already exited by adverse check
+
+
+def _check_adverse_exit(candles: list[dict], ticker: str):
+    """On every tick, check if market conditions have deteriorated (whipsaw/chop)
+    for this ticker. If so, force-exit any open scalp position immediately
+    instead of waiting for SL to be hit."""
+    try:
+        from . import tracked_positions as tp
+        from .order_executor import try_auto_exit
+        from ..api.indmoney import _ind_ltp
+
+        # Find open scalp positions for this ticker
+        scalp_positions = [
+            rec for rec in tp.list_tracked()
+            if (rec.get('ticket') or {}).get('trade_mode') == 'scalp'
+            and (rec.get('ticket') or {}).get('underlying', '') == ticker
+            and rec.get('id') not in _adverse_exit_fired
+        ]
+        if not scalp_positions:
+            return
+
+        # Count direction flips in last 10 bars (same logic as whipsaw filter)
+        flip_count = 0
+        flip_lookback = candles[-10:] if len(candles) >= 10 else candles
+        for i in range(1, len(flip_lookback)):
+            prev_dir = float(flip_lookback[i-1].get('close', 0)) - float(flip_lookback[i-1].get('open', 0))
+            curr_dir = float(flip_lookback[i].get('close', 0)) - float(flip_lookback[i].get('open', 0))
+            if prev_dir * curr_dir < 0:
+                flip_count += 1
+
+        if flip_count < 7:
+            return  # not choppy enough to warrant exit
+
+        # Whipsaw detected with open positions — force exit all
+        for rec in scalp_positions:
+            ticket = rec.get('ticket') or {}
+            sym = ticket.get('trading_symbol', '')
+            pid = rec.get('id')
+            prem = _ind_ltp(sym) or float((ticket.get('entry') or {}).get('expected_premium_inr', 0) or 0)
+            logger.warning(f"[scalp] ADVERSE EXIT: {ticker} whipsaw ({flip_count} flips) "
+                           f"— force-exiting {sym} @ ₹{prem:.2f} (id={pid})")
+            _adverse_exit_fired.add(pid)
+            try_auto_exit(pid, 'thesis_flip', rec, prem)
+    except Exception as e:
+        logger.warning(f"[scalp] adverse exit check failed: {e}")
+
+
 def _on_tick(tick: dict, ticker: str):
     """Live tick callback — instant breakout detection. Called from WS thread."""
     if _stop_event.is_set():
@@ -1194,6 +1244,11 @@ def _on_tick(tick: dict, ticker: str):
         live_candles[-1]['high'] = ltp
     if ltp < float(live_candles[-1].get('low', float('inf'))):
         live_candles[-1]['low'] = ltp
+
+    # ── Adverse-condition exit: detect whipsaw/chop on EVERY tick and
+    #    force-exit any open scalp position for this ticker immediately.
+    #    This prevents bleeding to SL in choppy markets.
+    _check_adverse_exit(live_candles, ticker)
 
     # Run signal detection with live-updated candles
     signal = _detect_momentum(live_candles, ticker)

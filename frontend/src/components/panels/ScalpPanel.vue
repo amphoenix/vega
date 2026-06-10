@@ -69,51 +69,51 @@
 
     <!-- ═══ MAIN: CHART GRID + SIGNALS/POSITIONS ═════════════════════════════ -->
     <div class="scalp-main">
-      <!-- LEFT: 3-pane chart grid (NIFTY, SENSEX, active scalp ticker) -->
+      <!-- LEFT: 3-pane chart grid (NIFTY top-wide, SENSEX + VIX bottom row) -->
       <div class="scalp-chart-col">
-        <div :class="['scalp-chart-grid', { 'three-pane': !!activeScalpTicker }]">
-          <!-- Pane 1: NIFTY 50 -->
+        <div class="scalp-chart-grid three-pane">
+          <!-- Pane 1: NIFTY 50 (top, full width) -->
           <div class="chart-pane">
             <div class="pane-hdr">
-              <span class="pane-sym">NIFTY 50</span>
+              <span class="pane-sym">NIFTY 50 · 1m</span>
               <span class="pane-ltp" v-if="niftyPrice">₹{{ fmtPrice(niftyPrice) }}</span>
             </div>
             <HomeChart
               chartTicker="^NSEI"
-              interval="5m"
+              interval="1m"
               :indmoneyLivePrice="niftyPrice"
               :lightMode="false"
               currencySymbol="₹"
               :marketOpen="true"
             />
           </div>
-          <!-- Pane 2: SENSEX -->
+          <!-- Pane 2: SENSEX (bottom-left) -->
           <div class="chart-pane">
             <div class="pane-hdr">
-              <span class="pane-sym">SENSEX</span>
+              <span class="pane-sym">SENSEX · 1m</span>
               <span class="pane-ltp" v-if="sensexPrice">₹{{ fmtPrice(sensexPrice) }}</span>
             </div>
             <HomeChart
               chartTicker="^BSESN"
-              interval="5m"
+              interval="1m"
               :indmoneyLivePrice="sensexPrice"
               :lightMode="false"
               currencySymbol="₹"
               :marketOpen="true"
             />
           </div>
-          <!-- Pane 3: Active scalp ticker -->
-          <div class="chart-pane" v-if="activeScalpTicker">
+          <!-- Pane 3: India VIX (bottom-right) -->
+          <div class="chart-pane">
             <div class="pane-hdr">
-              <span class="pane-sym">{{ cleanTicker(activeScalpTicker) }}</span>
-              <span class="pane-ltp" v-if="activeScalpPrice">₹{{ fmtPrice(activeScalpPrice) }}</span>
+              <span class="pane-sym">INDIA VIX · 1m</span>
+              <span class="pane-ltp" v-if="vixPrice">{{ fmtPrice(vixPrice) }}</span>
             </div>
             <HomeChart
-              :chartTicker="activeScalpTicker"
-              interval="5m"
-              :indmoneyLivePrice="activeScalpPrice"
+              chartTicker="^INDIAVIX"
+              interval="1m"
+              :indmoneyLivePrice="vixPrice"
               :lightMode="false"
-              currencySymbol="₹"
+              currencySymbol=""
               :marketOpen="true"
             />
           </div>
@@ -353,6 +353,7 @@ const _ownStreams = {}
 // ── Live prices from store (no polling) ──────────────────────────────────────
 const niftyPrice  = computed(() => Number(liveSpots.value['^NSEI']) || null)
 const sensexPrice = computed(() => Number(liveSpots.value['^BSESN']) || null)
+const vixPrice    = computed(() => Number(liveSpots.value['^INDIAVIX']) || null)
 const activeScalpPrice = computed(() => {
   if (!activeScalpTicker.value) return null
   return Number(liveSpots.value[activeScalpTicker.value]) || null

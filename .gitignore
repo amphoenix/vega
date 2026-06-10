@@ -56,7 +56,10 @@ backend/logs/
 # Upload files
 backend/uploads/
 
-# Docker data
+# Runtime databases (P&L, budget, trading state)
+*.db
+*.db-journal
+*.db-wal
 data/
 # nginx local proxy artefacts
 .nginx_tmp/

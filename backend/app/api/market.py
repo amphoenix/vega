@@ -1532,7 +1532,7 @@ FOMO: {fomo}/100 ({fomo_label}) | Reddit sentiment: {reddit_sentiment:.2f} ({sen
 
 ═══ FUNDAMENTALS ═══
 {chr(10).join(f'- {x}' for x in fund_lines) if fund_lines else '- Not available'}
-{('═══ SCREENER.IN ═══\n' + chr(10).join(f'- {x}' for x in screener_lines)) if screener_lines else ''}
+{"═══ SCREENER.IN ═══" + chr(10) + chr(10).join(f"- {x}" for x in screener_lines) if screener_lines else ""}
 
 Respond with JSON only:
 {{

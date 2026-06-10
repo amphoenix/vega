@@ -1256,8 +1256,31 @@ def tracked_remove(track_id: str):
             ticket = pre_rec.get('ticket') or {}
             entry_prem = float((ticket.get('entry') or {}).get('expected_premium_inr', 0) or 0)
             qty = int(pre_rec.get('qty', 1) or 1)
+            is_scalp = bool(ticket.get('trade_mode') == 'scalp' or ticket.get('scalp_meta'))
             if entry_prem > 0:
-                record_exit_pnl(entry_prem, float(exit_px), qty)
+                from ..services.pnl_store import _calc_brokerage
+                brokerage = _calc_brokerage(entry_prem, float(exit_px), qty)
+                net_pnl = round((float(exit_px) - entry_prem) * qty - brokerage, 2)
+                if is_scalp:
+                    try:
+                        from ..services.scalp_scanner import record_scalp_pnl
+                        record_scalp_pnl(net_pnl, exit_reason='manual',
+                                         underlying=ticket.get('underlying', ''))
+                    except Exception:
+                        pass
+                else:
+                    record_exit_pnl(entry_prem, float(exit_px), qty, net_pnl)
+                # Persist to DB (was missing — caused live vs DB P&L mismatch)
+                try:
+                    from ..services.pnl_store import record_trade as _rec_pnl
+                    sym = (ticket.get('trading_symbol') or '').strip().upper()
+                    mode = 'scalp' if is_scalp else 'swing'
+                    exit_reason = qp_reason or body.get('exit_reason') or 'manual'
+                    _rec_pnl(mode, sym, ticket.get('underlying', ''),
+                             entry_prem, float(exit_px), qty,
+                             int(ticket.get('lot_size', 1) or 1), exit_reason)
+                except Exception as _pe:
+                    logger.warning(f"Manual exit pnl_store record failed: {_pe}")
         except Exception as e:
             logger.warning(f"Manual exit P&L recording failed: {e}")
 

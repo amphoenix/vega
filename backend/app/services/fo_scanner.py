@@ -108,6 +108,15 @@ _scan_lock      = threading.Lock()
 # Prevents re-pricing when auto-entry retries on subsequent scan cycles.
 _ticket_cache: dict = {}   # underlying → ticket (cleared on daily reset)
 
+# ── Cross-index correlation: latest Supertrend direction per ticker ─────────
+# SENSEX won't trade opposite to NIFTY — prevents confusing PE-vs-CE divergence.
+_latest_st_dir: dict = {}   # ticker → 1 (bull) or -1 (bear)
+
+# Correlated pairs: if ticker A disagrees with ticker B, skip A's signal
+_CORRELATED_PAIRS = {
+    '^BSESN': '^NSEI',    # SENSEX must agree with NIFTY
+}
+
 # Scan state (for status endpoint)
 _state = {
     'running':       False,
@@ -341,6 +350,21 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
 
     bullish = st_dir == 1
     bearish = st_dir == -1
+
+    # Store latest Supertrend direction for cross-index correlation
+    _latest_st_dir[ticker] = st_dir
+
+    # ── Cross-index correlation guard ──────────────────────────────────────
+    # If this ticker is correlated (e.g. SENSEX → NIFTY), skip if directions
+    # disagree. Prevents confusing PE-vs-CE divergence between indices.
+    _ref_ticker = _CORRELATED_PAIRS.get(ticker)
+    if _ref_ticker:
+        _ref_dir = _latest_st_dir.get(_ref_ticker)
+        if _ref_dir is not None and _ref_dir != st_dir:
+            logger.warning(f"Scanner: {ticker} {'BULL' if bullish else 'BEAR'} "
+                           f"DISAGREES with {_ref_ticker} ({'BULL' if _ref_dir == 1 else 'BEAR'}) "
+                           f"— skipping (correlation guard)")
+            return None
 
     # ── Leading indicator confirmation ────────────────────────────────────
     # +DI > -DI = bullish momentum; MACD histogram > 0 = bullish momentum.
