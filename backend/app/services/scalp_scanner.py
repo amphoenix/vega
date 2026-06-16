@@ -84,7 +84,7 @@ SCALP_CONFIG_SCHEMA: dict[str, dict] = {
     'SCALP_MAX_ENTRIES_PER_DAY': {'default': 15, 'type': int,   'label': 'Max Entries/Day',        'group': 'Limits'},
     'SCALP_LOTS_PER_TRADE':      {'default': 1,    'type': int,   'label': 'Lots per Trade',         'group': 'Trade Levels'},
     'SCALP_ZEROHERO_EXIT_MIN':   {'default': 50,   'type': int,   'label': 'Zero-Hero Exit (14:MM)', 'group': 'Zero-Hero'},
-    'SCALP_ZEROHERO_REENTER_MIN': {'default': 0,   'type': int,   'label': 'Zero-Hero Re-enter (15:MM)', 'group': 'Zero-Hero'},
+    'SCALP_ZEROHERO_REENTER_MIN': {'default': 20,  'type': int,   'label': 'Zero-Hero Re-enter (15:MM)', 'group': 'Zero-Hero'},
     'SCALP_ZEROHERO_FINAL_MIN':  {'default': 20,   'type': int,   'label': 'Zero-Hero Final (15:MM)', 'group': 'Zero-Hero'},
 }
 
@@ -219,6 +219,9 @@ _state = {
 # Dedup: track last candle timestamp per ticker to avoid re-signalling same bar
 _last_signal_candle: dict = {}  # {ticker: candle_date_str}
 _option_ltp_cache: dict[str, float] = {}   # opt_code.upper() → latest ltp from option WS tick
+_atm_ws_ltp: dict[str, float] = {}        # trading_symbol → latest ltp from pre-subscribed ATM WS
+_atm_subscribed: dict[str, dict] = {}     # ticker → {strike, ce_symbol, pe_symbol, ce_cb, pe_cb}
+_atm_bid_ask: dict[str, tuple] = {}       # trading_symbol → (bid, ask) refreshed every 60s
 
 
 def _cached_prem(ticket: dict) -> float:
@@ -229,6 +232,25 @@ def _cached_prem(ticket: dict) -> float:
         if cached > 0:
             return cached
     return float((ticket.get('entry') or {}).get('expected_premium_inr', 0) or 0)
+
+
+def get_scalp_unrealized_pnl() -> float:
+    """Sum of unrealized P&L across all open scalp positions using last WS tick price."""
+    try:
+        from . import tracked_positions as _tp
+        total = 0.0
+        for rec in _tp.list_tracked():
+            ticket = rec.get('ticket') or {}
+            if ticket.get('trade_mode') != 'scalp':
+                continue
+            entry_prem = float((ticket.get('entry') or {}).get('expected_premium_inr') or 0)
+            current_prem = _cached_prem(ticket)
+            if entry_prem > 0 and current_prem > 0:
+                qty = int(rec.get('qty') or ticket.get('lot_size') or 1)
+                total += (current_prem - entry_prem) * qty
+        return total
+    except Exception:
+        return 0.0
 
 
 # ── Whipsaw / loss-streak tracking ──────────────────────────────────────────
@@ -383,10 +405,65 @@ def _restore_scalp_pnl() -> None:
             logger.info(f"[scalp] Restored peak P&L: ₹{_scalp_peak_pnl:+.2f}")
         else:
             _scalp_peak_pnl = max(0.0, _scalp_daily_pnl)
+        # Restore loss-streak pauses (epoch timestamps — auto-expire if past)
+        streak_raw = get_trading_state('SCALP_STREAK_PAUSE')
+        if streak_raw:
+            import json as _j, time as _t
+            _now_ep = _t.time()
+            restored_streak = _j.loads(streak_raw)
+            for _ot, _until in restored_streak.items():
+                if _until > _now_ep:  # only restore if pause is still active
+                    _loss_streak_pause_until[_ot] = _until
+            if any(v > _now_ep for v in restored_streak.values()):
+                logger.info(f"[scalp] Restored active loss-streak pauses: {_loss_streak_pause_until}")
+        # Restore daily entry count from today's trade count
+        entry_str = get_trading_state('SCALP_DAILY_ENTRY_COUNT')
+        if entry_str:
+            global _daily_entry_count
+            _daily_entry_count = int(float(entry_str))
+            logger.info(f"[scalp] Restored daily entry count: {_daily_entry_count}")
     except Exception as _e:
         logger.warning(f"[scalp] Could not restore daily scalp P&L: {_e}")
 
 _restore_scalp_pnl()
+
+
+def _restore_scalp_count() -> None:
+    """Restore _scalp_open_count and re-register option WS callbacks for surviving scalp positions.
+    Without re-registration, _on_option_tick never fires → tracked_monitor sees scalp_ws_active()=True
+    and skips REST reprice → SL detection is completely dead until the next manual entry."""
+    global _scalp_open_count
+    try:
+        from . import tracked_positions as _tp
+        from ..api.indmoney import register_tick_callback
+        remaining = [
+            r for r in _tp.list_tracked()
+            if (r.get('ticket') or {}).get('trade_mode') == 'scalp'
+        ]
+        for rec in remaining:
+            ticket = rec.get('ticket') or {}
+            trading_symbol = ticket.get('trading_symbol', '')
+            opt_code = ticket.get('opt_code', '')
+            if not opt_code and trading_symbol:
+                try:
+                    from ..api.indmoney import _resolve_fo_instrument, _fo_scrip_code
+                    inst = _resolve_fo_instrument(trading_symbol)
+                    if inst:
+                        opt_code = _fo_scrip_code(inst)
+                except Exception:
+                    pass
+            if opt_code and trading_symbol:
+                def _opt_cb(tick, code=opt_code, sym=trading_symbol):
+                    _on_option_tick(tick, code, sym)
+                register_tick_callback(opt_code, _opt_cb)
+                logger.info(f"[scalp] Re-registered option WS: {opt_code} ({trading_symbol})")
+        with _scalp_lock:
+            _scalp_open_count = len(remaining)
+        if remaining:
+            logger.info(f"[scalp] Restored _scalp_open_count={_scalp_open_count}, "
+                        f"re-registered {len(remaining)} option WS callbacks")
+    except Exception as e:
+        logger.warning(f"[scalp] Could not restore scalp count: {e}")
 
 
 def reset_scalp_daily():
@@ -406,6 +483,8 @@ def reset_scalp_daily():
     global _daily_entry_count
     _daily_entry_count = 0
     _last_signal_candle.clear()
+    _persist_state('SCALP_DAILY_ENTRY_COUNT', '0')
+    _persist_state('SCALP_STREAK_PAUSE', __import__('json').dumps({'CE': 0.0, 'PE': 0.0}))
     _persist_state('SCALP_PEAK_PNL', '0')
     # Restore limit to startup base
     base = _SCALP_LOSS_LIMIT_BASE
@@ -464,12 +543,20 @@ def record_scalp_pnl(pnl: float, hold_sec: float = 0, exit_reason: str = '',
             _scalp_peak_pnl = _scalp_daily_pnl
             _persist_state('SCALP_PEAK_PNL', str(round(_scalp_peak_pnl, 2)))
         kill_just_triggered = False
+        profit_triggered = False
         # Kill switch #1: absolute daily loss limit
         if _scalp_daily_pnl <= -SCALP_DAILY_LOSS() and not _scalp_kill_switch:
             _scalp_kill_switch = True
             kill_just_triggered = True
             logger.warning(f"[scalp] KILL SWITCH (absolute): daily loss ₹{abs(_scalp_daily_pnl):.0f} "
                            f"≥ limit ₹{SCALP_DAILY_LOSS():.0f}")
+        # Kill switch #2: profit target (2× daily loss limit) — stop new entries, let positions run
+        _profit_target = SCALP_DAILY_LOSS() * 2
+        if not _scalp_kill_switch and _scalp_daily_pnl >= _profit_target:
+            _scalp_kill_switch = True
+            profit_triggered = True
+            logger.info(f"[scalp] PROFIT TARGET: daily P&L ₹{_scalp_daily_pnl:.0f} "
+                        f"≥ ₹{_profit_target:.0f} (2× limit) — blocking new entries")
         # ── Loss-streak cooldown: track per direction (CE/PE) ─────────────────
         # CE losses should not block valid PE entries and vice versa.
         import time as _time
@@ -488,12 +575,23 @@ def record_scalp_pnl(pnl: float, hold_sec: float = 0, exit_reason: str = '',
                 _loss_streak_pause_until[_ot] = now + 300
                 logger.warning(f"[scalp] LOSS STREAK {_ot}: {dir_losses} losses in 5min — "
                                f"pausing {_ot} entries for 5min")
+                _persist_state('SCALP_STREAK_PAUSE', __import__('json').dumps(_loss_streak_pause_until))
     # Update stats in-memory + push to SSE so frontend sees P&L immediately
     _state['stats']['daily_pnl'] = _scalp_daily_pnl
     logger.info(f"[scalp] Recorded P&L ₹{pnl:+.2f} → daily ₹{_scalp_daily_pnl:+.2f}")
     # Force-exit all remaining scalp positions to cap losses
     if kill_just_triggered:
         _force_exit_all_scalp()
+    if profit_triggered:
+        try:
+            _broadcast({
+                'type': 'scalp_kill_switch',
+                'reason': 'profit_target',
+                'message': f'Daily profit target ₹{SCALP_DAILY_LOSS() * 2:.0f} hit — new entries blocked',
+                'timestamp': bu.now_ist().isoformat(),
+            })
+        except Exception:
+            pass
     try:
         _broadcast({
             'type': 'scalp_scan_complete',
@@ -582,6 +680,90 @@ def _on_option_tick(tick: dict, opt_code: str, trading_symbol: str):
                 try_auto_exit(rec['id'], 'past_t1', rec, ltp)
     except Exception as e:
         logger.debug(f"[scalp] option tick check error: {e}")
+
+
+def _make_atm_tick_cb(sym: str):
+    def _cb(tick: dict):
+        ltp = float(tick.get('ltp') or tick.get('last_price') or tick.get('live_price') or 0)
+        if ltp > 0:
+            _atm_ws_ltp[sym] = ltp
+    return _cb
+
+
+def _subscribe_atm_options(ticker: str, spot: float) -> None:
+    """Pre-subscribe ATM CE + PE to WS so _build_scalp_ticket has ltp without a REST call."""
+    try:
+        from ..api.indmoney import register_tick_callback, unregister_tick_callback
+
+        base = bu._nse_base(ticker)
+        strike_interval = 100 if ('SENSEX' in base or 'BANKNIFTY' in base) else 50
+        atm_strike = round(spot / strike_interval) * strike_interval
+
+        old = _atm_subscribed.get(ticker, {})
+        if old and abs(old.get('strike', 0) - atm_strike) < strike_interval * 0.5:
+            return  # same ATM — no resubscription needed
+
+        # Unsubscribe stale ATM callbacks before subscribing new ones
+        for key in ('ce', 'pe'):
+            old_sym = old.get(f'{key}_symbol')
+            old_cb = old.get(f'{key}_cb')
+            if old_sym and old_cb:
+                try:
+                    unregister_tick_callback(old_sym, old_cb)
+                except Exception:
+                    pass
+
+        entry: dict = {'strike': atm_strike}
+        for opt_type in ('CE', 'PE'):
+            contract = bu._resolve_option_contract(ticker, opt_type, atm_strike)
+            if not contract:
+                continue
+            sym = contract['trading_symbol']
+            secid = contract.get('security_id') or sym
+            key = opt_type.lower()
+            entry[f'{key}_symbol'] = sym
+            if contract.get('ltp') and contract['ltp'] > 0:
+                _atm_ws_ltp[sym] = contract['ltp']
+            cb = _make_atm_tick_cb(sym)
+            entry[f'{key}_cb'] = cb
+            register_tick_callback(secid, cb)
+
+        _atm_subscribed[ticker] = entry
+        logger.info(f"[scalp] ATM pre-sub {ticker} strike={atm_strike} "
+                    f"CE={entry.get('ce_symbol','?')} PE={entry.get('pe_symbol','?')}")
+    except Exception as e:
+        logger.debug(f"[scalp] ATM pre-subscribe failed for {ticker}: {e}")
+
+
+def _refresh_atm_subscriptions() -> None:
+    """Called from candle refresh loop — update ATM WS subscriptions and bid/ask cache."""
+    from ..api.indmoney import _ind_option_quote
+    for ticker in _scalp_universe():
+        cache = _candle_cache.get(ticker)
+        candles = (cache or {}).get('candles')
+        if not candles:
+            continue
+        spot = float(candles[-1].get('close') or 0)
+        if spot > 0:
+            _subscribe_atm_options(ticker, spot)
+        # Refresh bid/ask for subscribed ATM CE + PE (one REST call each, runs in 60s background loop)
+        entry = _atm_subscribed.get(ticker, {})
+        for key in ('ce_symbol', 'pe_symbol'):
+            sym = entry.get(key)
+            if not sym:
+                continue
+            try:
+                q = _ind_option_quote(sym)
+                if q:
+                    bid = float(q.get('bid') or 0)
+                    ask = float(q.get('ask') or 0)
+                    ltp = float(q.get('ltp') or 0)
+                    if bid > 0 and ask > 0:
+                        _atm_bid_ask[sym] = (bid, ask)
+                    if ltp > 0:
+                        _atm_ws_ltp[sym] = ltp
+            except Exception:
+                pass
 
 
 def _reconcile_on_startup():
@@ -804,11 +986,6 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
         'breakout_bars':   n_bars,
         'trade_mode':      'scalp',
         'timestamp':       bu.now_ist().isoformat(),
-        # Legacy None fields for API compatibility
-        'rsi':             None,
-        'adx':             None,
-        'bb_squeeze':      False,
-        'vix_bias':        None,
         'ema_aligned':     ema_direction == direction if ema_direction else True,
     }
 
@@ -914,9 +1091,9 @@ def _build_scalp_ticket(signal: dict, ticker: str) -> Optional[dict]:
             logger.debug(f"[scalp] No contract found for {ticker} {opt_type} {atm_strike}")
             return None
 
-        # Get current premium
+        # Get current premium — WS cache first (no REST), REST only as fallback
         trading_symbol = contract.get('trading_symbol') or contract.get('symbol', '')
-        premium = contract.get('ltp')
+        premium = _atm_ws_ltp.get(trading_symbol) or contract.get('ltp')
         if not premium or premium <= 0:
             premium = _ind_option_ltp(trading_symbol)
         if not premium or premium <= 0:
@@ -924,21 +1101,27 @@ def _build_scalp_ticket(signal: dict, ticker: str) -> Optional[dict]:
             return None
 
         # ── Spread / liquidity check ──
-        # Wide bid-ask spread = bad fills, slippage eats the profit
+        # Use _atm_bid_ask cache (populated every 60s in candle refresh loop) — no REST on hot path.
+        # Falls back to _ind_option_quote only when cache is cold (first 60s after start).
         try:
-            from ..api.indmoney import _ind_option_depth
-            depth = _ind_option_depth(trading_symbol)
-            if depth:
-                best_bid = float(depth.get('bid', 0) or 0)
-                best_ask = float(depth.get('ask', 0) or 0)
+            cached_ba = _atm_bid_ask.get(trading_symbol)
+            if cached_ba:
+                best_bid, best_ask = cached_ba
+            else:
+                from ..api.indmoney import _ind_option_quote
+                q = _ind_option_quote(trading_symbol)
+                best_bid = float((q or {}).get('bid') or 0)
+                best_ask = float((q or {}).get('ask') or 0)
                 if best_bid > 0 and best_ask > 0:
-                    spread_pct = (best_ask - best_bid) / premium * 100
-                    max_spread = SCALP_MAX_SPREAD_PCT()
-                    if spread_pct > max_spread:
-                        logger.info(f"[scalp] {trading_symbol} spread {spread_pct:.1f}% > {max_spread}% — skipping (bid={best_bid} ask={best_ask})")
-                        return None
+                    _atm_bid_ask[trading_symbol] = (best_bid, best_ask)
+            if best_bid > 0 and best_ask > 0:
+                spread_pct = (best_ask - best_bid) / premium * 100
+                max_spread = SCALP_MAX_SPREAD_PCT()
+                if spread_pct > max_spread:
+                    logger.info(f"[scalp] {trading_symbol} spread {spread_pct:.1f}% > {max_spread}% — skipping (bid={best_bid:.2f} ask={best_ask:.2f})")
+                    return None
         except Exception:
-            pass  # depth API may not exist — skip check gracefully
+            pass
 
         # SL/T1 — ATR-based dynamic or fixed-point, per config
         is_sensex = 'SENSEX' in base.upper() or 'BSESN' in base.upper()
@@ -967,7 +1150,11 @@ def _build_scalp_ticket(signal: dict, ticker: str) -> Optional[dict]:
         t2  = round(premium + t1_pts * 1.8, 2)  # T2 = 1.8× T1 distance
 
         # Lot size from broker_utils
-        lot_size = bu.underlying_lot_size(base) or (20 if 'SENSEX' in base.upper() else 75)
+        _default_lot = 20 if 'SENSEX' in base.upper() else (30 if 'BANKNIFTY' in base.upper() else 75)
+        lot_size = bu.underlying_lot_size(base) or _default_lot
+        if not (1 <= lot_size <= 900):
+            logger.warning(f"[scalp] Lot size {lot_size} out of range for {base} — using default {_default_lot}")
+            lot_size = _default_lot
 
         display = _display_symbol(trading_symbol) or trading_symbol
 
@@ -1150,6 +1337,8 @@ def _process_signal(ticker: str, signal: dict, candles: list[dict]):
         with _scan_lock:
             _state['stats']['total_signals'] += 1
             _state['signals'].append(signal)
+            if len(_state['signals']) > 200:
+                _state['signals'] = _state['signals'][-200:]
             _state['latest_by_under'][base] = signal
 
         _broadcast({'type': 'scalp_signal', **signal})
@@ -1185,6 +1374,7 @@ def _process_signal(ticker: str, signal: dict, candles: list[dict]):
                     _daily_entry_count += 1
                     ledger = _scalp_ledger.setdefault(sym_key, {'entries': 0, 'sl_exits': 0})
                     ledger['entries'] += 1
+                _persist_state('SCALP_DAILY_ENTRY_COUNT', str(_daily_entry_count))
                 logger.info(f"[scalp] Auto-entry placed for {ticker} → {result.get('id')} (day entry #{_daily_entry_count})")
         except Exception as e:
             logger.warning(f"[scalp] Auto-entry failed for {ticker}: {e}", exc_info=True)
@@ -1199,7 +1389,7 @@ def _process_signal(ticker: str, signal: dict, candles: list[dict]):
 _adverse_exit_fired: set[str] = set()  # track_id → already exited by adverse check
 
 
-def _check_adverse_exit(candles: list[dict], ticker: str):
+def _check_adverse_exit(candles: list[dict], ticker: str, positions: list | None = None):
     """On every tick, check if market conditions have deteriorated (whipsaw/chop)
     for this ticker. If so, force-exit any open scalp position immediately
     instead of waiting for SL to be hit."""
@@ -1209,7 +1399,7 @@ def _check_adverse_exit(candles: list[dict], ticker: str):
 
         # Find open scalp positions for this ticker
         scalp_positions = [
-            rec for rec in tp.list_tracked()
+            rec for rec in (positions if positions is not None else tp.list_tracked())
             if (rec.get('ticket') or {}).get('trade_mode') == 'scalp'
             and (rec.get('ticket') or {}).get('underlying', '') == ticker
             and rec.get('id') not in _adverse_exit_fired
@@ -1290,14 +1480,14 @@ def _check_adverse_exit(candles: list[dict], ticker: str):
 
 _thesis_flip_fired: set = set()  # track IDs already flipped (prevent re-fire)
 
-def _check_thesis_flip(candles: list[dict], ticker: str, _ltp: float):
+def _check_thesis_flip(candles: list[dict], ticker: str, _ltp: float, positions: list | None = None):
     """Check if EMA direction contradicts held scalp position — exit if so.
     Runs on EVERY tick, independent of signal generation.
     Uses the same _fast_ema() as _detect_momentum for consistency."""
     try:
         from . import tracked_positions as tp
         from .order_executor import try_auto_exit
-        items = tp.list_tracked()
+        items = positions if positions is not None else tp.list_tracked()
         scalp_positions = [
             r for r in items
             if (r.get('ticket') or {}).get('trade_mode') == 'scalp'
@@ -1390,11 +1580,18 @@ def _on_tick(tick: dict, ticker: str):
     if ltp < float(live_candles[-1].get('low', float('inf'))):
         live_candles[-1]['low'] = ltp
 
+    # Read positions once — passed to both checks to avoid 2 separate lock acquisitions
+    try:
+        from . import tracked_positions as _tp_mod
+        _tick_positions = _tp_mod.list_tracked() if _scalp_open_count > 0 else []
+    except Exception:
+        _tick_positions = None
+
     # ── Adverse-condition exit: detect whipsaw/chop on EVERY tick
-    _check_adverse_exit(live_candles, ticker)
+    _check_adverse_exit(live_candles, ticker, _tick_positions)
 
     # ── Thesis flip: if EMA direction contradicts held position, exit
-    _check_thesis_flip(live_candles, ticker, ltp)
+    _check_thesis_flip(live_candles, ticker, ltp, _tick_positions)
 
     # Gate: read + set _tick_processing in ONE lock acquisition to close the
     # window where two ticks both see False and both submit to the pool.
@@ -1437,6 +1634,12 @@ def _candle_refresh_loop():
                     _refresh_candles(ticker)
                 except Exception:
                     pass
+
+            # Update ATM option WS subscriptions using fresh spot prices from candle cache
+            try:
+                _refresh_atm_subscriptions()
+            except Exception:
+                pass
 
             with _scan_lock:
                 _state['last_scan'] = bu.now_ist().isoformat()
@@ -1545,6 +1748,7 @@ def start():
         return
     _stop_event.clear()
     _reconcile_on_startup()  # sync — must complete before tick callbacks registered (prevents ghost-position exits)
+    _restore_scalp_count()   # restore WS SL monitoring for positions that survived restart
     _scanner_thread = threading.Thread(
         target=_scanner_loop, name='ScalpScanner', daemon=True)
     _scanner_thread.start()

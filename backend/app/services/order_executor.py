@@ -198,8 +198,28 @@ def _save_exit_fired() -> None:
         pass
 
 
+def _save_sl_direction_ledger() -> None:
+    """Persist _sl_direction_ledger so same-direction re-entry blocks survive restarts."""
+    try:
+        from .pnl_store import set_trading_state
+        import json as _j
+        set_trading_state('_SL_DIR_LEDGER', _j.dumps(_sl_direction_ledger))
+    except Exception:
+        pass
+
+
+def _save_daily_ledger() -> None:
+    """Persist _daily_ledger so per-symbol entry/SL counts survive restarts."""
+    try:
+        from .pnl_store import set_trading_state
+        import json as _j
+        set_trading_state('_DAILY_LEDGER', _j.dumps(_daily_ledger))
+    except Exception:
+        pass
+
+
 def _load_exit_fired() -> None:
-    """Restore _exit_fired from SQLite on startup (same-day only)."""
+    """Restore exit state and daily ledger from SQLite on startup (same-day only)."""
     try:
         from .pnl_store import get_trading_state, last_trade_date
         today_str = bu.now_ist().strftime('%Y-%m-%d')
@@ -210,7 +230,18 @@ def _load_exit_fired() -> None:
         raw = get_trading_state('_EXIT_FIRED')
         if raw:
             _exit_fired.update(_j.loads(raw))
-            logger.info(f"[executor] Restored {len(_exit_fired)} exit_fired entries from DB")
+            # Derive _partial_exited: IDs where T1 partial exit already fired
+            _partial_exited.update(tid for tid, etype in _exit_fired.items() if etype == 'past_t1')
+            logger.info(f"[executor] Restored {len(_exit_fired)} exit_fired, "
+                        f"{len(_partial_exited)} partial_exited from DB")
+        raw_dir = get_trading_state('_SL_DIR_LEDGER')
+        if raw_dir:
+            _sl_direction_ledger.update(_j.loads(raw_dir))
+            logger.info(f"[executor] Restored {len(_sl_direction_ledger)} SL direction blocks from DB")
+        raw_ledger = get_trading_state('_DAILY_LEDGER')
+        if raw_ledger:
+            _daily_ledger.update(_j.loads(raw_ledger))
+            logger.info(f"[executor] Restored {len(_daily_ledger)} daily ledger entries from DB")
     except Exception as e:
         logger.warning(f"[executor] Could not restore exit_fired: {e}")
 
@@ -269,7 +300,9 @@ def reset_daily():
         _inflight.clear()
         _daily_realized_pnl = 0.0
         _daily_kill_switch = False
-    _save_exit_fired()  # persist cleared state so restart doesn't see stale entries
+    _save_exit_fired()          # persist cleared state — prevents stale exit guards
+    _save_sl_direction_ledger() # persist cleared direction blocks — new day, all unblocked
+    _save_daily_ledger()        # persist cleared ledger — new day, entry/SL counts reset
     # Restore limit to base
     base = _DAILY_LOSS_LIMIT_BASE
     os.environ['DAILY_LOSS_LIMIT_INR'] = str(int(base))
@@ -581,19 +614,26 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
             _inflight.discard(sym)
 
     if order_result and order_result.get('success'):
-        # In live mode, use actual market price for entry + SL/T1/T2
+        # In live mode, fetch actual fill premium and recalculate SL/T1/T2
         _is_live = os.environ.get('LIVE_TRADING_ENABLED', 'false').strip().lower() in ('true', '1', 'yes')
-        if _is_live and current_price and current_price > 0:
-            old_entry = ticket['entry']['expected_premium_inr']
-            ticket['entry']['expected_premium_inr'] = current_price
-            max_pts = sl_max_points(ticket.get('underlying', ''))
-            ticket['exit']['stop_loss_inr'] = round(max(current_price - max_pts, 0.05), 2)
-            if old_entry > 0:
-                ratio = current_price / old_entry
-                ticket['exit']['target_1_inr'] = round(ticket['exit']['target_1_inr'] * ratio, 2)
-                ticket['exit']['target_2_inr'] = round(ticket['exit']['target_2_inr'] * ratio, 2)
-            logger.info(f"[executor] Live fill: entry ₹{old_entry:.2f} → ₹{current_price:.2f}, "
-                        f"SL=₹{ticket['exit']['stop_loss_inr']:.2f}")
+        if _is_live:
+            _fill_prem = None
+            try:
+                from ..api.indmoney import _ind_option_ltp
+                _fill_prem = _ind_option_ltp(trading_symbol)
+            except Exception:
+                pass
+            if _fill_prem and _fill_prem > 0:
+                old_entry = ticket['entry']['expected_premium_inr']
+                ticket['entry']['expected_premium_inr'] = _fill_prem
+                max_pts = sl_max_points(ticket.get('underlying', ''))
+                ticket['exit']['stop_loss_inr'] = round(max(_fill_prem - max_pts, 0.05), 2)
+                if old_entry > 0:
+                    ratio = _fill_prem / old_entry
+                    ticket['exit']['target_1_inr'] = round(ticket['exit']['target_1_inr'] * ratio, 2)
+                    ticket['exit']['target_2_inr'] = round(ticket['exit']['target_2_inr'] * ratio, 2)
+                logger.info(f"[executor] Live fill: entry ₹{old_entry:.2f} → ₹{_fill_prem:.2f}, "
+                            f"SL=₹{ticket['exit']['stop_loss_inr']:.2f}")
 
         # Track the position
         record = tp.add_tracked(ticket, qty=qty,
@@ -603,6 +643,7 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
             ledger = _daily_ledger.setdefault(sym, {'entries': 0, 'sl_exits': 0})
             ledger['entries'] += 1
             ledger['last_entry_id'] = record.get('id')
+        _save_daily_ledger()
 
         _order_broadcast({
             'type': 'order_update', 'severity': 'success',
@@ -720,6 +761,7 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
                 ledger = _daily_ledger.get(sym.upper(), {'entries': 0, 'sl_exits': 0})
                 ledger['sl_exits'] += 1
                 _daily_ledger[sym.upper()] = ledger
+                _save_daily_ledger()
                 # Also track by underlying+direction to block same-direction re-entry
                 _und = ticket.get('underlying', '')
                 _otype = ticket.get('option_type', '').upper()
@@ -728,6 +770,7 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
                     _sl_direction_ledger[_dk] = _sl_direction_ledger.get(_dk, 0) + 1
                     logger.warning(f"[executor] SL direction ledger: {_dk} = "
                                    f"{_sl_direction_ledger[_dk]} (max {_MAX_SL_PER_DIRECTION})")
+                    _save_sl_direction_ledger()
 
         _save_exit_fired()  # persist immediately — guards against restart before fill confirm
         # ── Record realized P&L and check daily loss limit ───────────
@@ -921,9 +964,10 @@ def try_scalp_entry(signal: dict) -> Optional[dict]:
                        f"kill switch active (daily P&L ₹{_pnl:+.0f})")
         return None
 
-    # Scalp headroom guard — block entry if remaining budget too thin
+    # Scalp headroom guard — include unrealized P&L so open losing positions count against budget
     _scalp_limit = _scalp_mod.SCALP_DAILY_LOSS()
-    _scalp_headroom = _scalp_limit + _pnl
+    _unrealized = _scalp_mod.get_scalp_unrealized_pnl()
+    _scalp_headroom = _scalp_limit + _pnl + _unrealized
     if _scalp_headroom < 50:
         logger.warning(f"[executor] SCALP BUDGET BLOCK — only ₹{_scalp_headroom:.0f} headroom "
                        f"(P&L ₹{_pnl:+.0f}, limit ₹{_scalp_limit:.0f})")
@@ -990,8 +1034,7 @@ def try_scalp_entry(signal: dict) -> Optional[dict]:
                     f"conf={conf}% SL_pts={ticket['exit'].get('stop_loss_points')}")
 
         from ..api.indmoney import _order_broadcast
-        known_premium = float(ticket.get('entry', {}).get('expected_premium_inr') or 0)
-        order_result = _place_fo_buy(trading_symbol, qty, limit_price_hint=known_premium)
+        order_result = _place_fo_buy(trading_symbol, qty)
     finally:
         with _lock:
             _scalp_inflight.discard(sym)
@@ -1080,16 +1123,14 @@ def check_scalp_hold_timeout(track_id: str, rec: dict, premium: float) -> bool:
 
 # ── Internal order helpers ────────────────────────────────────────────────────
 
-def _place_fo_order(txn_type: str, trading_symbol: str, qty: int, limit_price_hint: float = 0) -> dict:
-    """Place a BUY or SELL MARKET order for an F&O instrument.
-    txn_type: 'BUY' or 'SELL'
-    limit_price_hint: known premium, used as fallback if live LTP unavailable."""
+def _place_fo_order(txn_type: str, trading_symbol: str, qty: int) -> dict:
+    """Place a BUY or SELL MARKET order for an F&O instrument. txn_type: 'BUY' or 'SELL'."""
     txn_type = txn_type.upper()
     try:
         from ..api.indmoney import (
             _live_trading_enabled, _connected, _resolve_fo_instrument,
             _fo_scrip_code, _headers, _order_broadcast, BASE_URL,
-            _invalidate_cash_cache,
+            _invalidate_cash_cache, _tick_cache, _tick_lock,
         )
         import requests as _requests
 
@@ -1130,7 +1171,20 @@ def _place_fo_order(txn_type: str, trading_symbol: str, qty: int, limit_price_hi
             'algo_id': algo_id,
         }
 
-        logger.info(f"[executor] {txn_type} MARKET: {exchange} sec={sec_id} qty={qty}")
+        # Include limit_price using in-memory WS tick cache — zero REST overhead.
+        # Required per IndStocks docs: MARKET orders auto-convert to LIMIT using this as reference.
+        _scrip = _fo_scrip_code(inst)
+        if _scrip:
+            with _tick_lock:
+                _cached_tick = _tick_cache.get(_scrip)
+            if _cached_tick:
+                _ltp = (_cached_tick.get('ltp') or _cached_tick.get('last_price')
+                        or _cached_tick.get('live_price'))
+                if _ltp:
+                    payload['limit_price'] = float(_ltp)
+
+        logger.info(f"[executor] {txn_type} MARKET: {exchange} sec={sec_id} qty={qty} "
+                    f"limit_price={payload.get('limit_price', 'n/a')}")
 
         import time as _time
         for attempt in range(1, 4):
@@ -1173,11 +1227,11 @@ def _place_fo_order(txn_type: str, trading_symbol: str, qty: int, limit_price_hi
         return {'success': False, 'error': str(e)}
 
 
-def _place_fo_buy(trading_symbol: str, qty: int, limit_price_hint: float = 0) -> dict:
-    return _place_fo_order('BUY', trading_symbol, qty, limit_price_hint)
+def _place_fo_buy(trading_symbol: str, qty: int) -> dict:
+    return _place_fo_order('BUY', trading_symbol, qty)
 
 
-def _place_fo_sell(trading_symbol: str, qty: int, limit_price_hint: float = 0) -> dict:
-    return _place_fo_order('SELL', trading_symbol, qty, limit_price_hint)
+def _place_fo_sell(trading_symbol: str, qty: int) -> dict:
+    return _place_fo_order('SELL', trading_symbol, qty)
 
 

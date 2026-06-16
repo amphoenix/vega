@@ -330,6 +330,10 @@ def _nse_base(ticker: str) -> str:
             'BSESN': 'SENSEX'}.get(t, t)
 
 
+# Cache keyed by "{base}:{option_type}:{YYYY-MM-DD}" — auto-invalidates next calendar day (IST).
+_fno_candidates_cache: dict = {}
+
+
 def _resolve_option_contract(ticker: str, option_type: str, strike: float) -> Optional[dict]:
     """
     Search IndStocks FNO master for the nearest matching option contract.
@@ -343,43 +347,49 @@ def _resolve_option_contract(ticker: str, option_type: str, strike: float) -> Op
     try:
         from ..api.indmoney import _load_instruments, _ind_option_ltp
 
-        instruments = _load_instruments('fno')
         base = _nse_base(ticker)
-        today = date.today()
+        today = today_ist()
+        _cache_key = f"{base}:{option_type.upper()}:{today.isoformat()}"
 
-        candidates = []
-        for inst in instruments:
-            sym       = (inst.get('TRADING_SYMBOL') or '').strip().upper()
-            opt_type  = (inst.get('OPTION_TYPE') or '').strip().upper()
-            exch      = (inst.get('EXCH') or '').strip().upper()
-            expiry_s  = (inst.get('EXPIRY_DATE') or '').strip()
-            sec_id    = (inst.get('SECURITY_ID') or '').strip()
-            str_price = inst.get('STRIKE_PRICE', '0')
+        if _cache_key in _fno_candidates_cache:
+            candidates = _fno_candidates_cache[_cache_key]
+        else:
+            instruments = _load_instruments('fno')
 
-            if not sym.startswith(base):
-                continue
-            if opt_type != option_type.upper():
-                continue
-            if exch not in ('NFO', 'BFO', 'NSE', 'BSE'):
-                continue
+            candidates = []
+            for inst in instruments:
+                sym       = (inst.get('TRADING_SYMBOL') or '').strip().upper()
+                opt_type  = (inst.get('OPTION_TYPE') or '').strip().upper()
+                exch      = (inst.get('EXCH') or '').strip().upper()
+                expiry_s  = (inst.get('EXPIRY_DATE') or '').strip()
+                sec_id    = (inst.get('SECURITY_ID') or '').strip()
+                str_price = inst.get('STRIKE_PRICE', '0')
 
-            exp_d = _parse_expiry(expiry_s)
-            if exp_d is None or exp_d < today:
-                continue
+                if not sym.startswith(base):
+                    continue
+                if opt_type != option_type.upper():
+                    continue
+                if exch not in ('NFO', 'BFO', 'NSE', 'BSE'):
+                    continue
 
-            try:
-                inst_strike = float(str_price)
-            except Exception:
-                continue
+                exp_d = _parse_expiry(expiry_s)
+                if exp_d is None or exp_d < today:
+                    continue
 
-            candidates.append({
-                'symbol':   sym,
-                'sec_id':   sec_id,
-                'expiry':   exp_d,
-                'expiry_s': expiry_s,
-                'strike':   inst_strike,
-                'display':  (inst.get('CUSTOM_SYMBOL') or '').strip(),
-            })
+                try:
+                    inst_strike = float(str_price)
+                except Exception:
+                    continue
+
+                candidates.append({
+                    'symbol':   sym,
+                    'sec_id':   sec_id,
+                    'expiry':   exp_d,
+                    'expiry_s': expiry_s,
+                    'strike':   inst_strike,
+                    'display':  (inst.get('CUSTOM_SYMBOL') or '').strip(),
+                })
+            _fno_candidates_cache[_cache_key] = candidates
 
         if not candidates:
             return None

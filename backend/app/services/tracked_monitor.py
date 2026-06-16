@@ -596,10 +596,19 @@ def _force_exit_loop() -> None:
                 positions = tp.list_tracked()
                 from ..api.indmoney import _ind_ltp
                 for rec in positions:
-                    t    = rec.get('ticket') or {}
-                    u    = t.get('underlying')
-                    spot = _ind_ltp(u) if u else None
-                    prem = _reprice(t, spot) if spot else None
+                    t       = rec.get('ticket') or {}
+                    u       = t.get('underlying')
+                    opt_sym = t.get('trading_symbol') or t.get('display_symbol')
+                    spot    = _ind_ltp(u) if u else None
+                    # Live LTP first — BS can diverge badly near expiry (gamma cliff)
+                    prem = None
+                    if opt_sym:
+                        try:
+                            prem = _ind_option_ltp(opt_sym)
+                        except Exception:
+                            pass
+                    if prem is None:
+                        prem = _reprice(t, spot) if spot else None
                     payload = _build_payload(rec, prem or 0.0, 'time_exit', spot or 0.0)
                     pid     = rec.get('id')
                     with _status_lock:

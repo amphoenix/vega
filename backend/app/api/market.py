@@ -1754,6 +1754,10 @@ Rules:
 
 
 # ── Multi-Agent Investment Analysis ──────────────────────────────────────────
+def _live_trading_active() -> bool:
+    return os.environ.get('LIVE_TRADING_ENABLED', 'false').strip().lower() in ('true', '1', 'yes')
+
+
 @market_bp.route('/invest-analysis/<ticker>', methods=['GET'])
 def invest_analysis(ticker: str):
     """
@@ -1763,6 +1767,8 @@ def invest_analysis(ticker: str):
     Step 4: CIO coordinator synthesizes into final investment decision.
     Returns D3 graph + structured report.
     """
+    if _live_trading_active():
+        return jsonify({'success': False, 'error': 'Disabled during live trading session — too GIL-heavy'}), 503
     import re as _re
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -3039,6 +3045,8 @@ def _build_invest_graph(agents_list: list, final: dict, ticker: str,
 
 @market_bp.route('/invest-analysis-stream/<ticker>', methods=['GET'])
 def invest_analysis_stream(ticker: str):
+    if _live_trading_active():
+        return jsonify({'success': False, 'error': 'Disabled during live trading session'}), 503
     from flask import stream_with_context, Response
 
     ticker       = _resolve_ticker(ticker)
@@ -3247,6 +3255,8 @@ def portfolio_sim_stream():
     Each agent's output is pushed the instant that LLM call completes.
     Query params: capital (float), horizon (short|long|both)
     """
+    if _live_trading_active():
+        return jsonify({'success': False, 'error': 'Disabled during live trading session — 30-agent sim competes with scalp GIL'}), 503
     from flask import stream_with_context, Response as _Response
     import re as _re
     import yfinance as yf

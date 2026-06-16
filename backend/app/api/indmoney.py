@@ -412,7 +412,6 @@ def unregister_tick_callback(scrip_code_or_secid: str, fn=None) -> None:
 
 _ws_msg_count  = 0                    # total messages received (for debug)
 _ws_stats_lock = threading.Lock()     # protects _ws_msg_count, _ws_last_tick_at, _ws_last_real_tick_at
-_ws_raw_sample: list = []             # first 5 raw messages for inspection
 
 
 def _ws_on_message(ws, message):
@@ -423,9 +422,6 @@ def _ws_on_message(ws, message):
             _ws_msg_count += 1
             _ws_last_tick_at      = now      # any source (used by /status liveness)
             _ws_last_real_tick_at = now      # WS only (used by REST-poll suspend check)
-        if len(_ws_raw_sample) < 5:
-            _ws_raw_sample.append(message[:500])
-
         # IndStocks double-encodes: the WebSocket frame is a JSON string whose value
         # is itself a JSON object string. Decode twice.
         parsed = json.loads(message)
@@ -1623,7 +1619,6 @@ def ws_debug():
     return jsonify({
         "ws_connected":    ws_alive,
         "msg_count":       _ws_msg_count,
-        "raw_samples":     _ws_raw_sample,
         "subscribers":     subs,
         "tick_cache_keys": list(_tick_cache.keys()),
         "tick_cache_sample": cache_snapshot,
