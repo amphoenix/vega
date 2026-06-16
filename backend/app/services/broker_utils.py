@@ -323,6 +323,86 @@ def underlying_lot_size(underlying: str) -> Optional[int]:
 #   GST: 18 % on (brokerage + exchange + SEBI fees)
 #   Stamp duty (buy-side only): options 0.003 %, futures 0.002 %
 #   Brokerage: ₹20 flat per executed order (Zerodha/Dhan typical) — IndMoney similar
+def _nse_base(ticker: str) -> str:
+    """Strip .NS/.BO/^ and map index tickers to NSE base names."""
+    t = ticker.upper().replace('.NS', '').replace('.BO', '').lstrip('^')
+    return {'NSEI': 'NIFTY', 'NSEBANK': 'BANKNIFTY', 'CNXFIN': 'FINNIFTY',
+            'BSESN': 'SENSEX'}.get(t, t)
+
+
+def _resolve_option_contract(ticker: str, option_type: str, strike: float) -> Optional[dict]:
+    """
+    Search IndStocks FNO master for the nearest matching option contract.
+    Returns {'trading_symbol': ..., 'security_id': ..., 'expiry_date': ..., 'ltp': ...}
+    or None if not found.
+
+    Matching priority:
+      1. Exact underlying + option_type (CE/PE) + nearest strike to target
+      2. Nearest expiry (earliest future expiry)
+    """
+    try:
+        from ..api.indmoney import _load_instruments, _ind_option_ltp
+
+        instruments = _load_instruments('fno')
+        base = _nse_base(ticker)
+        today = date.today()
+
+        candidates = []
+        for inst in instruments:
+            sym       = (inst.get('TRADING_SYMBOL') or '').strip().upper()
+            opt_type  = (inst.get('OPTION_TYPE') or '').strip().upper()
+            exch      = (inst.get('EXCH') or '').strip().upper()
+            expiry_s  = (inst.get('EXPIRY_DATE') or '').strip()
+            sec_id    = (inst.get('SECURITY_ID') or '').strip()
+            str_price = inst.get('STRIKE_PRICE', '0')
+
+            if not sym.startswith(base):
+                continue
+            if opt_type != option_type.upper():
+                continue
+            if exch not in ('NFO', 'BFO', 'NSE', 'BSE'):
+                continue
+
+            exp_d = _parse_expiry(expiry_s)
+            if exp_d is None or exp_d < today:
+                continue
+
+            try:
+                inst_strike = float(str_price)
+            except Exception:
+                continue
+
+            candidates.append({
+                'symbol':   sym,
+                'sec_id':   sec_id,
+                'expiry':   exp_d,
+                'expiry_s': expiry_s,
+                'strike':   inst_strike,
+                'display':  (inst.get('CUSTOM_SYMBOL') or '').strip(),
+            })
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: (x['expiry'], abs(x['strike'] - strike)))
+        best = candidates[0]
+        ltp = _ind_option_ltp(best['symbol'])
+
+        return {
+            'trading_symbol': best['symbol'],
+            'display_symbol': best.get('display') or best['symbol'],
+            'security_id':    best['sec_id'],
+            'expiry_date':    best['expiry_s'],
+            'strike':         best['strike'],
+            'ltp':            ltp,
+        }
+    except Exception as e:
+        import logging as _logging
+        _logging.getLogger('vega.broker_utils').warning(
+            f"Option contract resolve failed for {ticker} {option_type} {strike}: {e}")
+        return None
+
+
 def compute_fees(
     side: str,                    # 'BUY' | 'SELL'
     instrument_type: str,         # 'CE'|'PE'|'FUT'|'EQ'

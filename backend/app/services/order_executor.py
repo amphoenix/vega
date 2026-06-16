@@ -173,10 +173,46 @@ _force_exit_ids: set[str] = set()
 # cycles evaluate the same symbol concurrently and both pass the re-entry check.
 _inflight: set[str] = set()
 
+# In-flight scalp BUY symbols: same guard for scalp entries (tick-driven,
+# so multiple tick callbacks can fire in parallel for the same ticker).
+_scalp_inflight: set[str] = set()
+
+# Exit retry tracking: {track_id: (fail_count, next_retry_time)}
+_exit_retries: dict[str, tuple[int, float]] = {}
+
 # Track which IST date the current in-memory P&L belongs to.
 # If the date rolls over (server stays up past midnight without _force_exit_loop
 # firing, or midnight reset thread not started yet), we detect it here.
 _pnl_date: str = bu.now_ist().strftime('%Y-%m-%d')
+
+
+def _save_exit_fired() -> None:
+    """Persist _exit_fired to SQLite so the duplicate-exit guard survives a restart.
+    Without this, a restart between SELL order placement and fill confirmation
+    can fire a second exit order → unintended short position at broker."""
+    try:
+        from .pnl_store import set_trading_state
+        import json as _j
+        set_trading_state('_EXIT_FIRED', _j.dumps(_exit_fired))
+    except Exception:
+        pass
+
+
+def _load_exit_fired() -> None:
+    """Restore _exit_fired from SQLite on startup (same-day only)."""
+    try:
+        from .pnl_store import get_trading_state, last_trade_date
+        today_str = bu.now_ist().strftime('%Y-%m-%d')
+        last_date = last_trade_date()
+        if last_date and last_date < today_str:
+            return  # new day — stale entries don't apply
+        import json as _j
+        raw = get_trading_state('_EXIT_FIRED')
+        if raw:
+            _exit_fired.update(_j.loads(raw))
+            logger.info(f"[executor] Restored {len(_exit_fired)} exit_fired entries from DB")
+    except Exception as e:
+        logger.warning(f"[executor] Could not restore exit_fired: {e}")
 
 
 def _check_day_rollover() -> None:
@@ -218,6 +254,7 @@ def _restore_daily_pnl() -> None:
         logger.warning(f"[executor] Could not restore daily P&L: {_e}")
 
 _restore_daily_pnl()
+_load_exit_fired()
 
 
 def reset_daily():
@@ -232,6 +269,7 @@ def reset_daily():
         _inflight.clear()
         _daily_realized_pnl = 0.0
         _daily_kill_switch = False
+    _save_exit_fired()  # persist cleared state so restart doesn't see stale entries
     # Restore limit to base
     base = _DAILY_LOSS_LIMIT_BASE
     os.environ['DAILY_LOSS_LIMIT_INR'] = str(int(base))
@@ -302,8 +340,8 @@ def reset_kill_switch() -> float:
     with _lock:
         _daily_kill_switch = False
     current = daily_loss_limit()
-    new_limit = current + 500
-    os.environ['DAILY_LOSS_LIMIT_INR'] = str(new_limit)
+    new_limit = min(current + 500, _DAILY_LOSS_LIMIT_BASE * 3)
+    os.environ['DAILY_LOSS_LIMIT_INR'] = str(int(new_limit))
     _persist_state('DAILY_LOSS_LIMIT_INR', str(int(new_limit)))
     logger.info(f"[executor] Swing kill switch reset — limit bumped ₹{current:.0f} → ₹{new_limit:.0f}")
     return new_limit
@@ -487,33 +525,33 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
                        f"> headroom ₹{headroom:.0f} (P&L ₹{_daily_realized_pnl:+.0f})")
         return None
 
-    # ── Slippage guard: reject if current price moved too far from signal ────
-    # Max allowed slippage (default 5%). If price moved more than this from
-    # the signal price, the R:R is broken — skip the trade.
-    _max_slippage_pct = float(os.environ.get('MAX_ENTRY_SLIPPAGE_PCT', '5.0'))
-    signal_price = float(ticket['entry']['expected_premium_inr'])
+    # ── Slippage guard: reject if underlying index moved too far from signal ──
+    # Compare UNDERLYING SPOT (not option premium) — option price is too noisy.
+    # Default 0.3% on index: ~75pts on NIFTY, ~230pts on SENSEX.
+    _max_slippage_pct = float(os.environ.get('MAX_ENTRY_SLIPPAGE_PCT', '0.3'))
+    signal_spot = float(signal.get('spot', 0))
+    underlying_ticker = signal.get('ticker', '')
     try:
         from ..api.indmoney import _ind_ltp
-        current_price = _ind_ltp(trading_symbol)
+        current_spot = _ind_ltp(underlying_ticker) if underlying_ticker else None
     except Exception:
-        current_price = None
+        current_spot = None
 
-    if current_price and signal_price > 0:
-        slippage_pct = abs(current_price - signal_price) / signal_price * 100
+    if current_spot and signal_spot > 0:
+        slippage_pct = abs(current_spot - signal_spot) / signal_spot * 100
         if slippage_pct > _max_slippage_pct:
             from ..api.indmoney import _order_broadcast
-            logger.warning(f"[executor] SKIPPED {trading_symbol} — price moved "
-                           f"₹{signal_price:.2f} → ₹{current_price:.2f} "
-                           f"({slippage_pct:.1f}% > {_max_slippage_pct}% max slippage)")
+            logger.warning(f"[executor] SKIPPED {trading_symbol} — index moved "
+                           f"{signal_spot:.1f} → {current_spot:.1f} "
+                           f"({slippage_pct:.2f}% > {_max_slippage_pct}% max slippage)")
             _order_broadcast({
                 'type': 'order_update', 'severity': 'warning',
                 'title': f"Skipped: {ticket.get('display_symbol', trading_symbol)}",
                 'status': 'SLIPPAGE_REJECT', 'symbol': trading_symbol,
                 'txn_type': 'BUY',
-                'message': f"Price moved {slippage_pct:.1f}% from signal (₹{signal_price:.0f}→₹{current_price:.0f}). R:R invalid.",
+                'message': f"Index moved {slippage_pct:.2f}% from signal ({signal_spot:.0f}→{current_spot:.0f}). R:R invalid.",
                 'timestamp': bu.now_ist().isoformat(),
             })
-            # Clear ticket cache so next scan gets a fresh signal at the new price
             try:
                 from .fo_scanner import _ticket_cache
                 for k in list(_ticket_cache.keys()):
@@ -606,12 +644,27 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
       - force_exit (user override) → SELL 100% qty
     """
     from ..api.indmoney import _order_broadcast
+    import time as _time
 
     # Check for user force-exit override
     is_forced = track_id in _force_exit_ids
 
-    if not is_forced and status not in ('sl_hit', 'past_t1', 'past_t2', 'time_exit', 'thesis_flip'):
+    if not is_forced and status not in ('sl_hit', 'past_t1', 'past_t2', 'time_exit', 'thesis_flip', 'adverse_move'):
         return False
+
+    # Backoff on repeated broker failures (don't spam broker every 3s)
+    retry_info = _exit_retries.get(track_id)
+    if retry_info:
+        fail_count, next_retry = retry_info
+        if _time.time() < next_retry:
+            return False  # still in backoff window
+        if fail_count >= 10:
+            # 10 failures — force remove position to prevent infinite loop
+            logger.error(f"[executor] EXIT GAVE UP after {fail_count} retries — force-removing {track_id}")
+            from . import tracked_positions as tp
+            tp.remove_tracked(track_id, exit_premium=premium, exit_reason=f'{status}_broker_fail')
+            _exit_retries.pop(track_id, None)
+            return True
 
     # Avoid duplicate full exits
     with _lock:
@@ -645,8 +698,9 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
         exit_type = status
 
     display = ticket.get('display_symbol', sym)
+    _prem_display = f"₹{premium:.2f}" if premium is not None else "unknown"
     logger.info(f"[executor] AUTO-EXIT ({exit_type}): SELL {display} qty={exit_qty} "
-                f"premium=₹{premium:.2f}")
+                f"premium={_prem_display}")
 
     order_result = _place_fo_sell(sym, exit_qty)
 
@@ -675,6 +729,7 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
                     logger.warning(f"[executor] SL direction ledger: {_dk} = "
                                    f"{_sl_direction_ledger[_dk]} (max {_MAX_SL_PER_DIRECTION})")
 
+        _save_exit_fired()  # persist immediately — guards against restart before fill confirm
         # ── Record realized P&L and check daily loss limit ───────────
         entry_prem = float((ticket.get('entry') or {}).get('expected_premium_inr', 0) or 0)
         is_scalp = bool(ticket.get('trade_mode') == 'scalp' or ticket.get('scalp_meta'))
@@ -699,12 +754,21 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
                     except Exception:
                         pass
                     record_scalp_pnl(net_pnl_amt, hold_sec, exit_reason=status,
-                                     underlying=ticket.get('underlying', ''))
+                                     underlying=ticket.get('underlying', ''),
+                                     opt_type=ticket.get('instrument_type', '') or ticket.get('option_type', ''))
                     logger.info(f"[executor] Scalp P&L: gross ₹{gross_pnl:+.2f} "
                                 f"brokerage ₹{brokerage:.2f} net ₹{net_pnl_amt:+.2f} "
                                 f"(hold {hold_sec:.0f}s)")
                 except Exception as _e:
                     logger.warning(f"[executor] record_scalp_pnl failed: {_e}")
+                try:
+                    from ..api.indmoney import unregister_tick_callback
+                    _opt_code = ticket.get('opt_code', '')
+                    if _opt_code:
+                        unregister_tick_callback(_opt_code)
+                        logger.debug(f"[executor] Unregistered option tick: {_opt_code}")
+                except Exception:
+                    pass
                 try:
                     from .pnl_store import record_trade as _rec_pnl
                     _rec_pnl('scalp', sym, ticket.get('underlying', ''),
@@ -751,6 +815,9 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
             'timestamp': bu.now_ist().isoformat(),
         })
 
+        # Clear retry tracking on success
+        _exit_retries.pop(track_id, None)
+
         # For full exits, remove from tracked positions
         if exit_type != 'past_t1':
             from . import tracked_positions as tp
@@ -776,15 +843,24 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
         return True
     else:
         err = (order_result or {}).get('error', 'Unknown error')
+        # Track retry with exponential backoff: 5s, 10s, 20s, 40s...
+        prev = _exit_retries.get(track_id)
+        fail_count = (prev[0] + 1) if prev else 1
+        backoff = min(5 * (2 ** (fail_count - 1)), 60)  # max 60s
+        _exit_retries[track_id] = (fail_count, _time.time() + backoff)
+
+        # URGENT alert — tell the user to manually exit if broker keeps failing
         _order_broadcast({
-            'type': 'order_update', 'severity': 'error',
-            'title': f"EXIT FAILED: {display}",
+            'type': 'order_update', 'severity': 'critical',
+            'title': f"⚠️ EXIT FAILED ({fail_count}x): {display}",
             'status': 'EXIT_FAILED', 'symbol': sym,
             'txn_type': 'SELL', 'qty': exit_qty,
-            'message': f"{exit_type}: {err}",
+            'message': (f"{exit_type}: {err} — SELL THIS MANUALLY if retries keep failing! "
+                        f"Retry #{fail_count}, next in {backoff}s"),
             'timestamp': bu.now_ist().isoformat(),
         })
         logger.error(f"[executor] Exit failed: {sym} ({exit_type}) — {err}")
+        logger.warning(f"[executor] Exit retry #{fail_count} for {track_id} — next attempt in {backoff}s")
         return False
 
 
@@ -877,41 +953,71 @@ def try_scalp_entry(signal: dict) -> Optional[dict]:
     lot_size = int(ticket.get('lot_size', 1) or 1)
     trading_symbol = ticket.get('trading_symbol', '')
 
-    _scalp_sl_pts = float(ticket['exit'].get('stop_loss_points') or 8)
-    num_lots = _scalp_mod.SCALP_LOTS_PER_TRADE()
-    qty = lot_size * num_lots
+    # TOCTOU guard: two concurrent tick callbacks could both pass the
+    # "already tracked" check before either records the entry.
+    with _lock:
+        if sym in _scalp_inflight:
+            logger.info(f"[executor] Skip scalp {sym} — BUY already in-flight")
+            return None
+        _scalp_inflight.add(sym)
 
-    # ── Scalp per-trade budget guard: worst-case SL + open exposure must fit ──
-    _scalp_worst = (_scalp_sl_pts * qty) + 70
-    _existing_exposure = 0
+    # Outer try/finally ensures inflight is ALWAYS cleared — even on early returns
+    # (budget guard, exceptions). Previously, early returns left the symbol locked.
     try:
-        for _rec in existing:
-            _t = _rec.get('ticket') or {}
-            if _t.get('trade_mode') != 'scalp': continue
-            _esl = float((_t.get('exit') or {}).get('stop_loss_points', 8) or 8)
-            _eq = int(_rec.get('qty', 1) or 1)
-            _existing_exposure += (_esl * _eq) + 70
-    except Exception: pass
-    _total_worst = _scalp_worst + _existing_exposure
-    if _total_worst > _scalp_headroom:
-        logger.warning(f"[executor] SCALP BUDGET BLOCK {sym} — worst ₹{_total_worst:.0f} "
-                       f"(new ₹{_scalp_worst:.0f} + open ₹{_existing_exposure:.0f}) "
-                       f"> headroom ₹{_scalp_headroom:.0f}")
-        return None
+        _scalp_sl_pts = float(ticket['exit'].get('stop_loss_points') or 8)
+        num_lots = _scalp_mod.SCALP_LOTS_PER_TRADE()
+        qty = lot_size * num_lots
 
-    logger.info(f"[executor] SCALP-ENTRY: BUY {trading_symbol} qty={qty} "
-                f"conf={conf}% SL_pts={ticket['exit'].get('stop_loss_points')}")
+        # ── Scalp per-trade budget guard: worst-case SL + open exposure must fit ──
+        _scalp_worst = (_scalp_sl_pts * qty) + 70
+        _existing_exposure = 0
+        try:
+            for _rec in existing:
+                _t = _rec.get('ticket') or {}
+                if _t.get('trade_mode') != 'scalp': continue
+                _esl = float((_t.get('exit') or {}).get('stop_loss_points', 8) or 8)
+                _eq = int(_rec.get('qty', 1) or 1)
+                _existing_exposure += (_esl * _eq) + 70
+        except Exception: pass
+        _total_worst = _scalp_worst + _existing_exposure
+        if _total_worst > _scalp_headroom:
+            logger.warning(f"[executor] SCALP BUDGET BLOCK {sym} — worst ₹{_total_worst:.0f} "
+                           f"(new ₹{_scalp_worst:.0f} + open ₹{_existing_exposure:.0f}) "
+                           f"> headroom ₹{_scalp_headroom:.0f}")
+            return None
 
-    from ..api.indmoney import _order_broadcast
-    order_result = _place_fo_buy(trading_symbol, qty)
+        logger.info(f"[executor] SCALP-ENTRY: BUY {trading_symbol} qty={qty} "
+                    f"conf={conf}% SL_pts={ticket['exit'].get('stop_loss_points')}")
+
+        from ..api.indmoney import _order_broadcast
+        known_premium = float(ticket.get('entry', {}).get('expected_premium_inr') or 0)
+        order_result = _place_fo_buy(trading_symbol, qty, limit_price_hint=known_premium)
+    finally:
+        with _lock:
+            _scalp_inflight.discard(sym)
 
     if order_result and order_result.get('success'):
         record = tp.add_tracked(ticket, qty=qty,
                                 notes=f"Scalp entry conf={conf}% | {signal.get('ticker')}")
 
+        # Increment open count + subscribe option to WS for tick-driven SL/T1
+        _scalp_mod._inc_scalp_count()
+        try:
+            from ..api.indmoney import _resolve_fo_instrument, _fo_scrip_code, register_tick_callback
+            inst = _resolve_fo_instrument(trading_symbol)
+            if inst:
+                opt_code = _fo_scrip_code(inst)
+                ticket['opt_code'] = opt_code  # store scrip code so exit checks key cache correctly
+                def _opt_cb(tick, code=opt_code, sym=trading_symbol):
+                    _scalp_mod._on_option_tick(tick, code, sym)
+                register_tick_callback(opt_code, _opt_cb)
+                logger.info(f"[executor] Option WS subscribed: {opt_code} ({trading_symbol})")
+        except Exception as _e:
+            logger.debug(f"[executor] Option tick subscription failed: {_e}")
+
         evt = {
             'type': 'order_update', 'severity': 'success',
-            'title': f"⏱ Scalp BUY: {ticket.get('display_symbol', trading_symbol)}",
+            'title': f"Scalp BUY: {ticket.get('display_symbol', trading_symbol)}",
             'status': 'SCALP_ENTRY', 'symbol': trading_symbol,
             'txn_type': 'BUY', 'qty': qty,
             'message': f"Conf {conf}% — SL ₹{ticket['exit']['stop_loss_inr']:.2f} | "
@@ -955,6 +1061,9 @@ def check_scalp_hold_timeout(track_id: str, rec: dict, premium: float) -> bool:
 
     try:
         entered_at = datetime.fromisoformat(entered_at_str)
+        if entered_at.tzinfo is None:
+            from datetime import timezone, timedelta as _td
+            entered_at = entered_at.replace(tzinfo=timezone(_td(hours=5, minutes=30)))
     except (ValueError, TypeError):
         return False
 
@@ -971,12 +1080,16 @@ def check_scalp_hold_timeout(track_id: str, rec: dict, premium: float) -> bool:
 
 # ── Internal order helpers ────────────────────────────────────────────────────
 
-def _place_fo_buy(trading_symbol: str, qty: int) -> dict:
-    """Place a BUY MARKET order for an F&O instrument."""
+def _place_fo_order(txn_type: str, trading_symbol: str, qty: int, limit_price_hint: float = 0) -> dict:
+    """Place a BUY or SELL MARKET order for an F&O instrument.
+    txn_type: 'BUY' or 'SELL'
+    limit_price_hint: known premium, used as fallback if live LTP unavailable."""
+    txn_type = txn_type.upper()
     try:
         from ..api.indmoney import (
             _live_trading_enabled, _connected, _resolve_fo_instrument,
             _fo_scrip_code, _headers, _order_broadcast, BASE_URL,
+            _invalidate_cash_cache,
         )
         import requests as _requests
 
@@ -984,12 +1097,12 @@ def _place_fo_buy(trading_symbol: str, qty: int) -> dict:
             return {'success': False, 'error': 'INDMONEY_ACCESS_TOKEN not set'}
 
         if not _live_trading_enabled():
-            logger.info(f"[executor] PAPER BUY: {trading_symbol} qty={qty}")
+            logger.info(f"[executor] PAPER {txn_type}: {trading_symbol} qty={qty}")
             _order_broadcast({
                 'type': 'order_update', 'severity': 'warning',
-                'title': f"Paper BUY: {trading_symbol}",
+                'title': f"Paper {txn_type}: {trading_symbol}",
                 'status': 'SIMULATED', 'symbol': trading_symbol,
-                'txn_type': 'BUY', 'qty': qty,
+                'txn_type': txn_type, 'qty': qty,
                 'message': 'LIVE_TRADING_ENABLED=false — order not sent',
                 'timestamp': bu.now_ist().isoformat(),
             })
@@ -1005,7 +1118,7 @@ def _place_fo_buy(trading_symbol: str, qty: int) -> dict:
         algo_id = '9999999999999999' if exchange == 'BSE' else '99999'
 
         payload = {
-            'txn_type': 'BUY',
+            'txn_type': txn_type,
             'exchange': exchange,
             'segment': 'DERIVATIVE',
             'product': 'MARGIN',
@@ -1017,63 +1130,54 @@ def _place_fo_buy(trading_symbol: str, qty: int) -> dict:
             'algo_id': algo_id,
         }
 
-        r = _requests.post(f'{BASE_URL}/order', headers=_headers(),
-                           json=payload, timeout=10)
-        return {'success': r.ok, 'data': r.json() if r.ok else r.text}
+        logger.info(f"[executor] {txn_type} MARKET: {exchange} sec={sec_id} qty={qty}")
+
+        import time as _time
+        for attempt in range(1, 4):
+            try:
+                r = _requests.post(f'{BASE_URL}/order', headers=_headers(),
+                                   json=payload, timeout=10)
+            except _requests.exceptions.RequestException as _net_err:
+                if attempt < 3:
+                    logger.warning(f"[executor] {txn_type} attempt {attempt} network error — retrying: {_net_err}")
+                    _time.sleep(1)
+                    continue
+                return {'success': False, 'error': f'Network error after 3 attempts: {_net_err}'}
+            _invalidate_cash_cache()
+            logger.info(f"[executor] {txn_type} order attempt {attempt} HTTP {r.status_code} — {r.text[:500]}")
+            if not r.ok:
+                return {'success': False, 'error': r.text}
+            body = r.json()
+            order_status = (
+                body.get('data', {}).get('order_status')
+                or body.get('order_status')
+                or body.get('data', {}).get('status')
+                or ''
+            ).upper()
+            if order_status in ('REJECTED', 'CANCELLED'):
+                reason = body.get('data', {}).get('message') or body.get('message') or ''
+                logger.error(f"[executor] {txn_type} order {order_status}: {reason or body}")
+                return {'success': False, 'error': f"Broker {order_status}: {reason or body}"}
+            if order_status == 'FAILED':
+                if attempt < 3:
+                    logger.warning(f"[executor] {txn_type} attempt {attempt} FAILED — retrying in 1s...")
+                    _time.sleep(1)
+                    continue
+                reason = body.get('data', {}).get('message') or body.get('message') or body
+                logger.error(f"[executor] {txn_type} FAILED after 3 attempts: {reason}")
+                return {'success': False, 'error': f"Broker FAILED after 3 attempts: {reason}"}
+            return {'success': True, 'data': body}
+        return {'success': False, 'error': 'Unexpected retry exit'}
     except Exception as e:
-        logger.error(f"[executor] _place_fo_buy error: {e}")
+        logger.error(f"[executor] _place_fo_order({txn_type}) error: {e}")
         return {'success': False, 'error': str(e)}
 
 
-def _place_fo_sell(trading_symbol: str, qty: int) -> dict:
-    """Place a SELL MARKET order for an F&O instrument."""
-    try:
-        from ..api.indmoney import (
-            _live_trading_enabled, _connected, _resolve_fo_instrument,
-            _fo_scrip_code, _headers, _order_broadcast, BASE_URL,
-        )
-        import requests as _requests
+def _place_fo_buy(trading_symbol: str, qty: int, limit_price_hint: float = 0) -> dict:
+    return _place_fo_order('BUY', trading_symbol, qty, limit_price_hint)
 
-        if not _connected():
-            return {'success': False, 'error': 'INDMONEY_ACCESS_TOKEN not set'}
 
-        if not _live_trading_enabled():
-            logger.info(f"[executor] PAPER SELL: {trading_symbol} qty={qty}")
-            _order_broadcast({
-                'type': 'order_update', 'severity': 'warning',
-                'title': f"Paper SELL: {trading_symbol}",
-                'status': 'SIMULATED', 'symbol': trading_symbol,
-                'txn_type': 'SELL', 'qty': qty,
-                'message': 'LIVE_TRADING_ENABLED=false — order not sent',
-                'timestamp': bu.now_ist().isoformat(),
-            })
-            return {'success': True, 'data': {'order_id': 'PAPER', 'status': 'SIMULATED'}}
+def _place_fo_sell(trading_symbol: str, qty: int, limit_price_hint: float = 0) -> dict:
+    return _place_fo_order('SELL', trading_symbol, qty, limit_price_hint)
 
-        inst = _resolve_fo_instrument(trading_symbol)
-        if not inst:
-            return {'success': False, 'error': f'Instrument not found: {trading_symbol}'}
 
-        sec_id = (inst.get('SECURITY_ID') or '').strip()
-        exch = (inst.get('EXCH') or 'NSE').strip().upper()
-        exchange = 'BSE' if exch.startswith('B') else 'NSE'
-        algo_id = '9999999999999999' if exchange == 'BSE' else '99999'
-
-        payload = {
-            'txn_type': 'SELL',
-            'exchange': exchange,
-            'segment': 'DERIVATIVE',
-            'product': 'MARGIN',
-            'order_type': 'MARKET',
-            'validity': 'DAY',
-            'security_id': sec_id,
-            'qty': qty,
-            'is_amo': False,
-            'algo_id': algo_id,
-        }
-
-        r = _requests.post(f'{BASE_URL}/order', headers=_headers(),
-                           json=payload, timeout=10)
-        return {'success': r.ok, 'data': r.json() if r.ok else r.text}
-    except Exception as e:
-        logger.error(f"[executor] _place_fo_sell error: {e}")
-        return {'success': False, 'error': str(e)}

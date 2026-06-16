@@ -110,14 +110,29 @@ fi
 cleanup() {
   echo ""
   info "Stopping..."
-  [ -n "$BE_PID"    ] && pkill -P "$BE_PID"    2>/dev/null
-  [ -n "$FE_PID"    ] && pkill -P "$FE_PID"    2>/dev/null
-  [ -n "$NGINX_PID" ] && kill  "$NGINX_PID"    2>/dev/null
-  kill $BE_PID $FE_PID $NGINX_PID 2>/dev/null
+  # Graceful shutdown first, then SIGKILL after 3s if still running
+  [ -n "$BE_PID"    ] && kill -TERM "$BE_PID"    2>/dev/null
+  [ -n "$FE_PID"    ] && kill -TERM "$FE_PID"    2>/dev/null
+  [ -n "$NGINX_PID" ] && kill -TERM "$NGINX_PID" 2>/dev/null
+  sleep 3
+  [ -n "$BE_PID"    ] && kill -9 "$BE_PID"    2>/dev/null; pkill -9 -P "$BE_PID"    2>/dev/null
+  [ -n "$FE_PID"    ] && kill -9 "$FE_PID"    2>/dev/null; pkill -9 -P "$FE_PID"    2>/dev/null
+  [ -n "$NGINX_PID" ] && kill -9 "$NGINX_PID"  2>/dev/null
+  # Nuke anything still on our ports
+  lsof -ti :${FLASK_INTERNAL_PORT} | xargs kill -9 2>/dev/null
+  lsof -ti :${PUBLIC_PORT}         | xargs kill -9 2>/dev/null
+  lsof -ti :${FE_PORT}             | xargs kill -9 2>/dev/null
   wait $BE_PID $FE_PID $NGINX_PID 2>/dev/null
   exit 0
 }
 trap cleanup SIGINT SIGTERM
+
+# ── Kill zombies from previous runs ────────────────────────────────────────────
+info "Cleaning up stale processes..."
+lsof -ti :${FLASK_INTERNAL_PORT} | xargs kill -9 2>/dev/null
+lsof -ti :${PUBLIC_PORT}         | xargs kill -9 2>/dev/null
+lsof -ti :${FE_PORT}             | xargs kill -9 2>/dev/null
+sleep 0.5
 
 # Frontend points at HTTPS nginx in front of Flask. Browser ↔ nginx is
 # HTTP/2 (one TCP connection multiplexes all SSE streams + XHRs), nginx

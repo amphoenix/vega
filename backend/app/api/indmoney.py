@@ -75,7 +75,7 @@ class _TokenProxy:
     def __str__(self):   return _access_token()
     def __eq__(self, o): return _access_token() == o
     def __ne__(self, o): return _access_token() != o
-    def __hash__(self):  return hash(_access_token())
+    __hash__ = None  # unhashable — hash changes with token rotation, unsafe as dict key
     def startswith(self, p): return _access_token().startswith(p)
     def __format__(self, spec): return format(_access_token(), spec)
 ACCESS_TOKEN = _TokenProxy()
@@ -104,37 +104,41 @@ def _load_instruments(source: str = 'equity') -> list[dict]:
     Cached in process memory per source.
     """
     global _inst_master
-    cache_key = source
+    # Fast path: return cached result without HTTP
     with _inst_lock:
-        if _inst_master and isinstance(_inst_master, dict) and _inst_master.get(cache_key):
-            return _inst_master[cache_key]
         if not isinstance(_inst_master, dict):
             _inst_master = {}
+        cached = _inst_master.get(source)
+        if cached:  # non-empty list = valid cache hit
+            return cached
 
-        try:
-            import csv, io as _io
-            r = _requests.get(
-                f'{BASE_URL}/market/instruments',
-                headers=_headers(),
-                params={'source': source},
-                timeout=20,
-            )
-            if not r.ok:
-                logger.warning(f"Instruments({source}) HTTP {r.status_code}: {r.text[:200]}")
-                _inst_master[cache_key] = []
-                return []
-
+    # Fetch OUTSIDE the lock so other threads aren't blocked for up to 20s
+    try:
+        import csv, io as _io
+        r = _requests.get(
+            f'{BASE_URL}/market/instruments',
+            headers=_headers(),
+            params={'source': source},
+            timeout=20,
+        )
+        if not r.ok:
+            logger.warning(f"Instruments({source}) HTTP {r.status_code}: {r.text[:200]}")
+            rows = []
+        else:
             reader = csv.DictReader(_io.StringIO(r.text))
-            rows   = [row for row in reader]
-            _inst_master[cache_key] = rows
+            rows = list(reader)
             logger.info(f"Loaded {len(rows)} {source} instruments from IndStocks")
             if rows:
                 logger.debug(f"Instrument CSV columns: {list(rows[0].keys())}")
-        except Exception as e:
-            logger.warning(f"Instrument load({source}) failed: {e}")
-            _inst_master[cache_key] = []
+    except Exception as e:
+        logger.warning(f"Instrument load({source}) failed: {e}")
+        rows = []
 
-        return _inst_master.get(cache_key, [])
+    # Store result; another thread may have beaten us — keep theirs if non-empty
+    with _inst_lock:
+        if not _inst_master.get(source):
+            _inst_master[source] = rows
+    return _inst_master.get(source, rows)
 
 
 # ── Friendly label cache (broker TRADING_SYMBOL → IND CUSTOM_SYMBOL) ────────
@@ -699,8 +703,9 @@ def _start_ws():
                 backoff = min(backoff * 2, 300)
 
         t = threading.Thread(target=_run, daemon=True, name='INDmoneyWS')
+        with _ws_lock:
+            _ws_thread = t
         t.start()
-        _ws_thread = t
         logger.info("INDmoney WebSocket thread started")
     except ImportError:
         logger.warning("websocket-client not installed — INDmoney WebSocket unavailable. Run: uv add websocket-client")
@@ -1104,6 +1109,28 @@ def _ind_available_cash() -> float | None:
         return None
 
 
+def _invalidate_cash_cache():
+    """Clear the funds cache so next call to _ind_available_cash() hits the API."""
+    global _cash_cache
+    with _cash_cache_lock:
+        _cash_cache = None
+
+
+def _ind_broker_positions(segment: str = 'derivative', product: str = 'margin') -> list | None:
+    """Return list of open F&O positions from broker, or None on error/no auth."""
+    if not ACCESS_TOKEN:
+        return None
+    try:
+        r = _requests.get(f'{BASE_URL}/portfolio/positions', headers=_headers(), timeout=5,
+                          params={'segment': segment, 'product': product})
+        if not r.ok:
+            return None
+        data = r.json().get('data')
+        return data if isinstance(data, list) else None
+    except Exception:
+        return None
+
+
 def _ind_ltp(ticker: str) -> float | None:
     """
     Get live last-traded-price for any NSE/BSE symbol.
@@ -1167,6 +1194,7 @@ def _ind_ltp(ticker: str) -> float | None:
 
 _candles_404_cache: dict[str, float] = {}   # "scrip|interval" → next-allowed-time
 _CANDLES_404_MAX = 500                      # evict oldest entries beyond this
+_candles_404_lock = threading.Lock()
 
 def _ind_candles(ticker: str, interval: str = '5m', days: int = 7) -> list[dict]:
     """
@@ -1186,7 +1214,8 @@ def _ind_candles(ticker: str, interval: str = '5m', days: int = 7) -> list[dict]
     if not code:
         return []
     # Skip if we recently learned this code is unsupported on /market/historical
-    cooldown_until = _candles_404_cache.get(f"{code}|{interval}", 0)
+    with _candles_404_lock:
+        cooldown_until = _candles_404_cache.get(f"{code}|{interval}", 0)
     if cooldown_until and time.time() < cooldown_until:
         return []
 
@@ -1225,13 +1254,13 @@ def _ind_candles(ticker: str, interval: str = '5m', days: int = 7) -> list[dict]
             # candles for this scrip — common for some indices (BANK NIFTY,
             # India VIX). Cache for 1h and silence the log so we don't spam.
             if r.status_code == 400 and 'Invalid scrip' in r.text:
-                _candles_404_cache[f"{code}|{interval}"] = time.time() + 3600
-                # Evict expired entries when cache grows too large
-                if len(_candles_404_cache) > _CANDLES_404_MAX:
-                    now = time.time()
-                    expired = [k for k, v in _candles_404_cache.items() if v < now]
-                    for k in expired:
-                        del _candles_404_cache[k]
+                with _candles_404_lock:
+                    _candles_404_cache[f"{code}|{interval}"] = time.time() + 3600
+                    if len(_candles_404_cache) > _CANDLES_404_MAX:
+                        now = time.time()
+                        expired = [k for k, v in _candles_404_cache.items() if v < now]
+                        for k in expired:
+                            del _candles_404_cache[k]
                 logger.debug(
                     f"IndMoney candles {ticker} {interval}: not supported on "
                     f"historical endpoint — using yfinance fallback for 1h"
@@ -1961,7 +1990,11 @@ def positions():
     if not _connected():
         return jsonify({"success": False, "error": "INDMONEY_ACCESS_TOKEN not set"}), 401
     try:
-        r = _requests.get(f'{BASE_URL}/positions', headers=_headers(), timeout=5)
+        segment = request.args.get('segment', 'derivative')
+        product = request.args.get('product', 'margin')
+        r = _requests.get(f'{BASE_URL}/portfolio/positions',
+                         headers=_headers(), timeout=5,
+                         params={'segment': segment, 'product': product})
         return jsonify({"success": r.ok, "data": r.json().get('data') if r.ok else r.text})
     except Exception as e:
         return jsonify({"success": False, "error": _safe_error(e)}), 500
@@ -1972,7 +2005,7 @@ def holdings():
     if not _connected():
         return jsonify({"success": False, "error": "INDMONEY_ACCESS_TOKEN not set"}), 401
     try:
-        r = _requests.get(f'{BASE_URL}/holdings', headers=_headers(), timeout=5)
+        r = _requests.get(f'{BASE_URL}/portfolio/holdings', headers=_headers(), timeout=5)
         return jsonify({"success": r.ok, "data": r.json().get('data') if r.ok else r.text})
     except Exception as e:
         return jsonify({"success": False, "error": _safe_error(e)}), 500

@@ -129,7 +129,8 @@ def intraday_signal(ticker: str):
         delta = c.diff()
         gain  = delta.clip(lower=0).rolling(14).mean()
         loss  = (-delta.clip(upper=0)).rolling(14).mean()
-        rsi   = float((100 - (100 / (1 + gain / loss.replace(0, np.nan)))).iloc[-1])
+        _rsi_raw = (100 - (100 / (1 + gain / loss.replace(0, np.nan)))).iloc[-1]
+        rsi = float(_rsi_raw) if not np.isnan(_rsi_raw) else 50.0
 
         # ── EMA 9 / 21 ───────────────────────────────────────────────────────
         ema9  = float(c.ewm(span=9,  adjust=False).mean().iloc[-1])
@@ -151,7 +152,8 @@ def intraday_signal(ticker: str):
 
         # ── ATR-14 (for SL/target) ────────────────────────────────────────────
         tr  = np.maximum(h - l, np.maximum(abs(h - c.shift()), abs(l - c.shift())))
-        atr = float(tr.rolling(14).mean().iloc[-1])
+        _atr_raw = tr.rolling(14).mean().iloc[-1]
+        atr = float(_atr_raw) if not np.isnan(_atr_raw) else float(tr.mean())
 
         # ── CPR from previous trading day (group 1h bars by date) ────────────
         _daily = df.resample('D').agg({'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
@@ -473,7 +475,8 @@ def backtest(ticker: str):
         total_t    = trades_a.get('total', {}).get('total', 0)
         won_t      = trades_a.get('won',   {}).get('total', 0)
         win_rate   = round(won_t / total_t * 100, 1) if total_t else 0
-        sharpe     = sharpe_a.get('sharperatio') or 0
+        _sharpe_raw = sharpe_a.get('sharperatio')
+        sharpe = 0 if (_sharpe_raw is None or (isinstance(_sharpe_raw, float) and _sharpe_raw != _sharpe_raw)) else _sharpe_raw
         max_dd     = dd_a.get('max', {}).get('drawdown', 0)
         total_ret  = round((final_val - cash) / cash * 100, 2)
 
@@ -681,7 +684,8 @@ def rank_tickers():
             ema20 = float(c.ewm(span=20, adjust=False).mean().iloc[-1])
             ema50 = float(c.ewm(span=50, adjust=False).mean().iloc[-1])
 
-            chg5d     = (closes[-1] - closes[-6]) / closes[-6] * 100 if len(closes) >= 6 else 0
+            chg5d     = ((closes[-1] - closes[-6]) / closes[-6] * 100
+                         if len(closes) >= 6 and closes[-6] != 0 else 0)
             avg_vol   = sum(vols[:-1]) / max(len(vols) - 1, 1)
             vol_ratio = vols[-1] / avg_vol if avg_vol else 1
 
@@ -1097,10 +1101,10 @@ def option_chain():
         })
 
     # ── Aggregate metrics: max-pain, PCR, IV skew ────────────────────────────
-    total_ce_oi  = sum((r['ce']['oi'] for r in enriched if r['ce']) or [0])
-    total_pe_oi  = sum((r['pe']['oi'] for r in enriched if r['pe']) or [0])
-    total_ce_vol = sum((r['ce']['volume'] for r in enriched if r['ce']) or [0])
-    total_pe_vol = sum((r['pe']['volume'] for r in enriched if r['pe']) or [0])
+    total_ce_oi  = sum(r['ce']['oi']     for r in enriched if r['ce'])
+    total_pe_oi  = sum(r['pe']['oi']     for r in enriched if r['pe'])
+    total_ce_vol = sum(r['ce']['volume'] for r in enriched if r['ce'])
+    total_pe_vol = sum(r['pe']['volume'] for r in enriched if r['pe'])
     pcr_oi  = round(total_pe_oi  / total_ce_oi,  2) if total_ce_oi  else None
     pcr_vol = round(total_pe_vol / total_ce_vol, 2) if total_ce_vol else None
 
@@ -1462,7 +1466,8 @@ def pnl_trades():
     from ..services.pnl_store import recent_trades
     limit = int(request.args.get('limit', 50))
     mode  = request.args.get('mode') or None   # 'swing' | 'scalp' | None = all
-    return jsonify({'success': True, 'trades': recent_trades(limit, mode)})
+    date  = request.args.get('date') or None   # '2026-06-11' = today only
+    return jsonify({'success': True, 'trades': recent_trades(limit, mode, date)})
 
 
 @trade_bp.route('/executor/reset-killswitch', methods=['POST'])

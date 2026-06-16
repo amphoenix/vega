@@ -268,14 +268,16 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
-/* ── 3-pane chart grid: NIFTY top-wide, SENSEX + VIX bottom row ──────── */
+/* ── 3-pane chart grid: NIFTY · SENSEX · VIX equal columns ───────────── */
 .scalp-chart-grid {
   display: grid;
   grid-template-rows: 1fr;
   gap: 6px;
-  height: 100%;
+  flex: 1;
   min-height: 0;
 }
 .scalp-chart-grid.three-pane {
@@ -625,6 +627,9 @@
 }
 .log-badge.feed-success { background: rgba(38, 166, 154, 0.15); color: #26a69a; }
 .log-badge.feed-error   { background: rgba(239, 83, 80, 0.15); color: #ef5350; }
+.log-badge.feed-critical { background: rgba(239, 83, 80, 0.4); color: #ff1744; font-weight: 700; animation: critical-flash 0.5s infinite alternate; }
+.log-entry.feed-critical { background: rgba(239, 83, 80, 0.15); border-left: 3px solid #ff1744; }
+@keyframes critical-flash { from { opacity: 1; } to { opacity: 0.4; } }
 .log-badge.feed-paper   { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
 .log-badge.feed-exit    { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
 .log-badge.feed-info    { background: #161b22; color: #8b949e; }

@@ -105,12 +105,12 @@
           <!-- Pane 3: India VIX (bottom-right) -->
           <div class="chart-pane">
             <div class="pane-hdr">
-              <span class="pane-sym">INDIA VIX · 1m</span>
+              <span class="pane-sym">INDIA VIX · 5m</span>
               <span class="pane-ltp" v-if="vixPrice">{{ fmtPrice(vixPrice) }}</span>
             </div>
             <HomeChart
               chartTicker="^INDIAVIX"
-              interval="1m"
+              interval="5m"
               :indmoneyLivePrice="vixPrice"
               :lightMode="false"
               currencySymbol=""
@@ -292,6 +292,7 @@ const config = ref({})
 const tradeFeed = ref([])
 const scannerStatus = ref(null)     // latest scanner_status event (whipsaw, VIX, ADX, etc.)
 const activeScalpTicker = ref(null) // 3rd chart pane ticker (from signal or active position)
+const timerNow = ref(Date.now())    // reactive clock for hold-time bars (updated every second)
 
 // ── Settings drawer state ─────────────────────────────────────────────────────
 const showSettings = ref(false)
@@ -359,6 +360,7 @@ async function saveConfig() {
 
 let scalpSSE = null
 let timerTick = null
+let _sseReconnectDelay = 3000
 // Registry of SSE tick streams opened by this component
 const _ownStreams = {}
 
@@ -383,8 +385,8 @@ function _estimateBrokerage(entryPrem, exitPrem, qty) {
   // Round-trip: BUY + SELL
   const buyTurnover = entryPrem * qty
   const sellTurnover = exitPrem * qty
-  // STT: sell-side only for options, 0.0625% of premium turnover
-  const stt = 0.000625 * sellTurnover
+  // STT: sell-side only for options, 0.1% of premium turnover (Budget 2024, matches backend)
+  const stt = 0.001 * sellTurnover
   // Exchange txn: both sides, 0.03503%
   const exch = 0.0003503 * (buyTurnover + sellTurnover)
   // SEBI: ₹10 per crore both sides
@@ -478,14 +480,14 @@ function holdPct(pos) {
   const meta = pos.ticket?.scalp_meta
   if (!meta?.entered_at) return 0
   const max = (meta.max_hold_min || 10) * 60
-  const elapsed = (Date.now() - new Date(meta.entered_at).getTime()) / 1000
+  const elapsed = (timerNow.value - new Date(meta.entered_at).getTime()) / 1000
   return Math.min(100, (elapsed / max) * 100)
 }
 
 function holdTimeStr(pos) {
   const meta = pos.ticket?.scalp_meta
   if (!meta?.entered_at) return '0:00'
-  const elapsed = Math.floor((Date.now() - new Date(meta.entered_at).getTime()) / 1000)
+  const elapsed = Math.floor((timerNow.value - new Date(meta.entered_at).getTime()) / 1000)
   const m = Math.floor(elapsed / 60)
   const s = elapsed % 60
   return `${m}:${String(s).padStart(2, '0')}`
@@ -493,6 +495,7 @@ function holdTimeStr(pos) {
 
 function feedClass(ev) {
   const s = (ev.status || ev.severity || ev.type || '').toLowerCase()
+  if (s.includes('critical') || (s.includes('exit_failed') && ev.severity === 'critical')) return 'feed-critical'
   if (s.includes('success') || s.includes('scalp_entry') || s === 'buy') return 'feed-success'
   if (s.includes('error') || s.includes('fail') || s === 'sl_hit') return 'feed-error'
   if (s.includes('simul') || s.includes('paper')) return 'feed-paper'
@@ -574,11 +577,7 @@ async function forceExit(trackId) {
     const service = (await import('../../api/index')).default
     await service.post(`/api/trade/executor/force-exit/${trackId}`)
     snack({ severity: 'warning', title: 'Force Exit', message: `Selling at market — est. net ${netStr}` })
-    setTimeout(async () => {
-      await _loadTrackedPositions()
-      await _refreshScalpStats()
-      window.dispatchEvent(new Event('vega:pnl-changed'))
-    }, 2000)
+    // SSE onOrderEvent fires _loadTrackedPositions + vega:pnl-changed when exit confirms
   } catch {
     snack({ severity: 'error', title: 'Force Exit', message: 'Force exit failed' })
   }
@@ -607,10 +606,35 @@ function _notifyOrderEvent(data) {
 
   let severity = 'info'
   let sound = 'info'
+  if (data.severity === 'critical' || status.includes('EXIT_FAILED')) {
+    // CRITICAL: broker can't exit — user must sell manually
+    severity = 'error'; sound = 'error'
+    snack({ severity: 'error', title, message: msg, sound: false })
+    playNotifSound('error')
+    _desktopNotify('🚨 MANUAL EXIT NEEDED', msg)
+    // Repeat alert every 10s until dismissed
+    if (!window._exitFailedInterval) {
+      window._exitFailedInterval = setInterval(() => {
+        playNotifSound('error')
+        _desktopNotify('🚨 SELL MANUALLY NOW', `${data.symbol} — broker keeps failing!`)
+      }, 10000)
+      // Auto-clear after 2 min
+      setTimeout(() => {
+        clearInterval(window._exitFailedInterval)
+        window._exitFailedInterval = null
+      }, 120000)
+    }
+    return
+  }
   if (status.includes('FILL') || status.includes('BOUGHT') || status.includes('ENTRY')) {
     severity = 'success'; sound = 'entry_buy'
   } else if (status.includes('SOLD') || status.includes('EXIT') || status.includes('T1') || status.includes('T2')) {
     severity = 'success'; sound = 'exit_sell'
+    // Clear exit-failed alarm if exit finally succeeds
+    if (window._exitFailedInterval) {
+      clearInterval(window._exitFailedInterval)
+      window._exitFailedInterval = null
+    }
   } else if (status.includes('SL') || status.includes('STOP')) {
     severity = 'error'; sound = 'sl_hit'
   } else if (status.includes('PAPER') || status.includes('SIMULATED')) {
@@ -627,7 +651,11 @@ function _notifyOrderEvent(data) {
 // ── SSE: scalp scanner signals + stats (replaces all polling) ────────────────
 function connectScalpSSE() {
   if (scalpSSE) { scalpSSE.close(); scalpSSE = null }
+  _sseReconnectDelay = 3000  // reset backoff on fresh connect
   scalpSSE = createScalpStream()
+  // Re-seed trade feed from DB on every reconnect (backend restart)
+  _seedTradeFeed()
+  _loadTrackedPositions()
   scalpSSE.onmessage = (ev) => {
     try {
       const data = JSON.parse(ev.data)
@@ -668,7 +696,9 @@ function connectScalpSSE() {
     } catch {}
   }
   scalpSSE.onerror = () => {
-    setTimeout(() => connectScalpSSE(), 3000)
+    const delay = _sseReconnectDelay
+    _sseReconnectDelay = Math.min(_sseReconnectDelay * 2, 30000)
+    setTimeout(() => connectScalpSSE(), delay)
   }
 }
 
@@ -708,10 +738,13 @@ async function _loadTrackedPositions() {
 async function _seedTradeFeed() {
   try {
     const service = (await import('../../api/index')).default
-    const res = await service.get('/api/trade/pnl/trades', { params: { mode: 'scalp', limit: 30 } })
-    const trades = res?.data || res?.trades || []
-    if (trades.length && !tradeFeed.value.length) {
-      tradeFeed.value = trades.map(t => ({
+    const today = new Date().toISOString().slice(0, 10)
+    const res = await service.get('/api/trade/pnl/trades', { params: { mode: 'scalp', limit: 30, date: today } })
+    // Interceptor unwraps response.data, so res = {success, trades}
+    const trades = res?.trades || res?.data?.trades || res?.data || []
+    console.log('[scalp] _seedTradeFeed: got', trades.length, 'trades from DB')
+    if (Array.isArray(trades) && trades.length) {
+      const historyItems = trades.map(t => ({
         type: 'trade_history',
         status: t.exit_reason || 'CLOSED',
         title: `${t.symbol} ${t.exit_reason || ''}`.trim(),
@@ -719,8 +752,13 @@ async function _seedTradeFeed() {
         timestamp: t.timestamp || t.exit_ts || new Date().toISOString(),
         _replay: true,
       }))
+      // Replace all replay items with fresh DB data, keep live SSE events
+      // DB returns newest-first, reverse so oldest is first → latest at bottom
+      const liveEvents = tradeFeed.value.filter(e => !e._replay)
+      tradeFeed.value = [...historyItems.reverse(), ...liveEvents]
+      console.log('[scalp] tradeFeed total:', tradeFeed.value.length, '(history:', historyItems.length, 'live:', liveEvents.length, ')')
     }
-  } catch {}
+  } catch (e) { console.error('_seedTradeFeed error', e) }
 }
 
 async function _refreshScalpStats() {
@@ -761,7 +799,7 @@ async function loadInitialState() {
       config.value.max_hold_min = cfg.params.SCALP_MAX_HOLD_MIN?.value
       config.value.daily_loss = cfg.params.SCALP_DAILY_LOSS_LIMIT?.value
     }
-  } catch {}
+  } catch (e) { console.error('[scalp] loadInitialState failed', e) }
 }
 
 // Auto-set 3rd pane from active scalp positions + open tick streams for option prices
@@ -790,11 +828,8 @@ onMounted(async () => {
   connectScalpSSE()
   // Shared SSE for order events + tracked alerts is auto-connected via composable
 
-  // Timer tick for hold-time bars (update every second)
-  timerTick = setInterval(() => {
-    // Force reactivity update for position timers
-    storeTrackedPositions.value = [...storeTrackedPositions.value]
-  }, 1000)
+  // Timer tick for hold-time bars — timerNow drives reactive updates in holdPct/holdTimeStr
+  timerTick = setInterval(() => { timerNow.value = Date.now() }, 1000)
 })
 
 onUnmounted(() => {

@@ -16,8 +16,10 @@ import os
 import tempfile
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 _DATA_DIR  = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
@@ -31,15 +33,15 @@ _cache: Optional[List[dict]] = None
 def _read() -> List[dict]:
     global _cache
     if _cache is not None:
-        return _cache
+        return list(_cache)
     if not os.path.exists(_FILE_PATH):
         _cache = []
-        return _cache
+        return []
     try:
         with open(_FILE_PATH, 'r') as f:
             data = json.load(f)
         _cache = data if isinstance(data, list) else []
-        return _cache
+        return list(_cache)
     except Exception:
         return []
 
@@ -82,7 +84,7 @@ def add_tracked(ticket: dict, qty: int = 1, notes: str = '') -> dict:
     sym = str(ticket.get('trading_symbol') or '').strip().upper()
     record = {
         'id':          uuid.uuid4().hex[:12],
-        'entered_at':  datetime.now().isoformat(),
+        'entered_at':  datetime.now(_IST).isoformat(),
         'qty':         int(qty or 1),
         'notes':       (notes or '').strip(),
         'ticket':      ticket,
@@ -121,7 +123,7 @@ def remove_tracked(track_id: str, exit_premium: Optional[float] = None,
         rec = items.pop(idx)
         _write(items)
 
-    rec['exited_at']    = datetime.now().isoformat()
+    rec['exited_at']    = datetime.now(_IST).isoformat()
     rec['exit_premium'] = exit_premium
     rec['exit_reason']  = exit_reason or 'manual'
     # Re-sync the watcher so it stops monitoring this id (clears stale state).

@@ -47,7 +47,7 @@ from ..utils.logger import get_logger
 logger = get_logger('vega.tracked_monitor')
 
 # ── Tunables ──────────────────────────────────────────────────────────────────
-POLL_INTERVAL_S   = 3.0      # spot fetch cadence per underlying
+POLL_INTERVAL_S   = 1.0      # spot fetch cadence per underlying
 NEAR_SL_PCT       = 0.10     # within 10% of SL  → 'near_sl' alert
 NEAR_T1_PCT       = 0.08     # within 8% of T1   → 'near_t1' alert
 FORCE_EXIT_HOUR   = 15
@@ -187,7 +187,7 @@ def _trail_sl_and_targets(rec: dict, prem: float) -> None:
     # 3DTE: T1 ≤ 1.45×, T2 ≤ 2.15×
     # 7DTE+: T1 ≤ 2.0×, T2 ≤ 3.5×
     import math
-    dte = max(1, int(t.get('days_to_expiry') or 1))
+    dte = max(1, int(float(t.get('days_to_expiry') or 1)))
     dte_scale = min(1.0, math.sqrt(dte / 7.0))  # 1DTE→0.38, 3DTE→0.65, 7+→1.0
     t1_max_mult = 1.15 + 0.85 * dte_scale   # 1DTE: 1.47→1.47×  3DTE: 1.70×  7DTE: 2.0×
     t2_max_mult = 1.35 + 2.15 * dte_scale   # 1DTE: 2.17→2.17×  3DTE: 2.75×  7DTE: 3.5×
@@ -224,32 +224,54 @@ def _trail_sl_and_targets(rec: dict, prem: float) -> None:
     hw = max(prev_hw, prem)
     _high_water[pid] = hw
 
-    # ── Scalp trailing SL — aggressive trailing for quick trades ──
+    # ── Scalp trailing SL — graduated tightening ──────────────────────────
     is_scalp = t.get('trade_mode') == 'scalp' or bool(t.get('scalp_meta'))
     if is_scalp:
         current_sl = float(ex.get('stop_loss_inr') or 0)
         qty = int(rec.get('qty', 1) or 1)
         brokerage_per_unit = 70.0 / max(qty, 1)
-        breakeven_sl = round(entry + brokerage_per_unit, 2)
         gain_pts = hw - entry
 
-        # Step 1: Once +3pts in profit → move SL to breakeven (covers brokerage)
-        if gain_pts >= 3.0 and current_sl < breakeven_sl:
-            ex['stop_loss_inr'] = breakeven_sl
+        underlying = (t.get('underlying') or '').upper()
+        is_sensex = 'BSESN' in underlying or 'SENSEX' in underlying
+
+        # Graduated SL steps — give the trade room to breathe
+        #   SENSEX: +10pts → reduce risk (entry-15), +20pts → breakeven, +25pts → trail HWM-12
+        #   NIFTY:  +5pts  → reduce risk (entry-5),  +10pts → breakeven, +12pts → trail HWM-5
+        if is_sensex:
+            step1_trigger, step1_sl = 10.0, round(entry - 15.0, 2)
+            step2_trigger, step2_sl = 20.0, round(entry + brokerage_per_unit, 2)
+            trail_trigger, trail_buffer = 25.0, 12.0
+        else:
+            step1_trigger, step1_sl = 5.0, round(entry - 5.0, 2)
+            step2_trigger, step2_sl = 10.0, round(entry + brokerage_per_unit, 2)
+            trail_trigger, trail_buffer = 12.0, 5.0
+
+        # Step 1: Reduce risk — tighten SL but keep room for pullback
+        if gain_pts >= step1_trigger and current_sl < step1_sl:
+            ex['stop_loss_inr'] = step1_sl
             changed = True
-            logger.info(f"[trailing] {t.get('trading_symbol')} SCALP BREAKEVEN: "
-                        f"SL ₹{current_sl:.2f} → ₹{breakeven_sl:.2f} "
+            logger.info(f"[trailing] {t.get('trading_symbol')} SCALP REDUCE-RISK: "
+                        f"SL ₹{current_sl:.2f} → ₹{step1_sl:.2f} "
                         f"(HWM ₹{hw:.2f}, +{gain_pts:.1f}pts)")
 
-        # Step 2: Once +5pts → trail SL at HWM - 3pts (lock profits)
-        if gain_pts >= 5.0:
-            trail_sl = round(hw - 3.0, 2)
+        # Step 2: Breakeven — lock in zero-loss
+        if gain_pts >= step2_trigger and current_sl < step2_sl:
+            ex['stop_loss_inr'] = step2_sl
+            changed = True
+            logger.info(f"[trailing] {t.get('trading_symbol')} SCALP BREAKEVEN: "
+                        f"SL ₹{current_sl:.2f} → ₹{step2_sl:.2f} "
+                        f"(HWM ₹{hw:.2f}, +{gain_pts:.1f}pts)")
+
+        # Step 3: Trail — lock profits at HWM minus buffer
+        if gain_pts >= trail_trigger:
+            trail_sl = round(hw - trail_buffer, 2)
             if trail_sl > current_sl:
                 ex['stop_loss_inr'] = trail_sl
                 changed = True
                 logger.info(f"[trailing] {t.get('trading_symbol')} SCALP TRAIL: "
                             f"SL ₹{current_sl:.2f} → ₹{trail_sl:.2f} "
-                            f"(HWM ₹{hw:.2f}, locking {gain_pts - 3:.1f}pts)")
+                            f"(HWM ₹{hw:.2f}, locking {gain_pts - trail_buffer:.1f}pts)")
 
     # Only trail once premium has risen ≥20% above entry (swing trades)
     gain_pct = (hw - entry) / entry
@@ -273,12 +295,13 @@ def _trail_sl_and_targets(rec: dict, prem: float) -> None:
         t['exit'] = ex
         rec['ticket'] = t
         try:
-            items = tp._read()
-            for item in items:
-                if item.get('id') == pid:
-                    item['ticket'] = t
-                    break
-            tp._write(items)
+            with tp._lock:
+                items = tp._read()
+                for item in items:
+                    if item.get('id') == pid:
+                        item['ticket'] = t
+                        break
+                tp._write(items)
         except Exception as e:
             logger.warning(f"[trailing] Failed to persist SL/target update: {e}")
         # Push updated levels to frontend via SSE (no polling needed)
@@ -357,9 +380,65 @@ def _poll_once() -> None:
             continue
         for rec in recs:
             t    = rec.get('ticket') or {}
+            pid  = rec.get('id')
+            is_scalp = t.get('trade_mode') == 'scalp' or bool(t.get('scalp_meta'))
+            opt_sym  = t.get('trading_symbol') or t.get('display_symbol')
+
+            # Scalp positions with active option WS are monitored tick-by-tick via
+            # _on_option_tick — skip the REST LTP poll and SL/T1 classification here
+            # to avoid duplicated work and unnecessary broker calls. Force-exit retries
+            # and hold-timeout checks still run as safety nets.
+            try:
+                from .scalp_scanner import scalp_ws_active as _swa
+                _skip_reprice = is_scalp and _swa()
+            except Exception:
+                _skip_reprice = False
+
+            # ── Force-exit check (always runs, even for WS-active scalps) ──────
+            try:
+                from .order_executor import is_force_exit_pending, try_auto_exit
+                if is_force_exit_pending(pid):
+                    if _skip_reprice:
+                        # Need a premium for the exit — fetch once
+                        _fe_prem = None
+                        try:
+                            _fe_prem = _ind_option_ltp(opt_sym) if opt_sym else None
+                        except Exception:
+                            pass
+                        if _fe_prem is not None:
+                            try_auto_exit(pid, 'force_exit', rec, _fe_prem)
+                    # Non-skip path handled below
+                    continue
+            except Exception as _fe:
+                logger.warning(f"[tracked_monitor] force-exit check failed: {_fe}")
+
+            # ── Scalp hold-timeout check (always runs, even for WS-active scalps) ──
+            if is_scalp and _skip_reprice:
+                try:
+                    from .order_executor import check_scalp_hold_timeout
+                    _sto_prem = None
+                    _t = rec.get('ticket') or {}
+                    _opt_code = _t.get('opt_code', '')
+                    if _opt_code:
+                        try:
+                            from .scalp_scanner import _option_ltp_cache as _opt_cache
+                            _sto_prem = _opt_cache.get(_opt_code.strip().upper())
+                        except Exception:
+                            pass
+                    if _sto_prem is None:
+                        _sto_prem = float((_t.get('entry') or {}).get('expected_premium_inr', 0) or 0) or None
+                    if _sto_prem is not None:
+                        check_scalp_hold_timeout(pid, rec, _sto_prem)
+                except Exception as _sh:
+                    logger.debug(f"[tracked_monitor] scalp timeout check: {_sh}")
+
+            if _skip_reprice:
+                # Scalp with active WS — skip full reprice cycle, continue to next position
+                continue
+
+            # ── Full reprice path (swing positions + scalp when WS inactive) ───
             # Prefer live option LTP over BS model — BS can diverge wildly
             # from real market prices, causing false SL/T1 alerts.
-            opt_sym = t.get('trading_symbol') or t.get('display_symbol')
             prem = None
             prem_source = 'none'
             if opt_sym:
@@ -378,7 +457,6 @@ def _poll_once() -> None:
             # Trail SL upward as premium rises (before classify so SL is current)
             _trail_sl_and_targets(rec, prem)
             new_status = _classify(prem, t)
-            pid        = rec.get('id')
             logger.debug(f"[tracked_monitor] {opt_sym} prem=₹{prem:.2f} "
                          f"src={prem_source} status={new_status} "
                          f"SL=₹{(t.get('exit') or {}).get('stop_loss_inr', 0)}")
@@ -390,7 +468,7 @@ def _poll_once() -> None:
                     _last_payload[pid] = payload
                 else:
                     payload = None
-            # Check for user force-exit override (fires regardless of status)
+            # Force-exit (non-skip path)
             try:
                 from .order_executor import is_force_exit_pending, try_auto_exit
                 if is_force_exit_pending(pid):
@@ -406,12 +484,11 @@ def _poll_once() -> None:
                 _broadcast(payload)
 
             # ── Scalp hold-timeout check ───────────────────────────────
-            # For scalp positions, exit if held longer than max_hold_min.
-            if t.get('trade_mode') == 'scalp' or t.get('scalp_meta'):
+            if is_scalp:
                 try:
                     from .order_executor import check_scalp_hold_timeout
                     if check_scalp_hold_timeout(pid, rec, prem):
-                        continue  # exit already triggered
+                        continue
                 except Exception as _sh:
                     logger.debug(f"[tracked_monitor] scalp timeout check: {_sh}")
 
@@ -426,6 +503,19 @@ def _poll_once() -> None:
                 except Exception as _ex:
                     logger.warning(f"[tracked_monitor] auto-exit failed "
                                    f"for {opt_sym}: {_ex}")
+
+            # ── Retry pending failed exits ──────────────────────────────
+            # If a previous exit failed at the broker, keep retrying.
+            # Must add to _force_exit_ids so try_auto_exit's is_forced check passes.
+            try:
+                from .order_executor import _exit_retries
+                if pid in _exit_retries:
+                    from .order_executor import try_auto_exit, force_exit as _queue_force
+                    _queue_force(pid)  # add to _force_exit_ids so is_forced=True
+                    logger.info(f"[tracked_monitor] {opt_sym} retrying pending exit (broker failed earlier)")
+                    try_auto_exit(pid, 'force_exit', rec, prem)
+            except Exception as _re:
+                logger.debug(f"[tracked_monitor] exit retry check: {_re}")
 
     # ── Push live P&L to frontend via SSE (replaces frontend polling) ─────
     try:

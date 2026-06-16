@@ -40,8 +40,9 @@ _lock    = threading.Lock()
 # ── DB init ───────────────────────────────────────────────────────────────────
 
 def _conn() -> sqlite3.Connection:
-    c = sqlite3.connect(_DB_PATH, check_same_thread=False)
+    c = sqlite3.connect(_DB_PATH, check_same_thread=False, timeout=10)
     c.row_factory = sqlite3.Row
+    c.execute('PRAGMA journal_mode=WAL')
     return c
 
 
@@ -314,12 +315,18 @@ def today_net_by_mode() -> dict:
     return result
 
 
-def recent_trades(limit: int = 50, mode: Optional[str] = None) -> list:
+def recent_trades(limit: int = 50, mode: Optional[str] = None, date: Optional[str] = None) -> list:
     query  = 'SELECT * FROM pnl_trades'
     params: list = []
+    clauses: list = []
     if mode:
-        query += ' WHERE mode = ?'
+        clauses.append('mode = ?')
         params.append(mode)
+    if date:
+        clauses.append('date = ?')
+        params.append(date)
+    if clauses:
+        query += ' WHERE ' + ' AND '.join(clauses)
     query += ' ORDER BY id DESC LIMIT ?'
     params.append(limit)
     with _conn() as c:

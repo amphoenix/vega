@@ -684,7 +684,7 @@ async function reloadChart() {
   ohlcv.value = []
   try {
     const end = new Date()
-    const days = props.interval === '5m' ? 3 : props.interval === '30m' ? 7 : props.interval === '1h' ? 30 : props.interval === '1y' ? 365 : props.interval === '1wk' ? 180 : 90
+    const days = props.interval === '1m' ? 1 : props.interval === '5m' ? 3 : props.interval === '30m' ? 7 : props.interval === '1h' ? 30 : props.interval === '1y' ? 365 : props.interval === '1wk' ? 180 : 90
     const start = new Date(end - days * 86400000)
     const res = await getOHLCV({
       ticker: props.chartTicker,
@@ -703,11 +703,12 @@ async function reloadChart() {
     if (ohlcv.value.length) {
       await nextTick()
       _updateData()
-      _chart?.timeScale().fitContent()
-      // Default to last ~20 candles for a tight intraday view
+      // Default to last ~30 candles for a tight intraday view
       const total = ohlcv.value.length
-      if (total > 20) {
-        _chart?.timeScale().setVisibleLogicalRange({ from: total - 20, to: total + 2 })
+      if (total > 30) {
+        _chart?.timeScale().setVisibleLogicalRange({ from: total - 30, to: total + 2 })
+      } else {
+        _chart?.timeScale().fitContent()
       }
       _startCandleRefresh()
     }
@@ -722,7 +723,7 @@ async function _silentReloadCandles() {
   if (!props.chartTicker || chartLoading.value) return
   try {
     const end = new Date()
-    const days = props.interval === '5m' ? 3 : props.interval === '30m' ? 7 : props.interval === '1h' ? 30 : props.interval === '1y' ? 365 : props.interval === '1wk' ? 180 : 90
+    const days = props.interval === '1m' ? 1 : props.interval === '5m' ? 3 : props.interval === '30m' ? 7 : props.interval === '1h' ? 30 : props.interval === '1y' ? 365 : props.interval === '1wk' ? 180 : 90
     const start = new Date(end - days * 86400000)
     const res = await getOHLCV({
       ticker: props.chartTicker,

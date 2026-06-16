@@ -40,12 +40,6 @@ def create_app(config_class=Config):
     # Enable CORS
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-    # Register simulation process cleanup to terminate all sim processes on shutdown
-    from .services.simulation_runner import SimulationRunner
-    SimulationRunner.register_cleanup()
-    if should_log_startup:
-        logger.info("Simulation process cleanup registered")
-
     # Auto-start the F&O scanner — runs continuously for as long as the
     # backend is up. Emits scan_signal SSE events; does not place orders.
     try:
@@ -84,10 +78,7 @@ def create_app(config_class=Config):
         return response
 
     # Register blueprints
-    from .api import graph_bp, simulation_bp, report_bp, market_bp, trade_bp, indmoney_bp
-    app.register_blueprint(graph_bp,      url_prefix='/api/graph')
-    app.register_blueprint(simulation_bp, url_prefix='/api/simulation')
-    app.register_blueprint(report_bp,     url_prefix='/api/report')
+    from .api import market_bp, trade_bp, indmoney_bp
     app.register_blueprint(market_bp,     url_prefix='/api/market')
     app.register_blueprint(trade_bp,      url_prefix='/api/trade')
     app.register_blueprint(indmoney_bp,   url_prefix='/api/indmoney')
