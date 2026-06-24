@@ -1,0 +1,137 @@
+.wl-list {
+  flex: 1;
+  overflow-y: auto;
+}
+.wl-list::-webkit-scrollbar {
+  width: 3px;
+}
+.wl-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.wl-list::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+  border-radius: 2px;
+}
+.wl-watch-add {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid #21262d;
+  flex-wrap: wrap;
+}
+.wl-watch-input {
+  flex: 1;
+  min-width: 140px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #e6edf3;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.wl-watch-input:focus {
+  border-color: #58a6ff;
+  outline: none;
+}
+.wl-watch-btn {
+  background: #21262d;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wl-watch-btn:hover {
+  background: #30363d;
+}
+.wl-watch-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.wl-watch-pin {
+  background: #1f2937;
+  border-color: #374151;
+  color: #93c5fd;
+}
+.wl-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid #21262d;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.wl-row:hover {
+  background: #1c2128;
+}
+.wl-row.selected {
+  background: #1a3028;
+  border-left: 2px solid #2dd4bf;
+}
+.wl-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.wl-flag {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.wl-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.wl-name {
+  font-size: 13px;
+  color: #e6edf3;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wl-exch {
+  font-size: 10px;
+  color: #8b949e;
+  font-family: monospace;
+}
+.wl-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.wl-watch-rm {
+  background: transparent;
+  color: #6e7681;
+  border: 0;
+  cursor: pointer;
+  padding: 2px 8px;
+  font-size: 13px;
+  border-radius: 3px;
+}
+.wl-watch-rm:hover {
+  color: #f85149;
+  background: #2a1416;
+}
+.feed-empty {
+  font-size: 13px;
+  color: #8b949e;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 4px;
+}
+.feed-empty .empty-sub {
+  font-size: 11px;
+  color: #6e7681;
+}
+.mono {
+  font-family: monospace;
+}

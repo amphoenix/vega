@@ -1,0 +1,33 @@
+# ── Broker Configuration ──────────────────────────────────────────────────────
+#
+# Switching brokers = change active_broker + set env vars.
+# ZERO code changes needed.
+#
+# Each broker declares:
+#   class:     full Python path to the adapter class
+#   env_keys:  mapping of ENV_VAR → constructor kwarg (secrets from .env)
+#   defaults:  static kwargs passed to the constructor (from YAML)
+#
+# To add a new broker (e.g. Zerodha):
+#   1. Create app/infrastructure/broker/zerodha_broker.py implementing BrokerAdapter
+#   2. Add entry below with class, env_keys, defaults
+#   3. Set active_broker: zerodha
+#   4. Set ZERODHA_API_KEY and ZERODHA_API_SECRET in .env
+#   Done.
+
+active_broker: dhan        # indmoney | dhan
+
+brokers:
+  dhan:
+    class: app.infrastructure.broker.dhan_broker.DhanBroker
+    env_keys:
+      DHAN_CLIENT_ID: client_id
+      DHAN_ACCESS_TOKEN: access_token
+    defaults:
+      product_type: INTRADAY     # INTRADAY | CNC | MARGIN
+
+  indmoney:
+    class: app.infrastructure.broker.indmoney_broker.INDMoneyBroker
+    env_keys:
+      INDMONEY_ACCESS_TOKEN: access_token
+    defaults: {}

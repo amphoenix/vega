@@ -1,0 +1,57 @@
+# ── Strategy Configuration ────────────────────────────────────────────────────
+# Each strategy is a named entry. Enable/disable individually.
+# A/B testing: run two variants of the same strategy with different params.
+
+strategies:
+  swing_ai:
+    class: app.domain.strategies.swing.SwingAIStrategy
+    enabled: true
+    market: indian_fo
+    trade_mode: swing
+    instruments: ["^NSEI", "^BSESN"]
+    max_positions: 2
+    risk_per_trade_pct: 20.0
+    params:
+      min_confidence: 85
+      use_llm: true
+      ema_fast: 9
+      ema_slow: 21
+      rsi_oversold: 35
+      rsi_overbought: 70
+
+  nifty_scalp:
+    class: app.domain.strategies.scalp.NiftyScalpStrategy
+    enabled: true
+    market: indian_fo
+    trade_mode: scalp
+    instruments: ["^NSEI", "^BSESN"]
+    max_positions: 1
+    risk_per_trade_pct: 10.0
+    params:
+      sl_points: 8
+      t1_points: 15
+      max_hold_minutes: 10
+      donchian_period: 20
+      volume_spike_ratio: 1.5
+
+# ── A/B Test Variants ────────────────────────────────────────────────────────
+# Define variants under ab_tests. The engine runs both and compares.
+
+ab_tests:
+  swing_ema_test:
+    description: "Test fast EMA 9 vs 13 for swing entries"
+    strategy: swing_ai
+    enabled: false
+    traffic_split: 50      # % of signals routed to variant B
+    variant_a:
+      label: "EMA 9/21"
+      params:
+        ema_fast: 9
+        ema_slow: 21
+    variant_b:
+      label: "EMA 13/34"
+      params:
+        ema_fast: 13
+        ema_slow: 34
+    metrics: [win_rate, avg_pnl, max_drawdown, sharpe]
+    min_trades: 20          # minimum trades before drawing conclusions

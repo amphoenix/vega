@@ -1,0 +1,177 @@
+.wl-list {
+  flex: 1;
+  overflow-y: auto;
+}
+.wl-list::-webkit-scrollbar {
+  width: 3px;
+}
+.wl-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.wl-list::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+  border-radius: 2px;
+}
+.wl-budget {
+  padding: 8px;
+}
+.bud-loading {
+  padding: 20px;
+  color: #8b949e;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.bud-periods {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.bud-period-tile {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 5px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.bud-period-tile:hover {
+  border-color: #30363d;
+  background: #11161d;
+}
+.bud-period-tile.active {
+  border-color: #2dd4bf;
+  background: #0a1f1c;
+  box-shadow: 0 0 0 1px #2dd4bf33;
+}
+.bud-period-tile.active .bud-cost {
+  color: #5eead4;
+}
+.bud-label {
+  font-size: 10px;
+  color: #6e7681;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.bud-val {
+  font-size: 16px;
+  color: #e6edf3;
+  font-weight: 600;
+  margin-top: 2px;
+  font-family: monospace;
+}
+.bud-val.bud-cost {
+  color: #2dd4bf;
+}
+.bud-sub {
+  font-size: 10px;
+  color: #8b949e;
+  font-family: monospace;
+}
+.bud-section-label {
+  font-size: 10px;
+  color: #6e7681;
+  letter-spacing: 0.8px;
+  padding: 10px 4px 4px;
+  border-bottom: 1px dashed #21262d;
+  margin-bottom: 4px;
+}
+.bud-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 6px;
+  border-bottom: 1px solid #161b22;
+  font-size: 12px;
+}
+.bud-row-name {
+  color: #c9d1d9;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bud-row-meta {
+  display: flex;
+  gap: 8px;
+  color: #8b949e;
+  font-family: monospace;
+  font-size: 11px;
+}
+.bud-row-meta .bud-cost {
+  color: #2dd4bf;
+  min-width: 60px;
+  text-align: right;
+}
+.bud-recent {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: #8b949e;
+  border-bottom: 1px solid #161b22;
+}
+.bud-recent-agent {
+  color: #c9d1d9;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bud-recent-tokens {
+  color: #8b949e;
+  min-width: 60px;
+  text-align: right;
+}
+.bud-recent-cost {
+  color: #2dd4bf;
+  min-width: 70px;
+  text-align: right;
+}
+.bud-actions {
+  display: flex;
+  gap: 6px;
+  padding: 12px 4px 4px;
+  border-top: 1px dashed #21262d;
+  margin-top: 8px;
+}
+.wl-watch-btn {
+  background: #21262d;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wl-watch-btn:hover {
+  background: #30363d;
+}
+.wl-watch-rm-btn {
+  color: #f85149;
+}
+.feed-empty {
+  font-size: 13px;
+  color: #8b949e;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 4px;
+}
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #2a2a2a;
+  border-top-color: #2dd4bf;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.mono {
+  font-family: monospace;
+}

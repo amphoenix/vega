@@ -1,0 +1,286 @@
+/* ═══ Polymarket Panel ═══════════════════════════════════════════════════════ */
+.poly-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #0d1117;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+.poly-header {
+  padding: 8px 14px;
+  border-bottom: 1px solid #21262d;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.poly-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.poly-title {
+  font-size: 13px;
+  font-family: monospace;
+  color: #a78bfa;
+  letter-spacing: 1px;
+  margin: 0;
+}
+.poly-status {
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.poly-status .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.poly-status.online .status-dot { background: #4ade80; }
+.poly-status.online { color: #4ade80; }
+.poly-status.offline .status-dot { background: #6e7681; }
+.poly-status.offline { color: #6e7681; }
+.poly-balance {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: monospace;
+  color: #4ade80;
+  font-weight: 600;
+}
+
+/* ── Categories ──────────────────────────────────────────────────────────── */
+.poly-categories {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.poly-cat-btn {
+  height: 24px;
+  padding: 0 10px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  color: #8b949e;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.poly-cat-btn:hover { color: #cdd9e5; border-color: #6e7681; }
+.poly-cat-btn.active {
+  background: #1a2040;
+  border-color: #a78bfa;
+  color: #a78bfa;
+}
+
+/* ── Search ───────────────────────────────────────────────────────────────── */
+.poly-search-wrap {
+  display: flex;
+  gap: 6px;
+}
+.poly-search {
+  flex: 1;
+  height: 26px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 3px;
+  color: #cdd9e5;
+  font-size: 11px;
+  padding: 0 8px;
+  outline: none;
+}
+.poly-search:focus { border-color: #a78bfa; }
+.poly-sort {
+  height: 26px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 3px;
+  color: #8b949e;
+  font-size: 11px;
+  padding: 0 6px;
+  outline: none;
+  cursor: pointer;
+}
+
+/* ── Body (2-column) ─────────────────────────────────────────────────────── */
+.poly-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── Market list ─────────────────────────────────────────────────────────── */
+.poly-markets {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+  min-width: 0;
+}
+.poly-markets::-webkit-scrollbar { width: 3px; }
+.poly-markets::-webkit-scrollbar-thumb { background: #21262d; }
+
+.poly-loading, .poly-empty {
+  padding: 20px;
+  color: #30363d;
+  font-size: 12px;
+  text-align: center;
+  font-style: italic;
+}
+
+.pm-card {
+  padding: 10px 14px;
+  border-bottom: 1px solid #161b22;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.pm-card:hover { background: #161b22; }
+.pm-card.active { background: #1a1a30; border-left: 2px solid #a78bfa; }
+
+.pm-question {
+  font-size: 12px;
+  color: #cdd9e5;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-bottom: 4px;
+}
+.pm-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  color: #6e7681;
+  margin-bottom: 6px;
+}
+.pm-outcomes {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pm-outcome {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+.pmo-name { color: #8b949e; }
+.pmo-price {
+  font-weight: 700;
+  font-family: monospace;
+}
+.pmo-price.yes { color: #4ade80; }
+.pmo-price.no { color: #f87171; }
+
+/* ── Detail panel ────────────────────────────────────────────────────────── */
+.poly-detail {
+  width: clamp(320px, 30vw, 480px);
+  flex-shrink: 0;
+  border-left: 1px solid #21262d;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.poly-detail::-webkit-scrollbar { width: 3px; }
+.poly-detail::-webkit-scrollbar-thumb { background: #21262d; }
+
+.poly-detail-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #30363d;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.pd-header { border-bottom: 1px solid #21262d; padding-bottom: 8px; }
+.pd-question {
+  font-size: 14px;
+  color: #cdd9e5;
+  font-weight: 700;
+  line-height: 1.4;
+  margin: 0 0 4px;
+}
+.pd-category {
+  font-size: 10px;
+  color: #a78bfa;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* ── Outcome cards ───────────────────────────────────────────────────────── */
+.pd-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pd-outcome-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 4px;
+}
+.pdo-name { flex: 1; font-size: 12px; color: #cdd9e5; font-weight: 600; }
+.pdo-price {
+  font-size: 16px;
+  font-weight: 800;
+  font-family: monospace;
+}
+.pdo-price.yes { color: #4ade80; }
+.pdo-price.no { color: #f87171; }
+.pdo-actions { display: flex; gap: 4px; }
+.pdo-buy {
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: monospace;
+}
+.yes-btn { background: #0a3622; color: #4ade80; }
+.yes-btn:hover { background: #0d4a2e; }
+.no-btn { background: #3b1117; color: #f87171; }
+.no-btn:hover { background: #4d161e; }
+
+/* ── Stats ────────────────────────────────────────────────────────────────── */
+.pd-stats {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pds-item { display: flex; flex-direction: column; gap: 1px; }
+.pds-label { font-size: 9px; color: #6e7681; text-transform: uppercase; letter-spacing: 0.5px; }
+.pds-value { font-size: 12px; color: #cdd9e5; font-family: monospace; font-weight: 600; }
+
+/* ── Positions ───────────────────────────────────────────────────────────── */
+.pd-positions {
+  border-top: 1px solid #21262d;
+  padding-top: 8px;
+}
+.pd-pos-header {
+  font-size: 10px;
+  color: #6e7681;
+  letter-spacing: 1px;
+  font-family: monospace;
+  margin-bottom: 6px;
+}
+.pd-pos-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11px;
+  font-family: monospace;
+}
+.pdp-outcome { color: #cdd9e5; font-weight: 600; flex: 1; }
+.pdp-shares { color: #8b949e; }
+.pdp-avg { color: #6e7681; }
+.pdp-pnl.up { color: #4ade80; }
+.pdp-pnl.dn { color: #f87171; }

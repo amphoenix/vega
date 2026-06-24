@@ -1,0 +1,28 @@
+# ── Exchange Configuration (Crypto + Polymarket) ─────────────────────────────
+#
+# ONE CCXTAdapter handles ALL crypto exchanges — just change active_exchange.
+# Sandbox/testnet is controlled by TRADING_MODE in .env (paper = testnet).
+
+crypto:
+  active_exchange: binance    # binance | bybit | okx | deribit
+
+  exchanges:
+    binance:
+      default_type: spot      # spot | swap | future | option
+      rate_limit: true
+      # api_key / secret loaded from env: BINANCE_API_KEY, BINANCE_SECRET
+
+    bybit:
+      default_type: swap
+      rate_limit: true
+      # api_key / secret loaded from env: BYBIT_API_KEY, BYBIT_SECRET
+
+    deribit:
+      default_type: option    # Deribit = primary crypto options exchange
+      rate_limit: true
+      # api_key / secret loaded from env: DERIBIT_API_KEY, DERIBIT_SECRET
+
+polymarket:
+  chain_id: 137               # Polygon mainnet
+  # private_key loaded from env: POLYMARKET_PRIVATE_KEY
+  # wallet loaded from env: POLYMARKET_WALLET

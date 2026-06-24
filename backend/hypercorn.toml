@@ -1,0 +1,38 @@
+# Hypercorn configuration for Vega
+# HTTP/2 + HTTP/3 (QUIC) with TLS — replaces nginx + uvicorn
+
+# ── Bind ─────────────────────────────────────────────────────────────────────
+# Overridden by start.sh via --bind / --quic-bind CLI flags.
+# These are fallback defaults only.
+bind = ["0.0.0.0:47291"]
+quic_bind = ["0.0.0.0:47291"]
+
+# ── TLS ──────────────────────────────────────────────────────────────────────
+# Paths injected by start.sh via --certfile / --keyfile CLI flags.
+# certfile = "../certs/cert.pem"
+# keyfile  = "../certs/key.pem"
+
+# ── Workers / concurrency ────────────────────────────────────────────────────
+workers = 1
+# Single worker is fine for a single-user trading app.
+# FastAPI + asyncio handles concurrency internally via the event loop +
+# ThreadPoolExecutor (100 threads, set in main.py lifespan).
+
+# ── Timeouts ─────────────────────────────────────────────────────────────────
+# SSE streams can run for hours — disable idle timeouts.
+keep_alive_timeout = 600
+graceful_timeout = 5
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+# Disable Hypercorn's default verbose access log — our FastAPI middleware
+# handles it with color-coded, human-readable output.
+accesslog = "-"
+access_log_format = "%(s)s  %(m)s  %(U)s%(q)s  [H%(H)s]"
+errorlog = "-"
+loglevel = "warning"
+
+# ── HTTP/2 settings ──────────────────────────────────────────────────────────
+# h2_max_concurrent_streams: max SSE/API streams per H2 connection.
+# Default is 100 which is fine. Browser typically uses 1 H2 connection.
+h2_max_concurrent_streams = 200
+h2_max_header_list_size = 65536

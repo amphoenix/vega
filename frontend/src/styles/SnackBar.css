@@ -1,0 +1,126 @@
+/* ── Snackbar toast stack ──────────────────────────────────────────────────── */
+.snackbar-stack {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: none;
+  max-width: 420px;
+}
+
+.snackbar-item {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', 'Space Grotesk', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.snackbar-item:hover {
+  transform: translateX(-4px);
+}
+
+/* ── Severity variants ──────────────────────────────────────────────────────── */
+.snackbar-success {
+  background: #0d2818;
+  border-left: 4px solid #2dd4bf;
+  color: #b8f0df;
+}
+
+.snackbar-error {
+  background: #2a0d0d;
+  border-left: 4px solid #ef4444;
+  color: #fca5a5;
+}
+
+.snackbar-warning {
+  background: #2a1d0d;
+  border-left: 4px solid #f59e0b;
+  color: #fcd34d;
+}
+
+.snackbar-info {
+  background: #0d1a2a;
+  border-left: 4px solid #3b82f6;
+  color: #93c5fd;
+}
+
+/* ── Inner elements ─────────────────────────────────────────────────────────── */
+.snackbar-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.snackbar-success .snackbar-icon { background: #2dd4bf; color: #fff; }
+.snackbar-error   .snackbar-icon { background: #ef4444; color: #fff; }
+.snackbar-warning .snackbar-icon { background: #f59e0b; color: #fff; }
+.snackbar-info    .snackbar-icon { background: #3b82f6; color: #fff; }
+
+.snackbar-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.snackbar-title {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.snackbar-msg {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.snackbar-close {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.5;
+  cursor: pointer;
+  margin-left: 4px;
+  color: #8b949e;
+}
+
+.snackbar-close:hover {
+  opacity: 1;
+}
+
+/* ── Transition ─────────────────────────────────────────────────────────────── */
+.snack-enter-active {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.snack-leave-active {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.snack-enter-from {
+  opacity: 0;
+  transform: translateX(60px);
+}
+
+.snack-leave-to {
+  opacity: 0;
+  transform: translateX(60px) scale(0.95);
+}

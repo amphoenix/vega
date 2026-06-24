@@ -1,0 +1,84 @@
+.chart-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid #30363d;
+  flex-shrink: 0;
+  background: #161b22;
+  height: 32px;
+}
+.ch-ticker {
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  font-family: monospace;
+}
+.ch-company {
+  font-size: 11px;
+  color: #8b949e;
+}
+.ch-price {
+  font-size: 14px;
+  font-weight: 600;
+  color: #cdd9e5;
+  font-family: monospace;
+}
+.ch-live {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: #2dd4bf;
+  font-family: monospace;
+  margin-left: auto;
+}
+.ch-live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #00d4a8;
+  animation: pulse 1.5s infinite;
+}
+.ch-loading {
+  color: #7d8590;
+}
+.ch-chg {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: monospace;
+}
+.ch-vol {
+  font-size: 10px;
+  color: #6e7681;
+}
+.ch-fomo {
+  font-size: 10px;
+  font-family: monospace;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.ch-mkt {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  font-family: monospace;
+  cursor: default;
+}
+.ch-mkt-open {
+  background: rgba(0, 200, 100, 0.12);
+  color: #00c864;
+  border: 1px solid rgba(0, 200, 100, 0.3);
+}
+.ch-mkt-closed {
+  background: rgba(239, 83, 80, 0.12);
+  color: #ef5350;
+  border: 1px solid rgba(239, 83, 80, 0.3);
+}
+
+/* Light mode */
+.light .ch-ticker { color: var(--tx0) !important; }
+.light .ch-company { color: var(--tx2) !important; }

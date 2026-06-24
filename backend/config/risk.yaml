@@ -1,0 +1,23 @@
+# ── Risk & Safety Configuration ───────────────────────────────────────────────
+
+supervisor:
+  daily_loss_limit_inr: 2500.0
+  max_trades_per_day: 10
+  max_consecutive_losses: 3
+  cooldown_minutes: 30
+  max_same_underlying_trades: 2
+  max_open_trades: 5
+  allow_outside_safe_hours: false
+
+kill_switch:
+  daily_loss_soft: 2000.0
+  daily_loss_hard: 4000.0
+  drawdown_soft: 1500.0
+  drawdown_hard: 3000.0
+  loss_streak_soft: 3
+  loss_streak_hard: 5
+  max_errors_per_window: 5
+  error_window_minutes: 10
+
+# position_sizing, stop_loss → moved to config.py (single source of truth)
+# Override via .env: SWING_CAPITAL_INR, FO_LOTS_PER_TRADE, etc.

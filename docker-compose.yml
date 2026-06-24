@@ -1,0 +1,12 @@
+services:
+  vega:
+    build: .
+    container_name: vega
+    env_file:
+      - .env
+    ports:
+      - "47291:47291"
+    restart: unless-stopped
+    volumes:
+      - ./backend/data:/app/backend/data
+      - ./certs:/app/certs

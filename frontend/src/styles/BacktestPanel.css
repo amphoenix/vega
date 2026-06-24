@@ -1,0 +1,97 @@
+.hdr-backtest {
+  border-left-color: #a78bfa;
+  background: #110e1a;
+}
+.hdr-backtest .rs-title {
+  color: #a78bfa;
+}
+.bt-results {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.bt-bh-row {
+  font-size: 11px;
+  color: #8b949e;
+  padding: 2px 4px 6px;
+  border-bottom: 1px solid #30363d;
+  margin-bottom: 2px;
+}
+.bt-card {
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+.bt-winner {
+  border-color: #2dd4bf55;
+  background: #0d2a22;
+}
+.bt-err { opacity: 0.5; }
+.bt-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+.bt-grade {
+  font-size: 14px;
+  font-weight: 800;
+  font-family: monospace;
+  width: 20px;
+}
+.grade-a { color: #26a69a; }
+.grade-b { color: #86efac; }
+.grade-c { color: #fbbf24; }
+.grade-d { color: #ef5350; }
+.bt-card-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #cdd9e5;
+  flex: 1;
+}
+.bt-ret {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: monospace;
+}
+.bt-card-line {
+  font-size: 10px;
+  color: #8b949e;
+  margin-bottom: 5px;
+  line-height: 1.4;
+}
+.bt-bar-wrap {
+  position: relative;
+  height: 4px;
+  background: #30363d;
+  border-radius: 2px;
+  margin-bottom: 4px;
+}
+.bt-bar {
+  height: 4px;
+  border-radius: 2px;
+  min-width: 2px;
+}
+.bt-bar-up { background: #26a69a; }
+.bt-bar-dn { background: #ef5350; }
+.bt-bar-bh {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 8px;
+  background: #fbbf24;
+  border-radius: 1px;
+}
+.bt-risk {
+  font-size: 10px;
+  color: #6e7681;
+  font-family: monospace;
+}
+.rs-hdr-clickable { cursor: pointer; }
+.bt-chevron {
+  font-size: 10px;
+  color: #8b949e;
+  padding: 0 4px;
+}

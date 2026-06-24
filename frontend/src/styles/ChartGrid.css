@@ -1,0 +1,71 @@
+/* ── 3-pane chart grid ──────────────────────────────────────────────────── */
+.chart-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: #30363d;
+}
+.chart-grid.three-pane {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.chart-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #0d1117;
+  overflow: hidden;
+}
+
+/* ── Pane header ────────────────────────────────────────────────────────── */
+.pane-hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  min-height: 26px;
+  flex-shrink: 0;
+}
+.pane-sym {
+  font-size: 11px;
+  font-weight: 700;
+  color: #e6edf3;
+  font-family: monospace;
+  letter-spacing: 0.5px;
+}
+.pane-ltp {
+  font-size: 11px;
+  font-family: monospace;
+  color: #2dd4bf;
+  font-weight: 600;
+}
+.pane-close {
+  margin-left: auto;
+  background: none;
+  border: 1px solid transparent;
+  color: #6e7681;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 1px 5px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.pane-close:hover {
+  background: #21262d;
+  color: #f85149;
+  border-color: #f8514933;
+}
+
+/* ── Light mode ─────────────────────────────────────────────────────────── */
+.light .chart-grid { background: #d0d7de; }
+.light .chart-pane { background: #f8f9fa; }
+.light .pane-hdr   { background: #f0f2f4; border-color: #d0d7de; }
+.light .pane-sym   { color: #1f2328; }
+.light .pane-ltp   { color: #1a7f37; }
+.light .pane-close { color: #656d76; }
+.light .pane-close:hover { background: #eaeef2; color: #cf222e; }
