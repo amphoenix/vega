@@ -24,7 +24,7 @@ def _mock_settings(**overrides):
         max_same_underlying_trades=2,
         max_open_trades=5,
         allow_outside_safe_hours=False,
-        fo_lots_per_trade=1,
+        fo_max_lots_per_trade=1,
         swing_capital_inr=100000.0,
         llm_provider='openai',
         llm_api_key='sk-test-key-1234567890',
@@ -128,9 +128,9 @@ class TestValidation:
         assert errors == []
 
     def test_invalid_lots(self):
-        svc = ConfigService(_mock_settings(fo_lots_per_trade=0))
+        svc = ConfigService(_mock_settings(fo_max_lots_per_trade=0))
         errors = svc.validate()
-        assert any('fo_lots_per_trade' in e for e in errors)
+        assert any('fo_max_lots_per_trade' in e for e in errors)
 
     def test_invalid_capital(self):
         svc = ConfigService(_mock_settings(swing_capital_inr=-100))

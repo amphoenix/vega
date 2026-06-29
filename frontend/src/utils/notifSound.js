@@ -100,6 +100,22 @@ export function playNotifSound(severity = 'info') {
     case 'slippage_reject':                        // flat rejection buzz
       _beep(200, 0.25, 0.2, 'square', 0)
       break
+    case 'signal':                                 // scalp signal alert — loud attention grab
+      _beep(880, 0.1, 0.4, 'sine', 0)             // A5
+      _beep(1100, 0.1, 0.4, 'sine', 0.12)         // ~C#6
+      _beep(880, 0.1, 0.4, 'sine', 0.24)          // A5 repeat
+      _beep(1320, 0.2, 0.35, 'sine', 0.36)        // E6 resolve
+      break
+    case 'sl_hit':                                 // alias for sl_exit
+      _beep(880, 0.12, 0.35, 'square', 0)
+      _beep(660, 0.12, 0.35, 'square', 0.15)
+      _beep(880, 0.12, 0.35, 'square', 0.3)
+      _beep(660, 0.2, 0.3, 'square', 0.45)
+      break
+    case 'exit_sell':                              // alias for t1/successful exit
+      _beep(1200, 0.08, 0.2, 'sine', 0)
+      _beep(1500, 0.15, 0.25, 'sine', 0.1)
+      break
 
     // ── Generic severity fallbacks ───────────────────────────────────────
     case 'success':

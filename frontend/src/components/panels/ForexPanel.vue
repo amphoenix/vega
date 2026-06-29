@@ -258,6 +258,7 @@ import ForexChart from '../chart/ForexChart.vue'
 import { snack } from '../../utils/snack'
 import { playNotifSound } from '../../utils/notifSound'
 import { onOrderEvent } from '../../composables/useSSE'
+import { useTrackedAlerts } from '../../composables/useTrackedAlerts'
 
 const PAIRS = [
   'USDINR=X',
@@ -566,6 +567,17 @@ onOrderEvent((data) => {
   })
   loadTrackedPositions()
   loadForexRealizedPnl()
+})
+
+// ── Shared SSE: tracked alerts (forex-only) ──────────────────────────────────
+useTrackedAlerts({
+  modes: ['forex'],
+  currency: 'INR',
+  priceDecimals: 4,
+  onAlert() {
+    loadTrackedPositions()
+    loadForexRealizedPnl()
+  },
 })
 
 onUnmounted(() => {

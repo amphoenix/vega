@@ -134,6 +134,8 @@ def _positions_impl():
                 'avg_price': p.avg_price,
                 'ltp': p.ltp,
                 'pnl': p.pnl,
+                'realized_pnl': p.realized_pnl,
+                'unrealized_pnl': p.unrealized_pnl,
                 'security_id': p.security_id,
                 'exchange': p.exchange,
                 'product_type': p.product_type,
@@ -176,10 +178,26 @@ def holdings():
 
 # ── GET /order-book ──────────────────────────────────────────────────────────
 
+def _normalise_order(o: dict) -> dict:
+    """Broker-agnostic order normalization — standard field names for frontend."""
+    return {
+        'order_id':       str(o.get('orderId', '') or o.get('order_id', '')),
+        'symbol':         o.get('tradingSymbol', '') or o.get('trading_symbol', '') or o.get('symbol', ''),
+        'side':           (o.get('transactionType', '') or o.get('transaction_type', '') or o.get('side', '')).upper(),
+        'status':         (o.get('orderStatus', '') or o.get('order_status', '') or o.get('status', '')).upper(),
+        'qty':            int(o.get('filledQty', 0) or o.get('filled_qty', 0) or o.get('quantity', 0) or o.get('qty', 0) or 0),
+        'avg_price':      float(o.get('averageTradedPrice', 0) or o.get('average_traded_price', 0) or o.get('avg_price', 0) or o.get('price', 0) or 0),
+        'product':        (o.get('productType', '') or o.get('product_type', '') or o.get('product', '')).upper(),
+        'exchange':       (o.get('exchangeSegment', '') or o.get('exchange_segment', '') or o.get('exchange', '')).upper(),
+        'order_type':     (o.get('orderType', '') or o.get('order_type', '')).upper(),
+        'time':           o.get('exchangeTime', '') or o.get('exchange_timestamp', '') or o.get('time', ''),
+    }
+
+
 def _order_book_impl():
     b = get_broker()
     orders = b.get_order_list()
-    return {'success': True, 'data': orders}
+    return {'success': True, 'data': [_normalise_order(o) for o in orders]}
 
 
 @router.get('/order-book')
@@ -231,6 +249,75 @@ async def _cancel_order_impl(request: Request):
 @router.post('/order/cancel')
 async def cancel_order(request: Request):
     return await _cancel_order_impl(request)
+
+
+# ── POST /order/modify ────────────────────────────────────────────────────
+
+async def _modify_order_impl(request: Request):
+    body = await request.json()
+    b = get_broker()
+    result = b.modify_order(
+        order_id=body.get('order_id', ''),
+        qty=int(body.get('qty', 0)),
+        price=float(body.get('price', 0)),
+        order_type=body.get('order_type', ''),
+        trigger_price=float(body.get('trigger_price', 0)),
+    )
+    return {
+        'success': result.success,
+        'data': {'order_id': result.order_id, 'status': result.status} if result.success else None,
+        'error': result.message if not result.success else None,
+    }
+
+
+@router.post('/order/modify')
+async def modify_order(request: Request):
+    return await _modify_order_impl(request)
+
+
+# ── GET /order/{order_id} ────────────────────────────────────────────────────
+
+@router.get('/order/{order_id}')
+def order_status(order_id: str):
+    b = get_broker()
+    data = b.get_order_status(order_id)
+    return {'success': bool(data), 'data': data}
+
+
+# ── GET /trade-book ──────────────────────────────────────────────────────────
+
+@router.get('/trade-book')
+def trade_book():
+    b = get_broker()
+    try:
+        resp = b._client.get_trade_book() if hasattr(b, '_client') and b._client else {}
+        trades = resp.get('data', [])
+        return {'success': True, 'data': trades if isinstance(trades, list) else []}
+    except Exception as e:
+        logger.error('trade_book failed: %s', e)
+        return {'success': False, 'data': [], 'error': str(e)}
+
+
+# ── POST /margin-calculator ──────────────────────────────────────────────────
+
+@router.post('/margin-calculator')
+async def margin_calculator(request: Request):
+    body = await request.json()
+    b = get_broker()
+    try:
+        resp = b._client.margin_calculator(
+            security_id=body.get('security_id', ''),
+            exchange_segment=body.get('exchange_segment', 'NSE_FNO'),
+            transaction_type=body.get('transaction_type', 'BUY'),
+            quantity=int(body.get('quantity', 1)),
+            product_type=body.get('product_type', 'INTRADAY'),
+            price=float(body.get('price', 0)),
+            trigger_price=float(body.get('trigger_price', 0)),
+        ) if hasattr(b, '_client') and b._client else {}
+        return {'success': True, 'data': resp.get('data', {})}
+    except Exception as e:
+        logger.error('margin_calculator failed: %s', e)
+        return {'success': False, 'error': str(e)}
 
 
 # ── GET /stream/{ticker} (SSE) ──────────────────────────────────────────────

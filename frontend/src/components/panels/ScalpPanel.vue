@@ -250,7 +250,8 @@ import BtstPanel from './BtstPanel.vue'
 import { fmtPrice } from '../../utils/formatters'
 import { snack } from '../../utils/snack'
 import { playNotifSound, isMuted } from '../../utils/notifSound'
-import { onOrderEvent, onTrackedAlert } from '../../composables/useSSE'
+import { onOrderEvent } from '../../composables/useSSE'
+import { useTrackedAlerts } from '../../composables/useTrackedAlerts'
 import {
   getScalpScannerStatus,
   createScalpStream,
@@ -655,9 +656,9 @@ onOrderEvent((data) => {
 })
 
 // ── Shared SSE: tracked position alerts (live P&L, SL updates) ──────────────
-onTrackedAlert((d) => {
-  if (d.type === 'alerts_connected' || d.type === 'heartbeat') return
-  _loadTrackedPositions()
+useTrackedAlerts({
+  modes: ['scalp'],
+  onAlert() { _loadTrackedPositions() },
 })
 
 // ── Load tracked positions (independent of LiveTradingPanel) ──────────────────

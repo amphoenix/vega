@@ -394,13 +394,12 @@ def get_universe():
 
 @router.get('/status')
 def get_status():
-    from ..infrastructure.db import state_store
-    auto = state_store.get_state('forex_auto_trading_enabled', 'true') == 'true'
+    from ..config import settings
     return {
         'success': True,
         'data': {
-            'mode':       'paper',
-            'auto_trade': auto,
+            'mode':       settings.forex_mode,
+            'auto_trade': settings.forex_auto_trade,
             'exchange':   'forex',
         },
     }
@@ -408,10 +407,10 @@ def get_status():
 
 @router.post('/auto-trading')
 async def toggle_auto_trading(request: Request):
-    from ..infrastructure.db import state_store
+    from ..config import settings
     body = await request.json()
     enabled = bool(body.get('enabled', False))
-    state_store.set_state('forex_auto_trading_enabled', str(enabled).lower())
+    settings.forex_auto_trade = enabled
     return {'success': True, 'data': {'auto_trading_enabled': enabled}}
 
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..entities.trade import Trade, TradeState
-from ..services.brokerage_calc import calc_brokerage, total_brokerage
+from ..services.brokerage_calc import segment_brokerage, segment_brokerage_breakdown
 from ..value_objects.money import PnL, Money, BrokerageBreakdown
 
 
@@ -83,7 +83,8 @@ def compute_trade_result(
         raise ValueError(f'Trade {trade.trade_id} is {trade.state.value}, not closed')
 
     gross = trade.realized_gross_pnl
-    brk = calc_brokerage(trade.entry_price, trade.exit_price, trade.qty)
+    _seg = trade.trade_mode or 'swing'
+    brk = segment_brokerage_breakdown(_seg, trade.entry_price, trade.exit_price, trade.qty)
     net = round(gross - brk.total, 2)
 
     return TradeResult(

@@ -10,7 +10,11 @@
           :class="['itab', { active: intelTab === tab }]"
           @click="intelTab = tab"
         >
-          {{ tab }}
+          {{ tab }}<template v-if="tab === 'ORDERS' && livePnl !== 0">
+            <span :class="['tab-pnl', livePnl >= 0 ? 'up' : 'dn']">
+              {{ livePnl >= 0 ? '+' : '' }}₹{{ livePnl.toFixed(0) }}
+            </span>
+          </template>
         </button>
       </div>
       <button
@@ -85,66 +89,62 @@
 
     <!-- ── ORDERS tab content ── -->
     <div v-if="intelTab === 'ORDERS'" class="orders-tab">
-      <!-- Orders -->
-      <div class="orders-section" v-if="orderRows.length">
-        <div class="orders-section-title">
-          ORDER BOOK
-          <span class="orders-count">{{ orderRows.length }}</span>
-          <span class="orders-refresh-icon" @click="fetchOrders" :class="{ spinning: ordersLoading }" title="Refresh">↻</span>
-        </div>
-        <div class="orders-table">
+      <!-- P&L summary bar -->
+      <div class="pnl-summary-bar" v-if="mergedRows.length">
+        <span class="pnl-label">Realized</span>
+        <span :class="['pnl-value', realizedPnl >= 0 ? 'up' : 'dn']">
+          {{ realizedPnl >= 0 ? '+' : '' }}₹{{ realizedPnl.toFixed(0) }}
+        </span>
+        <span class="pnl-sep">|</span>
+        <span class="pnl-label">Paper</span>
+        <span :class="['pnl-value', paperPnl >= 0 ? 'up' : 'dn']">
+          {{ paperPnl >= 0 ? '+' : '' }}₹{{ paperPnl.toFixed(0) }}
+        </span>
+        <span class="pnl-sep">|</span>
+        <span class="pnl-label">System</span>
+        <span :class="['pnl-value', systemTotalPnl >= 0 ? 'up' : 'dn']">
+          {{ systemTotalPnl >= 0 ? '+' : '' }}₹{{ systemTotalPnl.toFixed(0) }}
+        </span>
+        <span class="pnl-sep">|</span>
+        <span class="pnl-label">Symbols</span>
+        <span class="pnl-value">{{ symbolCount }}</span>
+        <span class="pnl-label" style="margin-left:4px">Orders</span>
+        <span class="pnl-value">{{ mergedRows.length }}</span>
+        <span class="orders-refresh-icon" @click="fetchOrders" :class="{ spinning: ordersLoading }" title="Refresh" style="margin-left:auto">↻</span>
+      </div>
+
+      <!-- Unified orders table: broker orders + paper system trades merged -->
+      <div class="orders-section" v-if="mergedRows.length">
+        <div class="orders-table merged-grid">
           <div class="orders-row orders-hdr">
             <span class="o-col o-sym">Symbol</span>
             <span class="o-col o-side">Side</span>
             <span class="o-col o-qty">Qty</span>
             <span class="o-col o-price">Price</span>
-            <span class="o-col o-status">Status</span>
-            <span class="o-col o-time">Time</span>
-          </div>
-          <div
-            v-for="o in orderRows"
-            :key="o.order_id || o.id"
-            :class="['orders-row', orderStatusClass(o)]"
-          >
-            <span class="o-col o-sym" :title="o.trading_symbol || o.symbol">{{ o.trading_symbol || o.symbol || '—' }}</span>
-            <span :class="['o-col', 'o-side', (o.txn_type || o.transaction_type || '').toUpperCase() === 'BUY' ? 'o-buy' : 'o-sell']">{{ (o.txn_type || o.transaction_type || '—').toUpperCase() }}</span>
-            <span class="o-col o-qty">{{ o.qty || o.quantity || 0 }}</span>
-            <span class="o-col o-price">₹{{ (o.price || o.avg_price || o.limit_price || 0).toFixed?.(2) ?? o.price }}</span>
-            <span :class="['o-col', 'o-status', orderStatusClass(o)]">{{ (o.status || o.order_status || '—').toUpperCase() }}</span>
-            <span class="o-col o-time">{{ fmtOrderTime(o.order_timestamp || o.exchange_timestamp || o.created_at) }}</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Positions -->
-      <div class="orders-section" v-if="positionRows.length">
-        <div class="orders-section-title">POSITIONS <span class="orders-count">{{ positionRows.length }}</span></div>
-        <div class="orders-table">
-          <div class="orders-row orders-hdr">
-            <span class="o-col o-sym">Symbol</span>
-            <span class="o-col o-side">Side</span>
-            <span class="o-col o-qty">Qty</span>
-            <span class="o-col o-price">Avg</span>
-            <span class="o-col o-price">LTP</span>
+            <span class="o-col o-mode">Mode</span>
+            <span class="o-col o-type">Type</span>
+            <span class="o-col o-src">Source</span>
             <span class="o-col o-pnl">P&L</span>
+            <span class="o-col o-time">Time</span>
+            <span class="o-col o-status">Status</span>
           </div>
-          <div
-            v-for="p in positionRows"
-            :key="p.trading_symbol || p.symbol"
-            class="orders-row"
-          >
-            <span class="o-col o-sym" :title="p.trading_symbol || p.symbol">{{ p.trading_symbol || p.symbol || '—' }}</span>
-            <span :class="['o-col', 'o-side', (p.net_qty || p.quantity || 0) >= 0 ? 'o-buy' : 'o-sell']">{{ (p.net_qty || p.quantity || 0) >= 0 ? 'LONG' : 'SHORT' }}</span>
-            <span class="o-col o-qty">{{ Math.abs(p.net_qty || p.quantity || 0) }}</span>
-            <span class="o-col o-price">₹{{ (p.avg_price || 0).toFixed?.(2) ?? p.avg_price }}</span>
-            <span class="o-col o-price">₹{{ (p.ltp || p.last_price || 0).toFixed?.(2) ?? p.ltp }}</span>
-            <span :class="['o-col', 'o-pnl', (p.pnl || p.unrealized_pnl || 0) >= 0 ? 'up' : 'dn']">₹{{ (p.pnl || p.unrealized_pnl || 0).toFixed?.(2) ?? 0 }}</span>
+          <div v-for="r in mergedRows" :key="r.id" class="orders-row" :class="r.statusClass">
+            <span class="o-col o-sym" :title="r.symbol">{{ r.symbol }}</span>
+            <span :class="['o-col', 'o-side', r.side === 'BUY' ? 'o-buy' : 'o-sell']">{{ r.side }}</span>
+            <span class="o-col o-qty">{{ r.qty }}</span>
+            <span class="o-col o-price">{{ r.priceDisplay }}</span>
+            <span :class="['o-col', 'o-mode', r.isLive ? 'o-live' : 'o-paper']">{{ r.isLive ? 'LIVE' : 'PAPER' }}</span>
+            <span :class="['o-col', 'o-type', 'o-type-' + r.type]">{{ r.type }}</span>
+            <span :class="['o-col', 'o-src', r.source === 'Manual' ? 'o-manual' : 'o-system']">{{ r.source }}</span>
+            <span :class="['o-col', 'o-pnl', r.pnl > 0 ? 'up' : r.pnl < 0 ? 'dn' : '']">{{ r.pnlDisplay }}</span>
+            <span class="o-col o-time">{{ r.time }}</span>
+            <span class="o-col o-status">{{ r.status }}</span>
           </div>
         </div>
       </div>
 
-      <div class="feed-empty" v-if="!orderRows.length && !positionRows.length && !ordersLoading">
-        No orders or positions found
+      <div class="feed-empty" v-if="!mergedRows.length && !ordersLoading">
+        No F&O trades today
       </div>
     </div>
 
@@ -189,7 +189,7 @@ const props = defineProps({
 
 defineEmits(['run-ai-predict'])
 
-const intelTabs = ['ALL', 'NEWS', 'ANALYSTS', 'REDDIT', 'FOMO', 'PREDICTIONS', 'SIM', 'ORDERS']
+const intelTabs = ['ALL', 'NEWS', 'FOMO', 'PREDICTIONS', 'ORDERS']
 
 // ── RSSHub news ─────────────────────────────────────────────────────────────
 const newsSource = ref('')
@@ -299,18 +299,153 @@ function hideFeedTooltip() {
 // ── Orders tab ─────────────────────────────────────────────────────────────
 const ordersLoading = ref(false)
 const orderRows = ref([])
+const systemTradesMap = ref({})
+const systemOrderIds = ref(new Set())
+const systemExitOrderIds = ref(new Set())
+
+// ── P&L: Dhan positions API for total, pnl_trades DB for system ──────────
 const positionRows = ref([])
+const systemTradesList = ref([])
+const realizedPnl = computed(() => positionRows.value.reduce((s, p) => s + (p.realized_pnl || 0), 0))
+const unrealizedPnl = computed(() => positionRows.value.reduce((s, p) => s + (p.unrealized_pnl || 0), 0))
+const totalPnl = computed(() => realizedPnl.value + unrealizedPnl.value)
+const symbolCount = computed(() => new Set(positionRows.value.map(p => p.symbol)).size)
+const _isPaperTrade = (t) => {
+  const oid = (t.order_id || '').toUpperCase()
+  return !oid || oid === 'PAPER'
+}
+const systemTotalPnl = computed(() => systemTradesList.value.reduce((s, t) => s + (t.net_pnl || 0), 0))
+const livePnl = computed(() => realizedPnl.value)
+const paperPnl = computed(() => systemTradesList.value.filter(_isPaperTrade).reduce((s, t) => s + (t.net_pnl || 0), 0))
+
+// ── Merged rows: broker orders (LIVE) + paper system trades, sorted by time ──
+const mergedRows = computed(() => {
+  const rows = []
+
+  // 1. Broker orders — all LIVE
+  for (const o of orderRows.value) {
+    const sym = (o.symbol || '').toUpperCase()
+    const meta = systemTradesMap.value[sym] || {}
+    // source: strict order_id match (System vs Manual)
+    const isSystem = systemOrderIds.value.has(o.order_id) || systemExitOrderIds.value.has(o.order_id)
+    // type: symbol-based — informational context even for manual orders on known symbols
+    const type = meta.mode ? meta.mode.charAt(0).toUpperCase() + meta.mode.slice(1) : '—'
+    const isFilled = ['TRADED', 'COMPLETE', 'FILLED', 'COMPLETED'].includes((o.status || '').toUpperCase())
+    rows.push({
+      id: o.order_id || ('b-' + rows.length),
+      symbol: o.symbol || '',
+      side: o.side || '',
+      qty: o.qty || 0,
+      price: isFilled ? (o.avg_price || 0) : 0,
+      priceDisplay: isFilled ? (o.avg_price ? '₹' + o.avg_price.toFixed(2) : '—') : '—',
+      isLive: true,
+      type,
+      source: isSystem ? 'System' : 'Manual',
+      pnl: 0,
+      pnlDisplay: '—',
+      time: fmtOrderTime(o.time),
+      _sortTime: o.time ? new Date(o.time).getTime() : 0,
+      status: o.status || '',
+      statusClass: orderStatusClass(o),
+    })
+  }
+
+  // 2. Paper system trades — entry + exit rows with P&L on exit
+  for (const t of systemTradesList.value) {
+    const oid = (t.order_id || '').toUpperCase()
+    if (oid && oid !== 'PAPER') continue  // live trades already in broker orders
+    const mode = t.mode || 'scalp'
+    const type = mode.charAt(0).toUpperCase() + mode.slice(1)
+    const entryTime = t.entry_time || ''
+    const exitTime = t.exit_time || t.timestamp || ''
+    const ep = t.entry_prem || 0
+    rows.push({
+      id: 'pe-' + (t.id || rows.length),
+      symbol: t.symbol || '',
+      side: 'BUY',
+      qty: t.qty || 0,
+      price: ep,
+      priceDisplay: ep > 0 ? '₹' + ep.toFixed(2) : '—',
+      isLive: false,
+      type,
+      source: 'System',
+      pnl: 0,
+      pnlDisplay: '—',
+      time: fmtOrderTime(entryTime),
+      _sortTime: entryTime ? new Date(entryTime).getTime() : 0,
+      status: 'SIMULATED',
+      statusClass: 'o-pending',
+    })
+    const pnl = t.net_pnl || 0
+    const xp = t.exit_prem || 0
+    rows.push({
+      id: 'px-' + (t.id || rows.length),
+      symbol: t.symbol || '',
+      side: 'SELL',
+      qty: t.qty || 0,
+      price: xp,
+      priceDisplay: xp > 0 ? '₹' + xp.toFixed(2) : '—',
+      isLive: false,
+      type,
+      source: 'System',
+      pnl,
+      pnlDisplay: (pnl >= 0 ? '+' : '') + '₹' + pnl.toFixed(0),
+      time: fmtOrderTime(exitTime),
+      _sortTime: exitTime ? new Date(exitTime).getTime() : 0,
+      status: 'SIMULATED',
+      statusClass: 'o-pending',
+    })
+  }
+
+  // Sort by time descending (newest first)
+  rows.sort((a, b) => (b._sortTime || 0) - (a._sortTime || 0))
+  return rows
+})
+
+// Keep pnlRows as alias for summary bar count
+const pnlRows = computed(() => mergedRows.value)
 
 async function fetchOrders() {
   const base = import.meta.env.VITE_API_BASE_URL || ''
   ordersLoading.value = true
   try {
-    const [obResp, posResp] = await Promise.all([
+    const [obResp, trResp, posResp] = await Promise.all([
       fetch(`${base}/api/broker/order-book`).then(r => r.json()),
-      fetch(`${base}/api/broker/positions`).then(r => r.json()),
+      fetch(`${base}/api/trade/pnl/trades?limit=50&date=${new Date().toLocaleDateString('en-CA')}`).then(r => r.json()).catch(() => ({ trades: [] })),
+      fetch(`${base}/api/broker/positions`).then(r => r.json()).catch(() => ({ data: [] })),
     ])
-    orderRows.value = Array.isArray(obResp.data) ? obResp.data : []
-    positionRows.value = Array.isArray(posResp.data) ? posResp.data.filter(p => (p.net_qty || p.quantity || 0) !== 0) : []
+    const _isFnO = (o) => {
+      const seg = (o.exchange || '').toUpperCase()
+      return seg.includes('FNO') || seg.includes('NFO') || seg.includes('BFO')
+    }
+    orderRows.value = (Array.isArray(obResp.data) ? obResp.data : []).filter(_isFnO)
+    positionRows.value = (Array.isArray(posResp.data) ? posResp.data : []).filter(_isFnO)
+    // System trades: raw list for P&L sum, map by uppercase symbol for metadata
+    const _trades = Array.isArray(trResp.trades) ? trResp.trades : []
+    systemTradesList.value = _trades
+    const _map = {}
+    const _oidSet = new Set()     // live system entry order_ids
+    const _exitOidSet = new Set() // live system exit order_ids
+    for (const t of _trades) {
+      const sym = (t.symbol || '').toUpperCase()
+      if (!sym) continue
+      const oid = (t.order_id || '').toUpperCase()
+      const isPaper = !oid || oid === 'PAPER'
+      _map[sym] = {
+        source: (t.mode || 'system').charAt(0).toUpperCase() + (t.mode || 'system').slice(1),
+        exit_reason: t.exit_reason || '',
+        mode: t.mode || '',
+        symbol: t.symbol || '',
+        isPaper,
+      }
+      if (!isPaper) {
+        _oidSet.add(t.order_id)
+        if (t.exit_order_id) _exitOidSet.add(t.exit_order_id)
+      }
+    }
+    systemTradesMap.value = _map
+    systemOrderIds.value = _oidSet
+    systemExitOrderIds.value = _exitOidSet
   } catch (e) {
     console.warn('fetchOrders failed', e)
   } finally {
@@ -339,9 +474,20 @@ onOrderEvent(() => {
   if (intelTab.value === 'ORDERS') fetchOrders()
 })
 
+// Auto-refresh positions every 10s when ORDERS tab is active
+let _ordersInterval = null
 watch(intelTab, (tab) => {
-  if (tab === 'ORDERS') fetchOrders()
+  if (tab === 'ORDERS') {
+    fetchOrders()
+    if (!_ordersInterval) _ordersInterval = setInterval(() => fetchOrders(), 10000)
+  } else {
+    if (_ordersInterval) { clearInterval(_ordersInterval); _ordersInterval = null }
+  }
   if (tab === 'NEWS' && !newsItems.value.length) fetchNews()
+})
+
+onUnmounted(() => {
+  if (_ordersInterval) { clearInterval(_ordersInterval); _ordersInterval = null }
 })
 
 </script>

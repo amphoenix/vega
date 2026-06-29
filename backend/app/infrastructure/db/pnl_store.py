@@ -14,7 +14,7 @@ from .state_store import (
     today_net_by_mode,
     _conn,
 )
-from ...domain.services.brokerage_calc import total_brokerage as _calc_brokerage
+from ...domain.services.brokerage_calc import segment_brokerage as _seg_brokerage
 
 
 def last_trade_date() -> str | None:
@@ -37,6 +37,11 @@ def record_trade(
     lot_size: int,
     brokerage_or_exit_reason='',
     exit_reason: str = '',
+    *,
+    market_type: str = '',
+    direction: str = '',
+    order_id: str = '',
+    exit_order_id: str = '',
 ) -> dict:
     """Wrapper that accepts both old signature (no brokerage arg) and new one.
 
@@ -46,19 +51,22 @@ def record_trade(
     from .state_store import record_trade as _record
 
     if isinstance(brokerage_or_exit_reason, str):
-        brokerage = _calc_brokerage(entry_prem, exit_prem, qty)
+        brokerage = _seg_brokerage(mode, entry_prem, exit_prem, qty)
         reason = brokerage_or_exit_reason or exit_reason
     else:
         brokerage = float(brokerage_or_exit_reason or 0)
         reason = exit_reason
 
-    # Derive market_type from mode so forex/crypto/poly don't default to 'fo'
+    # Derive market_type: explicit kwarg wins, then mode-based lookup, then 'fo'
     _mt_map = {'forex': 'forex', 'crypto': 'crypto', 'poly': 'poly'}
-    mt = _mt_map.get(mode, 'fo')
+    mt = market_type or _mt_map.get(mode, 'fo')
 
     return _record(
         mode, symbol, underlying,
         entry_prem, exit_prem, qty, lot_size,
         brokerage, reason,
         market_type=mt,
+        direction=direction,
+        order_id=order_id,
+        exit_order_id=exit_order_id,
     )

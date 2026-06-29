@@ -43,14 +43,14 @@ _YAHOO_TO_CDS = {
     'JPYINR=X': 'JPYINR',
 }
 
-_DEFAULT_UNIVERSE = 'USDINR=X,EURINR=X,GBPINR=X,JPYINR=X'
 _forex_universe_cache: list | None = None
 
 
 def _get_forex_universe() -> list[str]:
     global _forex_universe_cache
     if _forex_universe_cache is None:
-        raw = os.environ.get('FOREX_UNIVERSE', _DEFAULT_UNIVERSE)
+        from ..config import settings as _cfg
+        raw = _cfg.forex_universe
         _forex_universe_cache = [t.strip() for t in raw.split(',') if t.strip()]
         logger.info(f"Forex universe: {_forex_universe_cache}")
     return _forex_universe_cache
@@ -82,9 +82,17 @@ _STRIKE_STEP = {
     'JPYINR': 0.25,
 }
 
-SCAN_INTERVAL_SECONDS = int(os.environ.get('FOREX_SCAN_INTERVAL_SEC', '180'))
-MIN_CONFIDENCE        = int(os.environ.get('FOREX_MIN_CONFIDENCE', '60'))
-MAX_RISK_PCT          = float(os.environ.get('FOREX_MAX_RISK_PCT', '2.0'))
+def _scan_interval():
+    from ..config import settings as _cfg
+    return _cfg.forex_scan_interval_sec
+
+def _min_confidence():
+    from ..config import settings as _cfg
+    return _cfg.forex_min_confidence
+
+def _max_risk_pct():
+    from ..config import settings as _cfg
+    return _cfg.forex_max_risk_pct
 
 _scanner_thread: Optional[threading.Thread] = None
 _stop_event     = threading.Event()
@@ -153,9 +161,9 @@ def _broadcast(event: dict):
 def get_state() -> dict:
     with _scan_lock:
         s = dict(_state)
-    s['interval_seconds'] = SCAN_INTERVAL_SECONDS or 180
+    s['interval_seconds'] = _scan_interval()
     s['universe']         = list(FOREX_UNIVERSE)
-    s['min_confidence']   = MIN_CONFIDENCE
+    s['min_confidence']   = _min_confidence()
     return s
 
 
@@ -585,7 +593,7 @@ def _run_scan_cycle(llm_client):
 
     # Clear ticket cache at start of new trading day
     _now = now_ist()
-    if _now.hour == 9 and _now.minute < (SCAN_INTERVAL_SECONDS // 60 + 4):
+    if _now.hour == 9 and _now.minute < (_scan_interval() // 60 + 4):
         _ticket_cache.clear()
         logger.info("Forex scanner: ticket cache cleared (new trading day)")
 
@@ -688,7 +696,7 @@ def _run_scan_cycle(llm_client):
                     f"direction={direction}")
 
         # ── Auto-entry via order executor ────────────────────────────────
-        if ticket and conf >= MIN_CONFIDENCE:
+        if ticket and conf >= _min_confidence():
             try:
                 _try_forex_auto_entry(signal)
             except Exception as e:
@@ -704,11 +712,9 @@ def _run_scan_cycle(llm_client):
 
 def _try_forex_auto_entry(signal: dict) -> Optional[dict]:
     """Place a currency futures entry if all gates pass."""
-    from ..infrastructure.db import state_store
+    from ..config import settings as _cfg
 
-    # Forex auto-trading always on (paper mode by default, like all other scanners)
-    auto_enabled = state_store.get_state('forex_auto_trading_enabled', 'true') == 'true'
-    if not auto_enabled:
+    if not _cfg.forex_auto_trade:
         logger.info(f"[forex] AUTO-TRADE DISABLED — skipping {signal.get('cds_base')}")
         return None
 
@@ -735,8 +741,7 @@ def _try_forex_auto_entry(signal: dict) -> Optional[dict]:
 
     # Capital check — use forex-specific capital from config
     from ..config import settings as _cfg
-    _paper = not (os.environ.get('LIVE_TRADING_ENABLED', 'false')
-                  .strip().lower() in ('true', '1', 'yes'))
+    _paper = _cfg.forex_mode == 'paper'
     if _paper:
         avail = float(_cfg.forex_capital_inr)
     else:
@@ -746,7 +751,7 @@ def _try_forex_auto_entry(signal: dict) -> Optional[dict]:
             avail = 0
 
     max_loss = float(ticket.get('risk', {}).get('max_loss_inr', 0))
-    risk_limit = avail * (MAX_RISK_PCT / 100.0)
+    risk_limit = avail * (_max_risk_pct() / 100.0)
     if max_loss > risk_limit:
         logger.warning(f"[forex] CAPITAL BLOCK {sym} — max_loss ₹{max_loss:.0f} > "
                        f"limit ₹{risk_limit:.0f}")
@@ -755,7 +760,7 @@ def _try_forex_auto_entry(signal: dict) -> Optional[dict]:
     # Place BUY order for currency futures
     lot_size = int(ticket.get('lot_size', 1000))
     from ..config import settings as _cfg
-    num_lots = _cfg.forex_lots_per_trade
+    num_lots = _cfg.forex_max_lots_per_trade
     qty = lot_size * num_lots
 
     logger.info(f"[forex] AUTO-ENTRY: {direction} {sym} qty={qty} conf={conf}%")
@@ -863,7 +868,7 @@ def _fast_reversal_check():
 
 def _scanner_loop():
     logger.info(f"Forex scanner started (technical-only, "
-                f"sleep={SCAN_INTERVAL_SECONDS}s between cycles, "
+                f"sleep={_scan_interval()}s between cycles, "
                 f"universe={len(FOREX_UNIVERSE)} pairs)")
 
     with _scan_lock:
@@ -881,7 +886,7 @@ def _scanner_loop():
             except Exception as e:
                 logger.error(f"Forex scan cycle error: {e}", exc_info=True)
 
-            _sleep_sec = SCAN_INTERVAL_SECONDS or 180
+            _sleep_sec = _scan_interval() or 180
             with _scan_lock:
                 _state['next_scan'] = (now_ist() + timedelta(seconds=_sleep_sec)).isoformat()
 

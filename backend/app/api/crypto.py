@@ -566,27 +566,23 @@ async def quick_trade(request: Request):
 
 @router.get('/status')
 def get_status():
-    try:
-        from ..infrastructure.db import state_store
-        auto = state_store.get_state('crypto_auto_trading_enabled', 'false') == 'true'
-    except Exception:
-        auto = False
+    from ..config import settings
     return {
         'success': True,
         'data': {
-            'mode':       'paper',
-            'auto_trade': auto,
-            'exchange':   'binance',
+            'mode':       settings.crypto_mode,
+            'auto_trade': settings.crypto_auto_trade,
+            'exchange':   settings.crypto_exchange,
         },
     }
 
 
 @router.post('/auto-trading')
 async def toggle_auto_trading(request: Request):
-    from ..infrastructure.db import state_store
+    from ..config import settings
     body = await request.json()
     enabled = bool(body.get('enabled', False))
-    state_store.set_state('crypto_auto_trading_enabled', str(enabled).lower())
+    settings.crypto_auto_trade = enabled
     return {'success': True, 'data': {'auto_trading_enabled': enabled}}
 
 
@@ -828,3 +824,62 @@ def bot_close_position(bot_id: str, symbol: str):
     if result is None:
         return JSONResponse({'success': False, 'error': f'No position for {symbol}'}, status_code=404)
     return {'success': True, 'data': result}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CRYPTO F&O (Deribit Derivatives — Options + Perpetuals)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get('/fno/state')
+def crypto_fo_state():
+    """Crypto F&O scanner state."""
+    from ..engines.crypto_fo_scanner import get_crypto_fo_scanner
+    return {'success': True, 'data': get_crypto_fo_scanner().get_state()}
+
+
+@router.get('/fno/pnl')
+def crypto_fo_pnl():
+    """Crypto F&O P&L summary."""
+    from ..engines.crypto_fo_scanner import get_crypto_fo_scanner
+    return {'success': True, 'data': get_crypto_fo_scanner().get_pnl()}
+
+
+@router.get('/fno/positions')
+def crypto_fo_positions():
+    """Crypto F&O open positions (options + perps)."""
+    from ..engines.crypto_fo_scanner import get_crypto_fo_scanner
+    return {'success': True, 'data': get_crypto_fo_scanner().get_positions()}
+
+
+@router.get('/fno/signals')
+def crypto_fo_signals(limit: int = Query(50, le=200)):
+    """Crypto F&O signal log."""
+    from ..engines.crypto_fo_scanner import get_crypto_fo_scanner
+    return {'success': True, 'data': get_crypto_fo_scanner().get_signals()[-limit:]}
+
+
+@router.post('/fno/start')
+def crypto_fo_start():
+    """Start crypto F&O scanner."""
+    from ..engines.crypto_fo_scanner import get_crypto_fo_scanner
+    s = get_crypto_fo_scanner()
+    s.start()
+    return {'success': True, 'data': s.get_state()}
+
+
+@router.post('/fno/stop')
+def crypto_fo_stop():
+    """Stop crypto F&O scanner."""
+    from ..engines.crypto_fo_scanner import get_crypto_fo_scanner
+    s = get_crypto_fo_scanner()
+    s.stop()
+    return {'success': True, 'data': s.get_state()}
+
+
+@router.post('/fno/flatten')
+def crypto_fo_flatten():
+    """Emergency flatten all crypto F&O positions."""
+    from ..engines.crypto_fo_scanner import get_crypto_fo_scanner
+    s = get_crypto_fo_scanner()
+    s._flatten_all('manual')
+    return {'success': True, 'data': s.get_pnl()}

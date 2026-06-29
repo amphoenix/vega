@@ -916,6 +916,7 @@ import { getOptionChain } from '../../api/market'
 import { snack } from '../../utils/snack'
 import { playNotifSound, isMuted } from '../../utils/notifSound'
 import { onOrderEvent, onTrackedAlert } from '../../composables/useSSE'
+import { useTrackedAlerts } from '../../composables/useTrackedAlerts'
 
 const { chartTicker } = storeToRefs(useMarketStore())
 const { foAnalysing, foScannerState } = storeToRefs(useFoScannerStore())
@@ -1265,26 +1266,27 @@ function _showDesktopNotification(payload) {
 }
 
 // ── Server-side tracked-position watcher (SSE) ─────────────────────────────
-function _onTrackedAlert(payload) {
-  if (!payload || payload.type !== 'tracked_alert') return
-  const key = `${payload.id}|${payload.status}`
-  const cutoff = Date.now() - 60_000
-  missedAlerts.value = [
-    payload,
-    ...missedAlerts.value.filter(
-      (a) => `${a.id}|${a.status}` !== key || (a.timestamp && new Date(a.timestamp).getTime() < cutoff),
-    ),
-  ].slice(0, 20)
-  _saveMissedAlerts()
-  _playExitAlert(payload.status)
-  _showDesktopNotification(payload)
-  // Refresh tracked list on exit events (position removed server-side)
-  if (['sl_hit', 'past_t2', 'time_exit', 'thesis_flip'].includes(payload.status)) {
-    setTimeout(() => _loadTracked(), 1000)
-  }
-}
+useTrackedAlerts({
+  modes: ['swing'],
+  onAlert(m) {
+    // Missed-alerts panel
+    const key = `${m.id}|${m.status}`
+    const cutoff = Date.now() - 60_000
+    missedAlerts.value = [
+      m,
+      ...missedAlerts.value.filter(
+        (a) => `${a.id}|${a.status}` !== key || (a.timestamp && new Date(a.timestamp).getTime() < cutoff),
+      ),
+    ].slice(0, 20)
+    _saveMissedAlerts()
+    _showDesktopNotification(m)
+    if (['sl_hit', 'past_t2', 'time_exit', 'thesis_flip'].includes(m.status)) {
+      setTimeout(() => _loadTracked(), 1000)
+    }
+  },
+})
 
-// ── Shared SSE: tracked alerts (replaces _openTrackedAlertsStream) ──────────
+// ── Shared SSE: non-alert events (funds, daily PnL, tracked updates) ────────
 onTrackedAlert((m) => {
   if (m.type === 'alerts_connected') { alertsConnected.value = true; return }
   if (m.type === 'heartbeat') return
@@ -1306,7 +1308,6 @@ onTrackedAlert((m) => {
     }
     return
   }
-  if (m.type === 'tracked_alert') _onTrackedAlert(m)
 })
 
 // ── Option chain ───────────────────────────────────────────────────────────
@@ -1615,6 +1616,8 @@ onOrderEvent((m) => {
   if (m.type === 'order_update') {
     const statusSoundMap = {
       'ENTRY_PLACED': 'entry_buy',
+      'SCALP_ENTRY':  'entry_buy',
+      'SCALP_EXIT':   'exit_sell',
       'SL_HIT':       'sl_exit',
       'PAST_T1':      't1_exit',
       'PAST_T2':      't2_exit',
@@ -1622,6 +1625,7 @@ onOrderEvent((m) => {
       'THESIS_FLIP':  'thesis_exit',
       'SLIPPAGE_REJECT': 'slippage_reject',
       'SIMULATED':    'entry_buy',
+      'ENTRY_FAILED': 'error',
     }
     const soundType = statusSoundMap[m.status] || m.severity || 'info'
     playNotifSound(soundType)

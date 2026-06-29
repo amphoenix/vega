@@ -62,7 +62,7 @@ SCALP_ATR_SL_MULT   = lambda: _settings.scalp_atr_sl_mult
 SCALP_ATR_T1_MULT   = lambda: _settings.scalp_atr_t1_mult
 SCALP_USE_ATR_SL    = lambda: _settings.scalp_use_atr_sl
 SCALP_MAX_SPREAD_PCT = lambda: _settings.scalp_max_spread_pct
-SCALP_LOTS_PER_TRADE = lambda: _settings.scalp_lots_per_trade
+SCALP_LOTS_PER_TRADE = lambda: _settings.scalp_max_lots_per_trade
 SCALP_REENTRY_COOLDOWN = lambda: _settings.scalp_reentry_cooldown_sec
 SCALP_MAX_ENTRIES_PER_DAY = lambda: _settings.scalp_max_entries_per_day
 SCALP_ZEROHERO_EXIT_MIN    = lambda: _settings.scalp_zerohero_exit_min
@@ -676,7 +676,7 @@ def _refresh_atm_subscriptions() -> None:
 def _reconcile_on_startup():
     """Remove ghost tracked positions — in JSON but no longer open at broker."""
     try:
-        _is_paper = not _settings.live_trading_enabled
+        _is_paper = _settings.scalp_mode == 'paper'
         if _is_paper:
             logger.info("[scalp] Reconciliation skipped — paper mode (positions not at broker)")
             return
@@ -1078,7 +1078,7 @@ def _build_scalp_ticket(signal: dict, ticker: str) -> Optional[dict]:
         t1  = round(premium + t1_pts, 2)
         t2  = round(premium + t1_pts * 1.8, 2)  # T2 = 1.8× T1 distance
 
-        _default_lot = 20 if 'SENSEX' in base.upper() else (30 if 'BANKNIFTY' in base.upper() else 75)
+        _default_lot = 20 if 'SENSEX' in base.upper() else (30 if 'BANKNIFTY' in base.upper() else 65)
         lot_size = _broker.underlying_lot_size(base) or _default_lot
         if not (1 <= lot_size <= 900):
             logger.warning(f"[scalp] Lot size {lot_size} out of range for {base} — using default {_default_lot}")
@@ -1710,7 +1710,7 @@ def get_state() -> dict:
         'max_hold_min': SCALP_MAX_HOLD_MIN(),
         'daily_loss':   SCALP_DAILY_LOSS(),
         'lots':         SCALP_LOTS_PER_TRADE(),
-        'live_trading': _settings.live_trading_enabled,
+        'live_trading': _settings.scalp_mode == 'live',
     }
     s['stats'] = get_scalp_stats()
     s['peak_pnl'] = _scalp_peak_pnl

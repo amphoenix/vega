@@ -46,7 +46,8 @@ _fo_universe_cache: list | None = None
 def _get_fo_universe() -> list[str]:
     global _fo_universe_cache
     if _fo_universe_cache is None:
-        raw = os.environ.get('FO_UNIVERSE', _DEFAULT_UNIVERSE)
+        from ..config import settings as _cfg
+        raw = _cfg.fo_universe
         _fo_universe_cache = [t.strip() for t in raw.split(',') if t.strip()]
         logger.info(f"F&O universe: {_fo_universe_cache}")
     return _fo_universe_cache
@@ -93,11 +94,15 @@ UNDERLYING_MAP = {
     '^BSESN':   '^BSESN',
 }  # For stocks, underlying == ticker
 
-SCAN_INTERVAL_SECONDS = int(os.environ.get('FO_SCAN_INTERVAL_SEC', '180'))
-MIN_CONFIDENCE        = int(os.environ.get('FO_MIN_CONFIDENCE', '70'))
-MIN_AGENT_AGREEMENT   = int(os.environ.get('FO_MIN_AGENTS', '3'))  # of 5 agents
-SIGNAL_MIN_DTE        = int(os.environ.get('FO_SIGNAL_MIN_DTE', '1'))  # 0 = allow all days
-MAX_RISK_PCT          = float(os.environ.get('FO_MAX_RISK_PCT', '2.0'))  # max loss per trade as % of available capital
+def _fo_cfg():
+    from ..config import settings as _cfg
+    return _cfg
+
+def _scan_interval(): return _fo_cfg().fo_scan_interval_sec
+def _min_confidence(): return _fo_cfg().fo_min_confidence
+def _min_agent_agreement(): return _fo_cfg().fo_min_agents
+def _signal_min_dte(): return _fo_cfg().fo_signal_min_dte
+def _max_risk_pct(): return _fo_cfg().fo_max_risk_pct
 
 _scanner_thread: Optional[threading.Thread] = None
 _stop_event     = threading.Event()
@@ -184,9 +189,9 @@ def get_state() -> dict:
     with _scan_lock:
         s = dict(_state)
     # Effective interval seconds (matches the wait() logic in _scanner_loop).
-    s['interval_seconds'] = SCAN_INTERVAL_SECONDS or 180
+    s['interval_seconds'] = _scan_interval()
     s['universe']         = list(FO_UNIVERSE)
-    s['min_confidence']   = MIN_CONFIDENCE
+    s['min_confidence']   = _min_confidence()
     return s
 
 
@@ -552,7 +557,7 @@ def _run_scan_cycle(llm_client):
 
     # Clear ticket cache at start of new trading day (09:15 IST)
     _now = now_ist()
-    if _now.hour == 9 and _now.minute < (SCAN_INTERVAL_SECONDS // 60 + 4):
+    if _now.hour == 9 and _now.minute < (_scan_interval() // 60 + 4):
         _ticket_cache.clear()
         logger.info("Scanner: ticket cache cleared (new trading day)")
 
@@ -640,9 +645,9 @@ def _run_scan_cycle(llm_client):
                     from ..domain.services.option_planner import plan_option_trade
                     ticket = plan_option_trade(
                         underlying=ticker, bias=bias, spot=price,
-                        target_delta=float(os.environ.get('FO_TARGET_DELTA', '0.55')),
-                        min_dte=int(os.environ.get('FO_MIN_DTE', '3')),
-                        max_dte=int(os.environ.get('FO_MAX_DTE', '21')),
+                        target_delta=_fo_cfg().fo_target_delta,
+                        min_dte=_fo_cfg().fo_min_dte,
+                        max_dte=_fo_cfg().fo_max_dte,
                         rationale=f"{verdict} conf={conf}% | {cio.get('short_term_reason','')}",
                         spot_target_1  = _fnum(cio.get('target_1')),
                         spot_target_2  = _fnum(cio.get('target_2')),
@@ -666,8 +671,8 @@ def _run_scan_cycle(llm_client):
                 # Use the primary ticket's DTE so alts match the same expiry
                 # (avoids min_dte filter rejecting short-dated contracts like SENSEX 1DTE)
                 _ticket_dte = ticket.get('days_to_expiry', 1) or 1
-                _alt_min_dte = min(int(os.environ.get('FO_MIN_DTE', '3')), _ticket_dte)
-                _alt_max_dte = max(int(os.environ.get('FO_MAX_DTE', '21')), _ticket_dte)
+                _alt_min_dte = min(_fo_cfg().fo_min_dte, _ticket_dte)
+                _alt_max_dte = max(_fo_cfg().fo_max_dte, _ticket_dte)
                 for ad in _alt_deltas:
                     try:
                         alt = plan_option_trade(
@@ -734,13 +739,12 @@ def _run_scan_cycle(llm_client):
 
                 # ── Capital-aware risk gate ────────────────────────────────
                 # Fetch live available cash from broker and reject trades
-                # where max_loss exceeds MAX_RISK_PCT of capital.
+                # where max_loss exceeds fo_max_risk_pct of capital.
                 # If capital cannot be fetched or is ≤ 0 → block the trade
                 # (fail-safe: never trade blind on unknown capital).
                 try:
                     from ..config import settings as _cfg
-                    _paper_mode = not (os.environ.get('LIVE_TRADING_ENABLED', 'false')
-                                       .strip().lower() in ('true', '1', 'yes'))
+                    _paper_mode = _cfg.fo_mode == 'paper'
                     if _paper_mode:
                         avail = float(_cfg.swing_capital_inr)
                         logger.debug(f"Scanner: paper mode — using swing capital ₹{avail:.0f}")
@@ -769,7 +773,7 @@ def _run_scan_cycle(llm_client):
                         ticket['risk']['capital_warning'] = cio['_risk_reason']
                         conf = cio['confidence_to_trade']
                     else:
-                        risk_limit = avail * (MAX_RISK_PCT / 100.0)
+                        risk_limit = avail * (_max_risk_pct() / 100.0)
                         # Use enforced strict SL for max_loss (not planner's loose 50% SL)
                         # e.g. NIFTY: 15pts × 75 lot = ₹1,125 vs planner's ₹8,025
                         from .order_executor import sl_max_points  # noqa: same engines package
@@ -797,13 +801,13 @@ def _run_scan_cycle(llm_client):
                             else:
                                 logger.warning(
                                     f"Scanner: {ticker} REJECTED by capital gate — "
-                                    f"max_loss ₹{max_loss:.0f} > {MAX_RISK_PCT}% of "
+                                    f"max_loss ₹{max_loss:.0f} > {_max_risk_pct()}% of "
                                     f"₹{avail:.0f} (limit ₹{risk_limit:.0f})")
                                 cio['short_term_action'] = 'AVOID'
                                 cio['confidence_to_trade'] = min(conf, 40)
                                 cio['_risk_rejected'] = True
                                 cio['_risk_reason'] = (
-                                    f"Max loss ₹{max_loss:.0f} exceeds {MAX_RISK_PCT}% "
+                                    f"Max loss ₹{max_loss:.0f} exceeds {_max_risk_pct()}% "
                                     f"of available capital ₹{avail:.0f} "
                                     f"(limit ₹{risk_limit:.0f})")
                                 ticket['risk']['capital_warning'] = cio['_risk_reason']
@@ -812,7 +816,7 @@ def _run_scan_cycle(llm_client):
                         else:
                             logger.info(
                                 f"Scanner: {ticker} capital gate OK — "
-                                f"max_loss ₹{max_loss:.0f} ≤ {MAX_RISK_PCT}% of "
+                                f"max_loss ₹{max_loss:.0f} ≤ {_max_risk_pct()}% of "
                                 f"₹{avail:.0f} (limit ₹{risk_limit:.0f})")
                 except Exception as e:
                     logger.warning(f"Capital gate check failed for {ticker}: {e}")
@@ -1059,7 +1063,7 @@ def _scanner_loop():
     from ..infrastructure.llm.client import LLMClient
 
     logger.info(f"F&O scanner started (continuous, "
-                f"sleep={SCAN_INTERVAL_SECONDS}s between cycles, "
+                f"sleep={_scan_interval()}s between cycles, "
                 f"reversal_check_every={REVERSAL_CHECK_INTERVAL}s, "
                 f"universe={len(FO_UNIVERSE)} tickers)")
 
@@ -1081,7 +1085,7 @@ def _scanner_loop():
                 _run_scan_cycle(llm)
             except Exception as e:
                 logger.error(f"Scan cycle error: {e}", exc_info=True)
-            _sleep_sec = SCAN_INTERVAL_SECONDS or 180
+            _sleep_sec = _scan_interval() or 180
             with _scan_lock:
                 _state['next_scan'] = (now_ist() + timedelta(seconds=_sleep_sec)).isoformat()
             # Instead of sleeping the full interval, wake every REVERSAL_CHECK_INTERVAL

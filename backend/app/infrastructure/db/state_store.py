@@ -135,6 +135,8 @@ def _migrate_add_columns(c: sqlite3.Connection) -> None:
         ('currency',     "TEXT NOT NULL DEFAULT 'INR'"),
         ('entry_time',   "TEXT NOT NULL DEFAULT ''"),
         ('exit_time',    "TEXT NOT NULL DEFAULT ''"),
+        ('order_id',      "TEXT NOT NULL DEFAULT ''"),
+        ('exit_order_id', "TEXT NOT NULL DEFAULT ''"),
     ]
     for col, typedef in migrations:
         if col not in existing:
@@ -204,8 +206,11 @@ def record_trade(
     currency: str = 'INR',
     entry_time: str = '',
     exit_time: str = '',
+    order_id: str = '',
+    exit_order_id: str = '',
+    gross_pnl_override: float | None = None,
 ) -> dict:
-    gross_pnl = round((exit_prem - entry_prem) * qty, 2)
+    gross_pnl = round(gross_pnl_override, 2) if gross_pnl_override is not None else round((exit_prem - entry_prem) * qty, 2)
     net_pnl = round(gross_pnl - brokerage, 2)
     now = now_ist()
 
@@ -216,13 +221,13 @@ def record_trade(
                        (timestamp, date, mode, market_type, symbol, underlying,
                         direction, strike_price, entry_prem, exit_prem, qty, lot_size,
                         gross_pnl, brokerage, net_pnl, exit_reason,
-                        currency, entry_time, exit_time)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        currency, entry_time, exit_time, order_id, exit_order_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (now.isoformat(), now.strftime('%Y-%m-%d'), mode, market_type,
                  symbol, underlying, direction, strike_price,
                  entry_prem, exit_prem, qty, lot_size,
                  gross_pnl, brokerage, net_pnl, exit_reason,
-                 currency, entry_time, exit_time),
+                 currency, entry_time, exit_time, order_id, exit_order_id),
             )
             c.commit()
 
@@ -289,7 +294,7 @@ def daily_summary_by_segment(date_str: Optional[str] = None) -> dict:
     """Per-tab P&L summary: swing, scalp (both F&O), crypto, poly, forex."""
     date_str = date_str or today_ist_str()
     z = lambda: {'trades': 0, 'gross': 0.0, 'brokerage': 0.0, 'net': 0.0}
-    tabs = ('swing', 'scalp', 'crypto', 'poly', 'forex')
+    tabs = ('swing', 'scalp', 'crypto', 'crypto_fo', 'poly', 'forex')
     try:
         with _conn() as c:
             rows = c.execute(
@@ -308,7 +313,7 @@ def daily_summary_by_segment(date_str: Optional[str] = None) -> dict:
 
     _SEGMENT_CURRENCY = {
         'swing': 'INR', 'scalp': 'INR', 'forex': 'INR',
-        'crypto': 'USD', 'poly': 'USD',
+        'crypto': 'USD', 'crypto_fo': 'USD', 'poly': 'USD',
     }
 
     result: dict = {'date': date_str}
@@ -324,11 +329,11 @@ def daily_summary_by_segment(date_str: Optional[str] = None) -> dict:
             'net':       round(r['net'] or 0, 2),
         }
         # Route by mode if mode is a known tab (handles forex with legacy market_type='fo')
-        if mode in ('forex', 'crypto', 'poly'):
+        if mode in ('forex', 'crypto', 'crypto_fo', 'poly'):
             mt = mode  # override — mode is authoritative for these segments
         if mt == 'fo' and mode in ('swing', 'scalp'):
             result[mode] = {**row_data, 'currency': 'INR'}
-        elif mt in ('crypto', 'poly', 'forex'):
+        elif mt in ('crypto', 'crypto_fo', 'poly', 'forex'):
             prev = result[mt]
             result[mt] = {
                 'trades':    prev['trades'] + row_data['trades'],

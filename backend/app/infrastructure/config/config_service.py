@@ -307,8 +307,8 @@ class ConfigService:
         if self.get_float('daily_loss_limit_inr') <= 0:
             errors.append('daily_loss_limit_inr must be positive')
 
-        if self.get_int('fo_lots_per_trade') < 1:
-            errors.append('fo_lots_per_trade must be >= 1')
+        if self.get_int('fo_max_lots_per_trade') < 1:
+            errors.append('fo_max_lots_per_trade must be >= 1')
 
         if self.get_float('swing_capital_inr') <= 0:
             errors.append('swing_capital_inr must be positive')

@@ -27,6 +27,13 @@ from ...shared.time import datetime, date, now_ist, today_ist, is_market_hours
 
 logger = get_logger('tracked_monitor')
 
+def _detect_fo_exchange(trading_symbol: str) -> str:
+    """SENSEX/BANKEX options trade on BSE_FNO (BFO), everything else on NFO."""
+    ts = (trading_symbol or '').upper()
+    if ts.startswith('SENSEX') or ts.startswith('BANKEX'):
+        return 'BFO'
+    return 'NFO'
+
 # ── Tunables ──────────────────────────────────────────────────────────────────
 POLL_INTERVAL_S   = 1.0
 NEAR_SL_PCT       = 0.10
@@ -315,6 +322,7 @@ def _build_payload(rec: dict, prem: float, status: str, spot: float) -> dict:
     return {
         'type'           : 'tracked_alert',
         'id'             : rec.get('id'),
+        'trade_mode'     : t.get('trade_mode', 'swing'),
         'trading_symbol' : t.get('trading_symbol'),
         'display_symbol' : t.get('display_symbol') or t.get('trading_symbol'),
         'underlying'     : t.get('underlying'),
@@ -358,7 +366,7 @@ def _poll_once() -> None:
         opt_sym = t.get('trading_symbol') or ''
         sec_id = t.get('security_id') or ''
         _is_fx = t.get('trade_mode') == 'forex'
-        _ws_exch = t.get('exchange', 'CDS') if _is_fx else 'NFO'
+        _ws_exch = t.get('exchange', 'CDS') if _is_fx else _detect_fo_exchange(opt_sym)
         if opt_sym and opt_sym not in _ws_subscribed_syms:
             _ws_subscribed_syms.add(opt_sym)
             try:
@@ -439,7 +447,7 @@ def _poll_once() -> None:
                         pass
                     if _fe_prem is None and opt_sym:
                         try:
-                            _fe_ex = t.get('exchange', 'NFO') if is_forex else 'NFO'
+                            _fe_ex = t.get('exchange', 'NFO') if is_forex else _detect_fo_exchange(opt_sym)
                             _fe_sec = t.get('security_id') if is_forex else None
                             _fe_prem = broker.get_ltp(opt_sym, exchange=_fe_ex,
                                                       security_id=_fe_sec)
@@ -485,7 +493,7 @@ def _poll_once() -> None:
             # 2. REST get_ltp — broker API (Dhan)
             if prem is None and opt_sym:
                 try:
-                    _prem_exchange = t.get('exchange', 'CUR') if is_forex else 'NFO'
+                    _prem_exchange = t.get('exchange', 'CUR') if is_forex else _detect_fo_exchange(opt_sym)
                     _prem_sec_id = t.get('security_id') if is_forex else None
                     prem = broker.get_ltp(opt_sym, exchange=_prem_exchange,
                                          security_id=_prem_sec_id)
@@ -594,7 +602,7 @@ def _force_exit_loop() -> None:
                     prem = None
                     if opt_sym:
                         try:
-                            prem = broker.get_ltp(opt_sym, exchange='NFO')
+                            prem = broker.get_ltp(opt_sym, exchange=_detect_fo_exchange(opt_sym))
                         except Exception:
                             pass
                     if prem is None:

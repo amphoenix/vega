@@ -225,10 +225,25 @@ class DhanBroker(BrokerAdapter):
                 tag=tag,
             )
 
-            order_id = resp.get('data', {}).get('orderId', '')
+            # Dhan SDK sometimes returns a string instead of dict
+            if isinstance(resp, str):
+                import json as _json
+                try:
+                    resp = _json.loads(resp)
+                except (ValueError, TypeError):
+                    logger.error('Dhan place_order returned non-dict: %s', resp[:200])
+                    return OrderResult(success=False, status='ERROR',
+                                       message=f'Unexpected response: {resp[:200]}')
+
+            order_id = (resp.get('data') or {}).get('orderId', '')
             status = resp.get('status', '')
-            logger.info('Dhan order placed: %s %s x%d → %s (id=%s)',
-                        side, symbol, qty, status, order_id)
+            remarks = resp.get('remarks', resp.get('data', ''))
+            if status != 'success':
+                logger.error('Dhan order REJECTED: %s %s x%d → %s | remarks=%s | raw=%s',
+                             side, symbol, qty, status, remarks, resp)
+            else:
+                logger.info('Dhan order placed: %s %s x%d → %s (id=%s)',
+                            side, symbol, qty, status, order_id)
 
             return OrderResult(
                 success=status == 'success',
@@ -296,7 +311,7 @@ class DhanBroker(BrokerAdapter):
         return o
 
     def get_order_list(self) -> list[dict[str, Any]]:
-        if self._stub_mode:
+        if self._stub_mode or self._paper_mode:
             return []
         try:
             resp = self._client.get_order_list()
@@ -313,7 +328,10 @@ class DhanBroker(BrokerAdapter):
             return {}
         try:
             resp = self._client.get_order_by_id(order_id=order_id)
-            return resp.get('data', {})
+            data = resp.get('data', {})
+            if data:
+                return self._normalise_order(data)
+            return {}
         except Exception as e:
             logger.error('Dhan get_order_status failed: %s', e)
             return {}
@@ -443,12 +461,16 @@ class DhanBroker(BrokerAdapter):
             resp = self._client.get_positions()
             positions = []
             for p in resp.get('data', []):
+                _realized = float(p.get('realizedProfit', 0))
+                _unrealized = float(p.get('unrealizedProfit', 0))
                 positions.append(PositionInfo(
                     symbol=p.get('tradingSymbol', ''),
                     qty=int(p.get('netQty', 0)),
                     avg_price=float(p.get('averagePrice', 0)),
                     ltp=float(p.get('ltp', 0)),
-                    pnl=float(p.get('realizedProfit', 0)) + float(p.get('unrealizedProfit', 0)),
+                    pnl=_realized + _unrealized,
+                    realized_pnl=_realized,
+                    unrealized_pnl=_unrealized,
                     security_id=str(p.get('securityId', '')),
                     exchange=p.get('exchangeSegment', ''),
                     product_type=p.get('productType', ''),

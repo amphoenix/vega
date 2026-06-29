@@ -90,6 +90,9 @@
     <!-- ══ CRYPTO VIEW ════════════════════════════════════════════════════════ -->
     <CryptoPanel v-show="viewMode === 'crypto'" />
 
+    <!-- ══ CRYPTO F&O (DERIBIT DERIVATIVES) VIEW ══════════════════════════════
+    <CryptoFoPanel v-show="viewMode === 'crypto_fo'" /> -->
+
     <!-- ══ POLYMARKET VIEW ════════════════════════════════════════════════════ -->
     <PolyPanel v-show="viewMode === 'poly'" />
 
@@ -124,6 +127,7 @@ import ScalpPanel from "../components/panels/ScalpPanel.vue"
 import CryptoPanel from "../components/panels/CryptoPanel.vue"
 import PolyPanel from "../components/panels/PolyPanel.vue"
 import ForexPanel from "../components/panels/ForexPanel.vue"
+// import CryptoFoPanel from "../components/panels/CryptoFoPanel.vue"
 import { fmtTime } from "../utils/formatters";
 
 // ── State ─────────────────────────────────────────────────────────────────────

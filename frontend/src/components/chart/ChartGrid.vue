@@ -47,8 +47,8 @@
         :lightMode="lightMode"
         currencySymbol="₹"
         :marketOpen="marketOpen"
-        @update:chartTicker="(v) => emit('update:chartTicker', v)"
-        @update:activeTicker="(v) => emit('update:activeTicker', v)"
+        @update:chartTicker="(v) => { if (!ALWAYS_ON.has(v)) emit('update:chartTicker', v) }"
+        @update:activeTicker="(v) => { if (!ALWAYS_ON.has(v)) emit('update:activeTicker', v) }"
       />
     </div>
   </div>

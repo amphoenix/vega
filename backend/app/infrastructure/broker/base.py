@@ -64,6 +64,8 @@ class PositionInfo:
     avg_price: float
     ltp: float
     pnl: float
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
     security_id: str = ''
     exchange: str = ''
     product_type: str = ''
@@ -331,8 +333,8 @@ class BrokerFactory:
     @staticmethod
     def is_paper_mode() -> bool:
         """Check if we're in paper (sandbox) mode."""
-        import os
-        return os.environ.get('TRADING_MODE', 'paper').lower() == 'paper'
+        from ...config import settings
+        return settings.trading_mode == 'paper'
 
     @staticmethod
     def create(broker_name: str = '', **overrides: Any) -> BrokerAdapter:

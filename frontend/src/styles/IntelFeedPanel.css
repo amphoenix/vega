@@ -189,8 +189,8 @@
   padding: 6px 10px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  align-items: stretch;
+  justify-content: flex-start;
   scrollbar-width: thin;
   scrollbar-color: #30363d transparent;
 }
@@ -232,12 +232,14 @@
   gap: 0;
   border: 1px solid #30363d;
   border-radius: 4px;
-  overflow: hidden;
+  overflow-x: auto;
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
 }
 
 .orders-row {
   display: grid;
-  grid-template-columns: 2fr 0.6fr 0.6fr 1fr 1fr 0.8fr;
+  grid-template-columns: 3fr 0.5fr 0.5fr 0.7fr 0.8fr 0.8fr;
   gap: 4px;
   padding: 4px 8px;
   font-size: 11px;
@@ -254,6 +256,9 @@
   font-weight: 700;
   font-size: 10px;
   letter-spacing: 0.3px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 .o-col { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -261,6 +266,55 @@
 .o-buy { color: #2dd4bf; }
 .o-sell { color: #f85149; }
 .o-pnl { font-weight: 600; }
+.o-pnl.up { color: #2dd4bf; }
+.o-pnl.dn { color: #f85149; }
+
+.orders-net-pnl { font-weight: 700; margin-left: 8px; font-size: 0.8em; }
+.orders-net-pnl.up { color: #2dd4bf; }
+.orders-net-pnl.dn { color: #f85149; }
+
+.trades-grid .orders-row {
+  grid-template-columns: 2fr 0.4fr 0.4fr 0.7fr 0.5fr 0.5fr 0.5fr 0.6fr 0.6fr;
+}
+.merged-grid .orders-row {
+  grid-template-columns: 2fr 0.4fr 0.4fr 0.7fr 0.5fr 0.5fr 0.5fr 0.6fr 0.5fr 0.6fr;
+}
+.o-mode { font-size: 9px; font-weight: 700; letter-spacing: 0.5px; }
+.o-live { color: #f85149; }
+.o-paper { color: #f0883e; }
+.o-type { font-size: 9px; font-weight: 600; }
+.o-type-Scalp { color: #b392f0; }
+.o-type-Swing { color: #58a6ff; }
+.o-type-Forex { color: #2dd4bf; }
+.o-type-Crypto { color: #d29922; }
+.o-src { font-size: 10px; }
+.o-manual { color: #f0883e; }
+.o-system { color: #2dd4bf; }
+.o-side { font-size: 10px; font-weight: 700; }
+.o-time { color: #6e7681; font-size: 10px; }
+.o-status { font-size: 9px; font-weight: 600; color: #6e7681; }
+.pnl-sep { color: #30363d; margin: 0 4px; }
+
+.pnl-summary-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  margin-bottom: 6px;
+  font-family: monospace;
+  font-size: 11px;
+}
+.pnl-label { color: #6e7681; font-weight: 600; letter-spacing: 0.5px; }
+.pnl-value { font-weight: 700; color: #cdd9e5; }
+.pnl-value.up { color: #2dd4bf; }
+.pnl-value.dn { color: #f85149; }
+
+.tab-pnl { font-size: 9px; margin-left: 3px; font-weight: 700; }
+.tab-pnl.up { color: #2dd4bf; }
+.tab-pnl.dn { color: #f85149; }
 
 .o-filled .o-status  { color: #2dd4bf; }
 .o-rejected .o-status { color: #f85149; }

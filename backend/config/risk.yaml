@@ -20,4 +20,4 @@ kill_switch:
   error_window_minutes: 10
 
 # position_sizing, stop_loss → moved to config.py (single source of truth)
-# Override via .env: SWING_CAPITAL_INR, FO_LOTS_PER_TRADE, etc.
+# Override via .env: SWING_CAPITAL_INR, FO_MAX_LOTS_PER_TRADE, etc.

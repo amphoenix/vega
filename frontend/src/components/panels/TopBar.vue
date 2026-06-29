@@ -53,6 +53,10 @@
         :class="['vtn-tab', { active: viewMode === 'crypto' }]"
         @click="$emit('update:viewMode', 'crypto')"
       >₿ Crypto</button>
+      <!-- <button
+        :class="['vtn-tab', { active: viewMode === 'crypto_fo' }]"
+        @click="$emit('update:viewMode', 'crypto_fo')"
+      >🔮 Crypto F&O</button> -->
       <button
         :class="['vtn-tab', { active: viewMode === 'poly' }]"
         @click="$emit('update:viewMode', 'poly')"
@@ -205,16 +209,17 @@ const _zeroPnl = () => ({ trades: 0, gross: 0, brokerage: 0, net: 0, capital: 0,
 const pnlExpanded = ref(false)
 const segmentPnl = ref({
   swing: _zeroPnl(), scalp: _zeroPnl(),
-  crypto: _zeroPnl(), poly: _zeroPnl(), forex: _zeroPnl(),
+  crypto: _zeroPnl(), crypto_fo: _zeroPnl(), poly: _zeroPnl(), forex: _zeroPnl(),
   total: _zeroPnl(),
 })
 
 const pnlSegments = computed(() => [
-  { key: 'swing',  label: 'Swing',  data: segmentPnl.value.swing },
-  { key: 'scalp',  label: 'Scalp',  data: segmentPnl.value.scalp },
-  { key: 'crypto', label: 'Crypto', data: segmentPnl.value.crypto },
-  { key: 'poly',   label: 'Poly',   data: segmentPnl.value.poly },
-  { key: 'forex',  label: 'Forex',  data: segmentPnl.value.forex },
+  { key: 'swing',     label: 'Swing',     data: segmentPnl.value.swing },
+  { key: 'scalp',     label: 'Scalp',     data: segmentPnl.value.scalp },
+  { key: 'crypto',    label: 'Crypto',    data: segmentPnl.value.crypto },
+  // { key: 'crypto_fo', label: 'Crypto F&O', data: segmentPnl.value.crypto_fo },
+  { key: 'poly',      label: 'Poly',      data: segmentPnl.value.poly },
+  { key: 'forex',     label: 'Forex',     data: segmentPnl.value.forex },
 ])
 
 async function _fetchDailyPnl() {
@@ -223,12 +228,13 @@ async function _fetchDailyPnl() {
     if (res?.success) {
       const segs = res.segments || {}
       segmentPnl.value = {
-        swing:  segs.swing  || _zeroPnl(),
-        scalp:  segs.scalp  || _zeroPnl(),
-        crypto: segs.crypto || _zeroPnl(),
-        poly:   segs.poly   || _zeroPnl(),
-        forex:  segs.forex  || _zeroPnl(),
-        total:  segs.total  || _zeroPnl(),
+        swing:     segs.swing     || _zeroPnl(),
+        scalp:     segs.scalp     || _zeroPnl(),
+        crypto:    segs.crypto    || _zeroPnl(),
+        crypto_fo: segs.crypto_fo || _zeroPnl(),
+        poly:      segs.poly      || _zeroPnl(),
+        forex:     segs.forex     || _zeroPnl(),
+        total:     segs.total     || _zeroPnl(),
       }
     }
   } catch {}

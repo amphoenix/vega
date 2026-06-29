@@ -248,8 +248,13 @@ class TestBrokerFactory:
         from app.infrastructure.broker.base import _BROKER_REGISTRY
         assert 'zerodha' in _BROKER_REGISTRY
 
-    def test_is_paper_mode_default(self):
-        assert BrokerFactory.is_paper_mode()
+    def test_is_paper_mode(self):
+        from unittest.mock import patch, PropertyMock
+        from app.config import Settings
+        with patch('app.config.settings', Settings(trading_mode='paper')):
+            assert BrokerFactory.is_paper_mode()
+        with patch('app.config.settings', Settings(trading_mode='live')):
+            assert not BrokerFactory.is_paper_mode()
 
     def test_env_keys_resolve(self):
         """env_keys mapping correctly resolves env vars to constructor kwargs."""

@@ -17,6 +17,15 @@
       </div>
     </div>
 
+    <!-- Today's P&L -->
+    <div class="btst-today-pnl" v-if="todayPnl.trades > 0">
+      <span class="btst-today-label">Today</span>
+      <span class="btst-today-trades">{{ todayPnl.trades }} trade{{ todayPnl.trades > 1 ? 's' : '' }}</span>
+      <span class="btst-today-val" :class="todayPnl.pnl_abs >= 0 ? 'up' : 'dn'">
+        {{ formatPnl(todayPnl.pnl_abs) }}
+      </span>
+    </div>
+
     <!-- Stats row -->
     <div class="btst-stats-row">
       <div class="btst-stat">
@@ -28,7 +37,7 @@
         <span class="btst-stat-val">{{ state.positions_count }}</span>
       </div>
       <div class="btst-stat" :class="stats.total_pnl_abs >= 0 ? 'up' : 'dn'">
-        <span class="btst-stat-label">P&amp;L</span>
+        <span class="btst-stat-label">All-time P&amp;L</span>
         <span class="btst-stat-val">{{ formatPnl(stats.total_pnl_abs) }}</span>
       </div>
       <div class="btst-stat">
@@ -50,9 +59,13 @@
           <span class="btst-sym">{{ cleanSymbol(pos.symbol) }}</span>
           <span class="btst-dir-badge">{{ pos.opt_type || (pos.direction === 'bull' ? 'CE' : 'PE') }}</span>
           <span class="btst-status-badge" :class="pos.status?.toLowerCase()">{{ pos.status }}</span>
+          <span v-if="pos.pnl_abs !== null && pos.pnl_abs !== undefined"
+                class="btst-pnl" :class="pos.pnl_abs >= 0 ? 'up' : 'dn'">
+            {{ pos.pnl_abs >= 0 ? '+' : '' }}₹{{ pos.pnl_abs?.toFixed(2) }}
+          </span>
           <span v-if="pos.pnl_pct !== null && pos.pnl_pct !== undefined"
-                class="btst-pnl" :class="pos.pnl_pct >= 0 ? 'up' : 'dn'">
-            {{ pos.pnl_pct >= 0 ? '+' : '' }}{{ pos.pnl_pct?.toFixed(2) }}%
+                class="btst-pnl-pct" :class="pos.pnl_pct >= 0 ? 'up' : 'dn'">
+            ({{ pos.pnl_pct >= 0 ? '+' : '' }}{{ pos.pnl_pct?.toFixed(2) }}%)
           </span>
         </div>
         <div class="btst-option-trade" v-if="pos.strike">
@@ -215,14 +228,15 @@ async function handleTrigger() {
 async function refreshStatus() {
   try {
     const [statusRes, statsRes] = await Promise.all([getBtstStatus(), getBtstStats()])
-    if (statusRes.data?.data) {
-      const d = statusRes.data.data
-      state.value = { ...state.value, ...d }
-      if (d.signals)   signals.value   = d.signals
-      if (d.positions) positions.value = d.positions
+    const sd = statusRes?.data || statusRes
+    if (sd) {
+      state.value = { ...state.value, ...sd }
+      if (sd.signals)   signals.value   = sd.signals
+      if (sd.positions) positions.value = sd.positions
     }
-    if (statsRes.data?.data) stats.value = statsRes.data.data
-  } catch {}
+    const st = statsRes?.data || statsRes
+    if (st) stats.value = st
+  } catch (e) { console.error('[btst] refreshStatus failed:', e) }
 }
 
 // ── Computed ──────────────────────────────────────────────────────────────────
@@ -233,6 +247,8 @@ const statusClass = computed(() => ({
   morning_exit: state.value.status === 'MORNING_EXIT',
   idle:         state.value.status === 'IDLE',
 }))
+
+const todayPnl = computed(() => stats.value.today || { trades: 0, pnl_abs: 0, pnl_pct: 0 })
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -326,6 +342,34 @@ onUnmounted(() => {
 .btst-btn.stop    { background: var(--bear); color: #fff; }
 .btst-btn.trigger { background: var(--bg3); color: var(--tx1); font-size: 10px; }
 .btst-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.btst-today-pnl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--bd1);
+  background: var(--bg1);
+}
+
+.btst-today-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--tx2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.btst-today-trades {
+  font-size: 10px;
+  color: var(--tx3);
+}
+
+.btst-today-val {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 700;
+}
 
 .btst-stats-row {
   display: flex;

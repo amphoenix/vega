@@ -267,12 +267,9 @@ def remove_tracked(track_id: str, exit_premium: str = '', exit_reason: str = 'ma
                     else:
                         gross_pnl = (ep - entry_prem) * qty
                     try:
-                        if is_forex:
-                            from ..domain.services.brokerage_calc import total_brokerage, get_profile
-                            brokerage = total_brokerage(entry_prem, ep, qty, get_profile('dhan_cds'))
-                        else:
-                            from ..infrastructure.db.pnl_store import _calc_brokerage
-                            brokerage = _calc_brokerage(entry_prem, ep, qty)
+                        from ..domain.services.brokerage_calc import segment_brokerage
+                        _seg = 'forex' if is_forex else ('scalp' if is_scalp else trade_mode)
+                        brokerage = segment_brokerage(_seg, entry_prem, ep, qty, gross_pnl=gross_pnl)
                     except Exception:
                         brokerage = 0.0
                     net_pnl = round(gross_pnl - brokerage, 2)
@@ -288,9 +285,11 @@ def remove_tracked(track_id: str, exit_premium: str = '', exit_reason: str = 'ma
                         record_exit_pnl(entry_prem, ep, qty, net_pnl)
                     from ..infrastructure.db.pnl_store import record_trade as _rec_pnl
                     _mode = 'scalp' if is_scalp else ('forex' if is_forex else 'swing')
+                    _entry_oid = ticket.get('entry_order_id', '') or ''
                     _rec_pnl(_mode, sym, ticket.get('underlying', ''),
                              entry_prem, ep, qty,
-                             int(ticket.get('lot_size', 1) or 1), exit_reason)
+                             int(ticket.get('lot_size', 1) or 1), exit_reason,
+                             order_id=_entry_oid)
                     import logging
                     logging.getLogger('vega').info(
                         f"[trade] Manual exit P&L: {sym} net ₹{net_pnl:+.2f} "
@@ -307,6 +306,7 @@ def remove_tracked(track_id: str, exit_premium: str = '', exit_reason: str = 'ma
 @router.get('/executor/status')
 def executor_status():
     """Return current executor state (matches old backend response shape)."""
+    # All P&L from DB — single source of truth
     by_mode = state_store.today_net_by_mode()
     swing_pnl = round(by_mode.get('swing', 0.0), 2)
     scalp_pnl = round(by_mode.get('scalp', 0.0), 2)
@@ -315,7 +315,7 @@ def executor_status():
         'success': True,
         'data': {
             'auto_trading_enabled': settings.auto_trading_enabled,
-            'scalp_auto_trading_enabled': settings.scalp_auto_trading_enabled,
+            'scalp_auto_trading_enabled': settings.scalp_auto_trade,
             'live_trading_enabled': settings.live_trading_enabled,
             'kill_switch_active': _oe.is_kill_switch_active(),
             'daily_loss_limit_inr': _oe.daily_loss_limit(),
@@ -342,7 +342,7 @@ async def toggle_auto_trading(request: Request):
 async def toggle_scalp_auto(request: Request):
     body = await request.json()
     enabled = body.get('enabled', False)
-    state_store.set_state('scalp_auto_trading_enabled', str(enabled).lower())
+    settings.scalp_auto_trade = enabled
     return {'success': True, 'data': {'scalp_auto_trading_enabled': enabled}}
 
 
@@ -400,9 +400,9 @@ def reset_kill_switch():
 
 @router.post('/executor/reset-daily')
 def executor_reset_daily():
-    """Reset daily P&L, kill-switch, and all executor state."""
+    """Reset kill-switch and executor state. P&L stays in DB (source of truth)."""
     _oe.reset_daily()
-    return {'success': True, 'message': 'Daily state reset — kill-switch off, P&L zeroed'}
+    return {'success': True, 'message': 'Daily state reset — kill-switch off'}
 
 
 @router.post('/executor/block-entry')

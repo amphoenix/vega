@@ -71,3 +71,12 @@ export const getCryptoBotPositions   = (botId) => service.get(`/api/crypto/bots/
 export const closeCryptoBotPosition  = (botId, symbol) => service.post(`/api/crypto/bots/${botId}/close/${encodeURIComponent(symbol)}`)
 export const startAllCryptoBots      = () => service.post('/api/crypto/bots/start-all')
 export const stopAllCryptoBots       = () => service.post('/api/crypto/bots/stop-all')
+
+// ── Crypto FNO (Deribit Derivatives — Options + Perpetuals) ──────────────────
+export const getCryptoFoState     = () => service.get('/api/crypto/fno/state')
+export const getCryptoFoPnl       = () => service.get('/api/crypto/fno/pnl')
+export const getCryptoFoPositions = () => service.get('/api/crypto/fno/positions')
+export const getCryptoFoSignals   = (limit = 50) => service.get('/api/crypto/fno/signals', { params: { limit } })
+export const startCryptoFo        = () => service.post('/api/crypto/fno/start')
+export const stopCryptoFo         = () => service.post('/api/crypto/fno/stop')
+export const flattenCryptoFo      = () => service.post('/api/crypto/fno/flatten')

@@ -515,14 +515,50 @@ class CryptoScanner:
         # Seed realized P&L from SQLite so it survives restarts
         try:
             from ...infrastructure.db import state_store
-            summary = state_store.daily_summary(market_type='crypto')
-            for mode_key in ('swing', 'scalp', 'crypto'):
-                mode_data = summary.get(mode_key, {})
-                self._realized_pnl += mode_data.get('net', 0.0)
-                self._daily_pnl += mode_data.get('net', 0.0)
+            segment = state_store.daily_summary_by_segment().get('crypto', {})
+            self._realized_pnl = segment.get('net', 0.0)
+            self._daily_pnl = segment.get('net', 0.0)
             logger.info('Loaded today\'s realized crypto P&L from DB: $%.2f', self._realized_pnl)
         except Exception as exc:
             logger.warning('Could not load crypto P&L from DB: %s', exc)
+
+        # Restore open positions from DB so they survive restarts
+        self._restore_positions()
+
+    # ── Position persistence (survive restarts) ────────────────────────────────
+
+    def _save_positions(self) -> None:
+        """Persist open positions to SQLite so they survive server restarts."""
+        try:
+            import json as _json
+            from ...infrastructure.db import state_store
+            with self._lock:
+                data = _json.dumps(list(self._positions.values()))
+            bot_key = self._bot.bot_id if self._bot else 'singleton'
+            state_store.set_state(f'crypto_positions:{bot_key}', data)
+        except Exception as exc:
+            logger.warning('Failed to save crypto positions: %s', exc)
+
+    def _restore_positions(self) -> None:
+        """Restore open positions from SQLite on startup."""
+        try:
+            import json as _json
+            from ...infrastructure.db import state_store
+            bot_key = self._bot.bot_id if self._bot else 'singleton'
+            raw = state_store.get_state(f'crypto_positions:{bot_key}')
+            if not raw:
+                return
+            positions = _json.loads(raw)
+            with self._lock:
+                for p in positions:
+                    sym = p.get('symbol')
+                    if sym:
+                        self._positions[sym] = p
+            if self._positions:
+                logger.info('Restored %d crypto positions from DB: %s',
+                            len(self._positions), list(self._positions.keys()))
+        except Exception as exc:
+            logger.warning('Failed to restore crypto positions: %s', exc)
 
     # ── Per-bot config helper ──────────────────────────────────────────────────
 
@@ -573,24 +609,24 @@ class CryptoScanner:
         with self._lock:
             unrealized = sum(p.get('pnl', 0) for p in self._positions.values())
 
-        # Fetch brokerage and trade count from SQLite
+        # Read authoritative realized P&L from DB (not the drifting in-memory counter)
+        realized = 0.0
         brokerage = 0.0
         trades = 0
         try:
             from ...infrastructure.db import state_store
-            summary = state_store.daily_summary(market_type='crypto')
-            for mode_key in ('swing', 'scalp', 'crypto'):
-                mode_data = summary.get(mode_key, {})
-                brokerage += mode_data.get('brokerage', 0.0)
-                trades += mode_data.get('trades', 0)
+            segment = state_store.daily_summary_by_segment().get('crypto', {})
+            realized = segment.get('net', 0.0)
+            brokerage = segment.get('brokerage', 0.0)
+            trades = segment.get('trades', 0)
         except Exception:
-            pass
+            realized = self._realized_pnl  # fallback to in-memory
 
         return {
-            'realized':   round(self._realized_pnl, 2),
+            'realized':   round(realized, 2),
             'unrealized': round(unrealized, 2),
-            'net':        round(self._realized_pnl + unrealized, 2),
-            'daily':      round(self._daily_pnl, 2),
+            'net':        round(realized + unrealized, 2),
+            'daily':      round(realized, 2),
             'positions':  len(self._positions),
             'brokerage':  round(brokerage, 2),
             'trades':     trades,
@@ -664,9 +700,7 @@ class CryptoScanner:
                 self._stop_event.wait(timeout=interval)
 
     def _is_auto_enabled(self) -> bool:
-        # Same pattern as scalp/swing: scanner started = auto-trade ON (paper mode).
-        # crypto_mode in config.py controls paper vs live. No separate toggle needed.
-        return True
+        return self._cfg('auto_trade', settings.crypto_auto_trade)
 
     def _is_kill_switched(self) -> bool:
         limit = self._cfg('daily_loss_limit_usd', settings.crypto_daily_loss_limit_usd)
@@ -904,7 +938,9 @@ class CryptoScanner:
             # - position is profitable (exit_profit_only gate)
             # - profit > 1% (avoid closing for pennies near midband)
             bb_mid = pos.get('bb_mid')
-            if bb_mid and profit_pct > 0.01:
+            # BB mid exit needs enough profit to cover fees (~0.2% exchange)
+            # 1% was too low — $10 on $1000 gets eaten by fees
+            if bb_mid and profit_pct > 0.03:
                 if side == 'LONG' and price > bb_mid:
                     self._close_position(symbol, price, reason='bb_mid_exit')
                     continue
@@ -973,6 +1009,7 @@ class CryptoScanner:
                 'bot_id':        self._bot.bot_id if self._bot else None,
                 'mode':          'paper',
             }
+        self._save_positions()
         bot_label = f'bot:{self._bot.bot_id[:8]}' if self._bot else 'singleton'
         logger.info('OPEN %s %s @ %.6f  qty=%.6f  SL=%.6f  TP=%.6f  conf=%d  [%s|paper]',
                      direction, symbol, price, qty, sl_price, tp_price, signal['confidence'], bot_label)
@@ -982,6 +1019,7 @@ class CryptoScanner:
             pos = self._positions.pop(symbol, None)
         if not pos:
             return None
+        self._save_positions()
 
         qty = pos['qty']
         entry = pos['entry_price']
@@ -999,7 +1037,8 @@ class CryptoScanner:
             self._last_trade_ts[symbol] = clock()
 
         # Persist to SQLite — use actual qty so P&L = (exit-entry)*qty is correct
-        brokerage = round((entry * qty + price * qty) * 0.001, 2)  # ~0.1% maker fee both sides
+        from ..services.brokerage_calc import segment_brokerage
+        brokerage = segment_brokerage('crypto', entry, price, qty, gross_pnl=pnl)
         bot_tag = f'bot:{self._bot.bot_id[:8]}' if self._bot else 'singleton'
         try:
             from ...infrastructure.db import state_store

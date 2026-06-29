@@ -30,10 +30,10 @@ class Settings(BaseSettings):
     )
 
     # ── LLM Provider ─────────────────────────────────────────────────────────
-    llm_provider: Literal['openai', 'bedrock', 'ollama'] = 'openai'
+    llm_provider: Literal['openai', 'gemini', 'bedrock', 'ollama'] = 'gemini'
     llm_api_key: str = ''
-    llm_base_url: str = 'https://api.openai.com/v1'
-    llm_model_name: str = 'gpt-4o-mini'
+    llm_base_url: str = 'https://generativelanguage.googleapis.com/v1beta/openai'
+    llm_model_name: str = 'gemma-4-31b-it'
     llm_api_key_2: str = ''
     llm_api_key_3: str = ''
     llm_acquire_timeout_sec: float = 5.0
@@ -60,27 +60,29 @@ class Settings(BaseSettings):
 
     # ── Trading Master Switches ──────────────────────────────────────────────
     live_trading_enabled: bool = False
-    auto_trading_enabled: bool = False
-    scalp_auto_trading_enabled: bool = False
+    auto_trading_enabled: bool = True
 
     # ══════════════════════════════════════════════════════════════════════════
     # SWING (F&O)
     # ══════════════════════════════════════════════════════════════════════════
     fo_mode: Literal['paper', 'live'] = 'paper'
-    fo_auto_trade: bool = False
+    fo_auto_trade: bool = True
     swing_capital_inr: float = 100_000.0
-    fo_lots_per_trade: int = 20
+    fo_max_lots_per_trade: int = 2
     fo_max_risk_pct: float = 20.0
     fo_scan_interval_sec: int = 180
     fo_universe: str = '^NSEI,^BSESN'
-    fo_min_dte: int = 1
+    fo_min_dte: int = 0
     fo_max_dte: int = 35
     fo_signal_min_dte: int = 0
+    fo_min_confidence: int = 70
+    fo_min_agents: int = 3
+    fo_target_delta: float = 0.55
     auto_entry_min_confidence: int = 85
     sl_max_points_sensex: int = 50
     sl_max_points_nifty: int = 15
-    daily_loss_limit_inr: float = 25_000.0
-    daily_loss_limit_base: float = 25_000.0
+    daily_loss_limit_inr: float = 10_000.0
+    daily_loss_limit_base: float = 10_000.0
     allow_reentry_after_sl: bool = True
     max_reentries_per_day: int = 1
 
@@ -88,8 +90,10 @@ class Settings(BaseSettings):
     # SCALP
     # ══════════════════════════════════════════════════════════════════════════
     scalp_enabled: bool = True
+    scalp_mode: Literal['paper', 'live'] = 'paper'
+    scalp_auto_trade: bool = True
     scalp_capital_inr: float = 100_000.0
-    scalp_lots_per_trade: int = 20
+    scalp_max_lots_per_trade: int = 2
     scalp_universe: str = '^NSEI,^BSESN'
     scalp_sl_pts: float = 8.0
     scalp_t1_pts: float = 15.0
@@ -99,8 +103,8 @@ class Settings(BaseSettings):
     scalp_t1_pts_nifty: float = 0.0
     scalp_max_hold_min: int = 10
     scalp_max_reentries: int = 10
-    scalp_daily_loss_limit: float = 25_000.0
-    scalp_daily_loss_limit_base: float = 25_000.0
+    scalp_daily_loss_limit: float = 10_000.0
+    scalp_daily_loss_limit_base: float = 10_000.0
     scalp_min_confidence: int = 70
     scalp_volume_mult: float = 2.0
     scalp_breakout_bars: int = 3
@@ -119,15 +123,21 @@ class Settings(BaseSettings):
     # ══════════════════════════════════════════════════════════════════════════
     # FOREX (CDS Currency Futures)
     # ══════════════════════════════════════════════════════════════════════════
+    forex_mode: Literal['paper', 'live'] = 'paper'
+    forex_auto_trade: bool = True
     forex_capital_inr: float = 100_000.0
-    forex_lots_per_trade: int = 20
+    forex_max_lots_per_trade: int = 20
     forex_daily_loss_limit: float = 25_000.0
+    forex_universe: str = 'USDINR=X,EURINR=X,GBPINR=X,JPYINR=X'
+    forex_scan_interval_sec: int = 180
+    forex_min_confidence: int = 60
+    forex_max_risk_pct: float = 2.0
 
     # ══════════════════════════════════════════════════════════════════════════
     # CRYPTO
     # ══════════════════════════════════════════════════════════════════════════
     crypto_mode: Literal['paper', 'live'] = 'paper'
-    crypto_auto_trade: bool = False
+    crypto_auto_trade: bool = True
     crypto_capital_usd: float = 100_000.0
     crypto_exchange: str = 'binance'
     crypto_api_key: str = ''
@@ -149,10 +159,65 @@ class Settings(BaseSettings):
     crypto_trade_cooldown_sec: int = 600
 
     # ══════════════════════════════════════════════════════════════════════════
+    # CRYPTO DERIVATIVES (Deribit — Options + Perpetuals)
+    # ══════════════════════════════════════════════════════════════════════════
+    crypto_fo_enabled: bool = False
+    crypto_fo_mode: Literal['paper', 'live'] = 'paper'
+    crypto_fo_auto_trade: bool = True
+    crypto_fo_capital_usd: float = 10_000.0
+
+    # Deribit API (keys in .env)
+    deribit_client_id: str = ''
+    deribit_client_secret: str = ''
+    deribit_testnet: bool = True          # start on testnet, flip to False for prod
+
+    # ── Options (short gamma scalp) ──
+    crypto_fo_assets: str = 'BTC,ETH'     # underlying assets
+    crypto_fo_structure: str = 'straddle' # straddle | strangle | put | call
+    crypto_fo_target_dte: int = 7         # target days-to-expiry
+    crypto_fo_min_dte: int = 3
+    crypto_fo_max_dte: int = 14
+    crypto_fo_roll_dte: int = 2           # roll when DTE drops below this
+    crypto_fo_base_notional_usd: float = 10_000.0
+    crypto_fo_max_notional_usd: float = 50_000.0
+    # vol premium thresholds (IV - RV)
+    crypto_fo_vol_entry_threshold: float = 0.05    # enter when IV-RV > 5%
+    crypto_fo_vol_exit_threshold: float = 0.00
+    crypto_fo_vol_emergency_exit: float = -0.15    # flatten when IV-RV < -15%
+
+    # ── Delta hedging ──
+    crypto_fo_delta_threshold: float = 0.05  # hedge when |delta| exceeds this
+    crypto_fo_max_hedge_interval_h: float = 8.0
+
+    # ── Perpetuals (momentum / funding carry) ──
+    crypto_perp_enabled: bool = True
+    crypto_perp_assets: str = 'BTC,ETH'
+    crypto_perp_leverage: float = 2.0     # conservative, max 5x
+    crypto_perp_position_size_usd: float = 5_000.0
+    crypto_perp_max_positions: int = 2
+    crypto_perp_sl_pct: float = 2.0       # 2% stop loss
+    crypto_perp_tp_pct: float = 6.0       # 3:1 R:R
+    crypto_perp_max_hold_hours: int = 168  # 7 days max
+    crypto_perp_scan_interval_sec: int = 300
+    crypto_perp_min_confidence: int = 65
+
+    # ── Funding regime sizing (from gamma-scalper research) ──
+    crypto_fo_funding_bull_mult: float = 1.0    # full size when funding > 5% ann
+    crypto_fo_funding_neutral_mult: float = 0.7
+    crypto_fo_funding_bear_mult: float = 0.3    # funding < 0%: stay small
+
+    # ── Risk / kill switches ──
+    crypto_fo_max_drawdown_usd: float = 2_000.0
+    crypto_fo_max_drawdown_24h_usd: float = 3_000.0
+    crypto_fo_rv_spike_halt: float = 3.0        # RV(1h)/RV(24h) > 3x → flatten
+    crypto_fo_margin_util_halt: float = 0.80    # margin > 80% → flatten
+    crypto_fo_daily_loss_limit_usd: float = 1_000.0
+
+    # ══════════════════════════════════════════════════════════════════════════
     # POLYMARKET
     # ══════════════════════════════════════════════════════════════════════════
     polymarket_mode: Literal['paper', 'live'] = 'paper'
-    polymarket_auto_trade: bool = False
+    polymarket_auto_trade: bool = True
     polymarket_capital_usd: float = 100_000.0
     polymarket_private_key: str = ''
     polymarket_wallet: str = ''
@@ -205,9 +270,9 @@ class Settings(BaseSettings):
         if self.llm_provider == 'bedrock':
             if not self.aws_access_key_id or not self.aws_secret_access_key:
                 errors.append('LLM_PROVIDER=bedrock requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY')
-        elif self.llm_provider == 'openai':
+        elif self.llm_provider in ('openai', 'gemini'):
             if not self.llm_api_key:
-                errors.append('LLM_API_KEY is required when LLM_PROVIDER=openai')
+                errors.append(f'LLM_API_KEY is required when LLM_PROVIDER={self.llm_provider}')
         return errors
 
 

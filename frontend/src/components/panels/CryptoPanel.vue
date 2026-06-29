@@ -161,8 +161,9 @@
               <div class="cr-pos-top">
                 <span class="cr-pos-sym">{{ coinName(pc.symbol) }}</span>
                 <span :class="['cr-pos-side', pc.side === 'LONG' ? 'up' : 'dn']">{{ pc.side }}</span>
-                <span :class="['cr-pos-pnl', pc.pnl >= 0 ? 'up' : 'dn']">
-                  {{ pc.pnl >= 0 ? '+' : '' }}${{ pc.pnl?.toFixed(2) }}
+                <span :class="['cr-pos-pnl', estNet(pc) >= 0 ? 'up' : 'dn']"
+                      :title="estBreakdownTip(pc)">
+                  {{ estNet(pc) >= 0 ? '+' : '' }}${{ estNet(pc).toFixed(2) }}
                 </span>
                 <button class="cr-pos-x" @click="closePosition(pc.symbol)" title="Close">✕</button>
               </div>
@@ -172,6 +173,10 @@
                   <span class="dn">SL {{ formatPrice(pc.sl) }}</span>
                   <span class="up">TP {{ formatPrice(pc.tp) }}</span>
                 </span>
+              </div>
+              <div class="cr-pos-tax">
+                <span class="muted">Gross ${{ (pc.pnl||0).toFixed(2) }}</span>
+                <span class="dn" :title="estBreakdownTip(pc)">Fee+Tax -${{ estBrokerage(pc).toFixed(2) }}</span>
               </div>
             </div>
           </div>
@@ -362,6 +367,34 @@ const positionCards = computed(() => {
     return { ...p, current_price: current, pnlPct, qty, notional, holdTime }
   })
 })
+
+// Estimated brokerage + Indian crypto tax for open positions
+// Matches backend crypto_scanner.py: 0.1% exchange fee per side + 1% TDS on sell + 30% tax on gains
+function estBrokerage(pos) {
+  const entry = Number(pos.entry_price) || 0
+  const current = Number(pos.current_price) || entry
+  const qty = Number(pos.qty) || 0
+  const entryN = entry * qty
+  const exitN = current * qty
+  const exchangeFee = (entryN + exitN) * 0.001   // 0.1% per side
+  const tds = exitN * 0.01                       // 1% TDS on sell
+  const pnl = Number(pos.pnl) || 0
+  const incomeTax = Math.max(0, pnl) * 0.30      // 30% on gains only
+  return exchangeFee + tds + incomeTax
+}
+function estNet(pos) {
+  return (Number(pos.pnl) || 0) - estBrokerage(pos)
+}
+function estBreakdownTip(pos) {
+  const entry = Number(pos.entry_price) || 0
+  const current = Number(pos.current_price) || entry
+  const qty = Number(pos.qty) || 0
+  const entryN = entry * qty, exitN = current * qty
+  const fee = (entryN + exitN) * 0.001
+  const tds = exitN * 0.01
+  const tax = Math.max(0, Number(pos.pnl) || 0) * 0.30
+  return `Exchange: $${fee.toFixed(2)} | TDS 1%: $${tds.toFixed(2)} | Tax 30%: $${tax.toFixed(2)}`
+}
 
 function ladderPct(pos, which) {
   const sl = Number(pos.sl) || 0
@@ -797,6 +830,11 @@ onUnmounted(() => {
   font-size: 9px; margin-top: 1px;
 }
 .cr-pos-levels { display: flex; gap: 6px; font-size: 9px; font-family: monospace; }
+.cr-pos-tax {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 9px; margin-top: 2px; padding-top: 2px;
+  border-top: 1px solid #1a1a2e; font-family: monospace;
+}
 
 /* Trade form */
 .cr-trade { padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; }

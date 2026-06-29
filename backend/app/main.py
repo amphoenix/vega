@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info('Live trading: %s | Auto-trade: %s | Scalp auto: %s',
                 settings.live_trading_enabled,
                 settings.auto_trading_enabled,
-                settings.scalp_auto_trading_enabled)
+                settings.scalp_auto_trade)
 
     # Validate LLM config
     llm_errors = settings.validate_llm()
@@ -110,6 +110,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as _e:
         logger.warning('Forex scanner auto-start failed: %s', _e)
 
+    # Auto-start crypto F&O (Deribit derivatives) scanner
+    try:
+        if settings.crypto_fo_enabled:
+            from .engines.crypto_fo_scanner import get_crypto_fo_scanner
+            get_crypto_fo_scanner().start()
+            logger.info('Crypto F&O scanner auto-started (testnet=%s)', settings.deribit_testnet)
+        else:
+            logger.info('Crypto F&O scanner disabled in config')
+    except Exception as _e:
+        logger.warning('Crypto F&O scanner auto-start failed: %s', _e)
+
     # Sync tracked positions watcher for positions pinned before this boot
     try:
         from .engines.monitor import tracked_monitor as _tm
@@ -137,6 +148,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         from .engines.forex_scanner import stop as _forex_stop
         _forex_stop()
+    except Exception:
+        pass
+    try:
+        from .engines.crypto_fo_scanner import get_crypto_fo_scanner
+        get_crypto_fo_scanner().stop()
     except Exception:
         pass
     scheduler.stop()

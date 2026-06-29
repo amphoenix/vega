@@ -134,6 +134,22 @@ def remove_tracked(track_id: str, exit_premium: Optional[float] = None,
     return rec
 
 
+def upsert(record: dict) -> Optional[dict]:
+    """Update an existing tracked position in-place (e.g. trailing SL changes).
+    Matches by record 'id'. Returns the updated record or None if not found."""
+    track_id = record.get('id')
+    if not track_id:
+        return None
+    with _lock:
+        items = _read()
+        for i, r in enumerate(items):
+            if r.get('id') == track_id:
+                items[i] = record
+                _write(items)
+                return record
+    return None
+
+
 def update_notes(track_id: str, notes: str) -> Optional[dict]:
     with _lock:
         items = _read()

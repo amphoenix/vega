@@ -114,15 +114,49 @@ def _log(message: str, level: str = 'info') -> None:
 
 def get_state() -> dict:
     with _state_lock:
-        return {
+        raw_positions = list(_state['positions'])
+        raw_signals = list(_state['signals'])
+        result = {
             'status': _state['status'],
-            'positions_count': len(_state['positions']),
-            'signals_count': len(_state['signals']),
+            'positions_count': len(raw_positions),
+            'signals_count': len(raw_signals),
             'last_scan_ts': _state['last_scan_ts'],
             'candidates_found': _state['candidates_found'],
-            'positions': list(_state['positions']),
-            'signals': list(_state['signals']),
         }
+    # Enrich OUTSIDE the lock — broker LTP calls are slow/networked
+    result['positions'] = _enrich_positions_with_ltp(raw_positions)
+    result['signals'] = raw_signals
+    return result
+
+
+def _enrich_positions_with_ltp(positions: list) -> list:
+    """Compute live P&L for HOLDING positions using current LTP."""
+    enriched = []
+    for pos in positions:
+        p = dict(pos)
+        if p.get('status') == 'HOLDING':
+            try:
+                ltp = _get_current_price(p['symbol'])
+                entry = float(p.get('entry_price') or 0)
+                entry_prem = float(p.get('entry_premium') or 0)
+                if entry > 0 and ltp > 0:
+                    if p['direction'] == 'bull':
+                        pnl_pct = round((ltp - entry) / entry * 100, 2)
+                    else:
+                        pnl_pct = round((entry - ltp) / entry * 100, 2)
+                    p['pnl_pct'] = pnl_pct
+                    qty = int(p.get('qty', 1))
+                    lot_size = int(p.get('lot_size', 1))
+                    if entry_prem > 0:
+                        current_prem = ltp  # for options, LTP is the premium
+                        p['pnl_abs'] = round((current_prem - entry_prem) * qty * lot_size, 2) if p['direction'] == 'bull' else round((entry_prem - current_prem) * qty * lot_size, 2)
+                    else:
+                        p['pnl_abs'] = round((ltp - entry) * qty, 2) if p['direction'] == 'bull' else round((entry - ltp) * qty, 2)
+                    p['current_price'] = ltp
+            except Exception:
+                pass
+        enriched.append(p)
+    return enriched
 
 
 def get_stats() -> dict:
@@ -132,6 +166,8 @@ def get_stats() -> dict:
     stats['win_rate'] = round(stats['wins'] / total * 100, 1) if total else 0.0
     stats['total_pnl_abs'] = round(stats['total_pnl_abs'], 2)
     stats['total_pnl_pct'] = round(stats['total_pnl_pct'], 2)
+    # Include today's DB-backed P&L
+    stats['today'] = get_today_pnl()
     return stats
 
 
@@ -837,15 +873,25 @@ def _run_stage2(
 
         return _score_candidate(symbol, df_daily, df_5m, direction, technicals, nifty_chg, sensex_chg)
 
+    # Score both directions per symbol, then keep only the stronger one
+    _all_scored: dict[str, list[dict]] = {}  # symbol -> [results]
     for sym, direction in tasks:
         try:
             result = _score_task(sym, direction)
             if result:
-                results.append(result)
-                _broadcast({'type': 'signal', **result})
+                _all_scored.setdefault(sym, []).append(result)
         except Exception as e:
             _log(f'Scoring task failed for {sym}/{direction}: {e}', 'warn')
         _sleep(1)
+
+    # Per symbol, pick the direction with the highest score
+    for sym, scored_list in _all_scored.items():
+        best = max(scored_list, key=lambda x: x['score'])
+        results.append(best)
+        _broadcast({'type': 'signal', **best})
+        if len(scored_list) > 1:
+            other = [s for s in scored_list if s is not best][0]
+            _log(f'{sym}: picked {best["direction"]} (score={best["score"]}) over {other["direction"]} (score={other["score"]})')
 
     with _state_lock:
         _state['signals'] = results
@@ -932,9 +978,12 @@ def _get_current_price(symbol: str) -> float:
     return 0.0
 
 
-def _enter_paper_position(signal: dict) -> dict:
+def _enter_paper_position(signal: dict) -> dict | None:
     entry_price = _get_current_price(signal['symbol'])
     entry_prem = float(signal.get('entry_premium') or 0)
+    if entry_price <= 0 and entry_prem <= 0:
+        _log(f'Skipping {signal["symbol"]}: could not fetch price', 'warning')
+        return None
     lot_size = int(signal.get('lot_size') or 1)
     notional = float(_config['BTST_NOTIONAL_PER_TRADE'])
     # Qty in lots based on premium * lot_size, fallback to index price
@@ -1051,6 +1100,7 @@ def _load_positions() -> None:
                 with _state_lock:
                     _state['positions'] = positions
                     _state['signals'] = signals
+                    _state['candidates_found'] = len(signals) or len(positions)
                     if saved_status in ('HOLDING', 'MORNING_EXIT'):
                         _state['status'] = saved_status
                 _log(f'Restored {len(positions)} positions, {len(signals)} signals (state={saved_status})')
@@ -1075,6 +1125,57 @@ def _load_positions() -> None:
             conn.close()
     except Exception as e:
         _log(f'Failed to load positions: {e}', 'error')
+
+    # Restore stats from btst_positions table so P&L survives restarts
+    try:
+        conn = _get_db()
+        try:
+            rows = conn.execute(
+                '''SELECT status, pnl_pct, pnl_abs FROM btst_positions
+                   WHERE status = 'EXITED' AND pnl_abs IS NOT NULL''',
+            ).fetchall()
+            if rows:
+                wins = sum(1 for r in rows if (r['pnl_pct'] or 0) >= 0)
+                losses = sum(1 for r in rows if (r['pnl_pct'] or 0) < 0)
+                total_pnl_abs = sum(r['pnl_abs'] or 0 for r in rows)
+                total_pnl_pct = sum(r['pnl_pct'] or 0 for r in rows)
+                with _state_lock:
+                    _state['stats'] = {
+                        'total_trades': len(rows),
+                        'wins': wins,
+                        'losses': losses,
+                        'total_pnl_abs': round(total_pnl_abs, 2),
+                        'total_pnl_pct': round(total_pnl_pct, 2),
+                    }
+                _log(f'Restored stats: {len(rows)} trades, P&L ₹{total_pnl_abs:.2f}')
+        finally:
+            conn.close()
+    except Exception as e:
+        _log(f'Failed to restore stats: {e}', 'error')
+
+
+def get_today_pnl() -> dict:
+    """Get today's BTST P&L from the btst_positions table."""
+    today = _now_ist().strftime('%Y-%m-%d')
+    try:
+        conn = _get_db()
+        try:
+            rows = conn.execute(
+                '''SELECT pnl_pct, pnl_abs FROM btst_positions
+                   WHERE date = ? AND status = 'EXITED' AND pnl_abs IS NOT NULL''',
+                (today,),
+            ).fetchall()
+            total_abs = sum(r['pnl_abs'] or 0 for r in rows)
+            total_pct = sum(r['pnl_pct'] or 0 for r in rows)
+            return {
+                'trades': len(rows),
+                'pnl_abs': round(total_abs, 2),
+                'pnl_pct': round(total_pct, 2),
+            }
+        finally:
+            conn.close()
+    except Exception:
+        return {'trades': 0, 'pnl_abs': 0.0, 'pnl_pct': 0.0}
 
 
 def trigger_now() -> None:
@@ -1194,13 +1295,32 @@ def _build_exit_prompt(pos: dict, gap_pct: float, candle: 'dict | None') -> str:
 
 def _record_exit(pos: dict, reason: str) -> None:
     exit_price = _get_current_price(pos['symbol'])
-    entry = float(pos['entry_price'])
+    entry = float(pos['entry_price']) or 0.0
+    entry_prem = float(pos.get('entry_premium') or 0)
     qty = int(pos.get('qty', 1))
-    if pos['direction'] == 'bull':
+    lot_size = int(pos.get('lot_size', 1))
+    if not entry:
+        pnl_pct = 0.0
+    elif pos['direction'] == 'bull':
         pnl_pct = (exit_price - entry) / entry * 100
     else:
         pnl_pct = (entry - exit_price) / entry * 100
-    pnl_abs = round(pnl_pct / 100 * entry * qty, 2)
+    # Compute gross P&L using premium * qty * lot_size (options) or price * qty
+    if entry_prem > 0:
+        gross_pnl = (exit_price - entry_prem) * qty * lot_size if pos['direction'] == 'bull' else (entry_prem - exit_price) * qty * lot_size
+    else:
+        gross_pnl = (exit_price - entry) * qty if pos['direction'] == 'bull' else (entry - exit_price) * qty
+    gross_pnl = round(gross_pnl, 2)
+    # Deduct brokerage (same F&O profile as swing)
+    try:
+        from ..domain.services.brokerage_calc import segment_brokerage
+        _ep = entry_prem if entry_prem > 0 else entry
+        _xp = exit_price
+        _q = qty * lot_size if entry_prem > 0 else qty
+        brokerage = segment_brokerage('swing', _ep, _xp, _q, gross_pnl=gross_pnl)
+    except Exception:
+        brokerage = 0.0
+    pnl_abs = round(gross_pnl - brokerage, 2)
     pnl_pct = round(pnl_pct, 2)
 
     with _state_lock:
@@ -1236,8 +1356,9 @@ def _record_exit(pos: dict, reason: str) -> None:
         from ..infrastructure.db.pnl_store import record_trade as _pnl_record
         _pnl_record(
             mode='swing', symbol=pos['symbol'], underlying=pos['symbol'],
-            entry_prem=entry, exit_prem=exit_price, qty=qty,
-            lot_size=int(pos.get('lot_size', 1)),
+            entry_prem=_ep, exit_prem=_xp, qty=_q,
+            lot_size=1,
+            brokerage_or_exit_reason=brokerage,
             exit_reason=f'BTST: {reason}',
             market_type='fo',
             direction=pos.get('direction', ''),
@@ -1363,8 +1484,12 @@ def _morning_exit_check() -> None:
     for pos in positions_to_exit:
         try:
             candle = _fetch_opening_candle(pos['symbol'])
-            entry = float(pos['entry_price'])
+            entry = float(pos['entry_price']) or 0.0
             current = _get_current_price(pos['symbol'])
+            if not entry:
+                _log(f'Force-exiting {pos["symbol"]}: entry_price is 0', 'warning')
+                _record_exit(pos, 'entry_price was 0 — cannot compute P&L')
+                continue
             if pos['direction'] == 'bull':
                 gap_pct = (current - entry) / entry * 100
             else:
