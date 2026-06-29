@@ -25,7 +25,7 @@ import threading
 from typing import Any, Callable, Optional
 
 from ...shared.logger import get_logger
-from ...shared.time import datetime, timedelta, fmt_candle_date, now_ist, clock, sleep
+from ...shared.time import datetime, timedelta, fmt_candle_date, now_ist, clock, sleep, monotonic
 from .base import (
     BrokerAdapter, OrderResult, QuoteResult, PositionInfo,
     HoldingInfo, CandleData, InstrumentInfo,
@@ -1141,28 +1141,38 @@ class DhanBroker(BrokerAdapter):
     def _ws_on_connect(self, _feed: Any) -> None:
         """Called when WS actually connects successfully."""
         with self._ws_lock:
+            self._ws_connect_time = monotonic()
             self._ws_retry_count = 0
         logger.info('Dhan MarketFeed WS connected')
 
     def _ws_on_error(self, _feed: Any, error: Any) -> None:
-        """Handle WS errors — schedule retry with backoff on 429."""
+        """Handle WS errors — schedule retry with backoff on 429 / no-close-frame."""
         error_str = str(error)
         logger.error('Dhan MarketFeed WS error: %s', error_str)
-        if '429' in error_str:
-            # Rate limited — collect all current instruments and retry
-            with self._ws_lock:
-                self._ws_feed = None
-                self._ws_thread = None
-            # Re-queue all known instruments
-            all_instruments = []
-            with self._sub_lock:
-                for sid in self._subscribers:
-                    ex = self._sec_exchange.get(sid, 1)
-                    all_instruments.append((ex, str(sid)))
-            with self._callback_lock:
-                for sid in self._tick_callbacks:
-                    ex = self._sec_exchange.get(sid, 1)
-                    all_instruments.append((ex, str(sid)))
+
+        is_retriable = '429' in error_str or 'no close frame' in error_str
+        if not is_retriable:
+            return
+
+        # Only reset retry count if connection stayed alive > 5 seconds
+        with self._ws_lock:
+            connect_age = monotonic() - getattr(self, '_ws_connect_time', 0)
+            if connect_age > 5:
+                self._ws_retry_count = 0
+            self._ws_feed = None
+            self._ws_thread = None
+
+        # Re-queue all known instruments
+        all_instruments = []
+        with self._sub_lock:
+            for sid in self._subscribers:
+                ex = self._sec_exchange.get(sid, 1)
+                all_instruments.append((ex, str(sid)))
+        with self._callback_lock:
+            for sid in self._tick_callbacks:
+                ex = self._sec_exchange.get(sid, 1)
+                all_instruments.append((ex, str(sid)))
+        if all_instruments:
             self._ws_schedule_retry(all_instruments)
 
     def _ws_schedule_retry(self, instruments: list) -> None:
