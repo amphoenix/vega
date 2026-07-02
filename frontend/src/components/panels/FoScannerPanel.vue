@@ -10,7 +10,7 @@
           :title="
             foAnalysing
               ? `Scanning ${foAnalysing.ticker_clean} (${foAnalysing.index}/${foAnalysing.total})`
-              : 'Run a one-shot scan across all indices right now (LLM cost ~$0.05)'
+              : 'Force a one-shot scan right now (pure-technical, instant)'
           "
         >
           <span v-if="foAnalysing">
@@ -31,8 +31,8 @@
             !scannerRunning
               ? 'Connecting to scanner…'
               : nseMarketOpen
-                ? `Live — auto-scanning every ${foIntervalLabel}`
-                : 'NSE market is closed (09:15–15:30 IST). Scanner thread is alive but cycles are paused. Click 🔍 to force a one-shot scan on cached data.'
+                ? 'Live — tick-driven, scans instantly on index moves'
+                : 'NSE market is closed (09:15–15:30 IST). Scanner thread is alive but paused. Click 🔍 to force a one-shot scan on cached data.'
           "
         >
           <span class="fo-auto-dot"></span>
@@ -40,9 +40,7 @@
             !scannerRunning
               ? "connecting…"
               : nseMarketOpen
-                ? foCountdownLabel
-                  ? `LIVE · next ${foCountdownLabel}`
-                  : `LIVE · ${foIntervalLabel}`
+                ? "LIVE"
                 : "PAUSED · NSE CLOSED"
           }}
         </span>
@@ -58,8 +56,7 @@
     </div>
     <div class="rs-empty" v-if="!foFeed.length && !foAnalysing">
       <span v-if="nseMarketOpen"
-        >{{ foUniverseSize }} tickers · auto every {{ foIntervalLabel }} ·
-        🔍 to scan now</span
+        >{{ foUniverseSize }} tickers · live tick-driven · 🔍 to scan now</span
       >
       <span v-else
         >🌙 NSE closed · auto-scan paused · 🔍 to force-scan on cached
@@ -68,9 +65,7 @@
     </div>
     <div class="fo-feed" v-if="foFeed.length">
       <div
-        v-for="(ev, i) in foFeed
-          .filter((e) => e.type !== 'scan_analysing')
-          .slice(0, 30)"
+        v-for="(ev, i) in sortedFoFeed"
         :key="
           (ev.ticker || '') +
           '|' +
@@ -90,14 +85,14 @@
         :title="
           transactionTooltip(ev) ||
           (ev.option_symbol
-            ? 'Click to chart ' + ev.option_symbol + ' premium'
+            ? 'Click to view ' + (ev.ticker || ev.underlying) + ' chart'
             : ev.ticker
               ? 'Click to view ' + ev.ticker + ' chart'
               : '')
         "
         @click="
-          (ev.option_symbol || ev.ticker) &&
-          emit('select-ticker', ev.option_symbol || ev.ticker)
+          (ev.ticker || ev.underlying) &&
+          emit('select-ticker', ev.ticker || ev.underlying)
         "
       >
         <!-- Badge -->
@@ -309,6 +304,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { fmtTime } from '../../utils/formatters'
+import { isMuted } from '../../utils/notifSound'
 import { storeToRefs } from 'pinia'
 import { useFoScannerStore } from '../../stores/useFoScannerStore'
 import { useLiveTradingStore } from '../../stores/useLiveTradingStore'
@@ -318,6 +314,20 @@ const emit = defineEmits(['select-ticker'])
 const foStore = useFoScannerStore()
 const ltStore = useLiveTradingStore()
 const { scannerRunning, foScannerState, foFeed, foAnalysing, foUniverseSize, foIntervalLabel, foCountdownLabel } = storeToRefs(foStore)
+
+// NIFTY & SENSEX pinned to the top of the feed always, then the rest (newest-first).
+const sortedFoFeed = computed(() => {
+  const rank = (e) => {
+    const t = String(e.ticker || e.underlying || '').toUpperCase()
+    if (t === '^NSEI' || t.includes('NIFTY')) return 0
+    if (t === '^BSESN' || t.includes('SENSEX')) return 1
+    return 2
+  }
+  return [...foFeed.value]
+    .filter((e) => e.type !== 'scan_analysing')
+    .sort((a, b) => rank(a) - rank(b))
+    .slice(0, 30)
+})
 const { trackedPositions, liveTickets } = storeToRefs(ltStore)
 
 // 1 Hz tick so nseMarketOpen flips at exact market open/close times
@@ -533,7 +543,7 @@ function _openFoScannerStream() {
       if (ev.type === 'scan_signal') {
         const key = _fnoSignalKey(ev)
         const isStrong = _isStrongFnoSignal(ev)
-        if (isStrong && !_prevFnoStrong[key]) {
+        if (isStrong && !_prevFnoStrong[key] && !isMuted()) {
           _playStrongFnoAlert(String(ev.option_type || ev.instrument || '').toUpperCase())
         }
         _prevFnoStrong[key] = isStrong

@@ -314,7 +314,7 @@ def executor_status():
     return {
         'success': True,
         'data': {
-            'auto_trading_enabled': settings.auto_trading_enabled,
+            'auto_trading_enabled': _oe.auto_trading_enabled(),
             'scalp_auto_trading_enabled': settings.scalp_auto_trade,
             'live_trading_enabled': settings.live_trading_enabled,
             'kill_switch_active': _oe.is_kill_switch_active(),

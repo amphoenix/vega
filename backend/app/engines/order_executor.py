@@ -69,7 +69,16 @@ logger.info(f"[executor] MASTER SWITCHES: trading_mode={_settings.trading_mode},
 
 
 def auto_trading_enabled() -> bool:
-    """Master toggle for swing auto-entry. When False, scanner still runs but no orders."""
+    """Master toggle for swing auto-entry. When False, scanner still runs but no orders.
+    Reads the persisted runtime toggle (state_store) first so it survives restarts;
+    falls back to the config default."""
+    try:
+        from ..infrastructure.db import state_store
+        v = state_store.get_state('auto_trading_enabled', '')
+        if v:
+            return v == 'true'
+    except Exception:
+        pass
     return _settings.auto_trading_enabled
 
 
@@ -504,6 +513,20 @@ def try_auto_entry(signal: dict) -> Optional[dict]:
     if not ticket or not sym:
         logger.debug(f"[executor] Skip {signal.get('ticker')} — no executable ticket")
         return None
+
+    # ── Max concurrent open positions cap (risk + keeps UI tick-streams bounded) ──
+    try:
+        from ..infrastructure.db import tracked_positions as _tpc
+        _fo_open = sum(
+            1 for r in _tpc.list_tracked()
+            if (r.get('ticket') or {}).get('trade_mode', 'swing') not in ('scalp', 'forex')
+        )
+        _fo_cap = int(getattr(_settings, 'fo_max_positions', 6) or 6)
+        if _fo_open >= _fo_cap:
+            logger.info(f"[executor] Skip {sym} — max open positions {_fo_open}/{_fo_cap} reached")
+            return None
+    except Exception as _mpe:
+        logger.debug(f"[executor] max-positions check error: {_mpe}")
 
     if sym in _blocked_symbols:
         logger.info(f"[executor] Skip {sym} — blocked by user override")

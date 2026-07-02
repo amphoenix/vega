@@ -1,20 +1,14 @@
 """
 F&O Auto-Scanner — background service that scans the F&O universe every N minutes.
 
-Two-stage pipeline per ticker:
-  Stage 1 — Technical pre-filter (pure Python, instant, no LLM):
-    Checks Supertrend direction, ADX strength, RSI, EMA stack.
-    If technicals are clearly directional (strong signal), generates a
-    technical-only CIO dict with confidence 70-90. Skips tickers in ranging/weak markets.
-
-  Stage 2 — Cerebrum confirmation (optional, LLM):
-    Only runs on tickers that passed Stage 1.
-    The LLM result can boost or reduce the technical confidence.
-    If Cerebrum crashes, Stage 1 result is used as fallback.
+Pure-technical pipeline per ticker (instant, no LLM):
+  Supertrend direction + ADX strength (gate 15) + DI/MACD confirmation + RSI + EMA stack.
+  Generates a technical CIO dict with confidence 50-95. Skips ranging/weak markets.
+  LLM (Cerebrum) removed for speed — no network latency, no 300s timeout, fires instantly.
 
 Safety gates (ALL must pass before any trade):
   1. Market hours: 09:15 – 15:00 IST only
-  2. confidence_to_trade >= 70 (from Stage 1 OR Stage 2)
+  2. confidence_to_trade >= 60 (technical)
   3. short_term_action == "BUY NOW" or "SELL NOW"
   4. At least 2 of 5 agents agree (for options) or 3 (for FUT)
   5. No existing open position in same underlying
@@ -43,13 +37,49 @@ logger = get_logger('vega.fo_scanner')
 _DEFAULT_UNIVERSE = '^NSEI,^BSESN'
 _fo_universe_cache: list | None = None
 
+_INDEX_TICKERS = ['^NSEI', '^BSESN']
+
+
+def _resolve_all_fo_underlyings() -> list[str]:
+    """Build the full F&O universe = indices + every FUTSTK underlying (yfinance .NS
+    format) from the active broker's instrument master. Used when FO_UNIVERSE='ALL'."""
+    try:
+        rows = get_broker().load_instruments('fno') or []
+    except Exception as e:
+        logger.warning(f"F&O universe: master load failed ({e}) — indices only")
+        return list(_INDEX_TICKERS)
+    unders = set()
+    for r in rows:
+        if str(r.get('SEM_INSTRUMENT_NAME', r.get('INSTRUMENT_NAME', ''))).upper() != 'FUTSTK':
+            continue
+        sym = str(r.get('SEM_TRADING_SYMBOL', r.get('TRADING_SYMBOL', ''))).strip().upper()
+        base = sym.split('-')[0]
+        if not base or not base.isalnum():
+            continue
+        if 'TEST' in base or base[0].isdigit():   # skip exchange test scrips (e.g. 011NSETEST)
+            continue
+        unders.add(f'{base}.NS')
+    universe = list(_INDEX_TICKERS) + sorted(unders)
+    logger.info(f"F&O universe: ALL → {len(universe)} tickers "
+                f"({len(_INDEX_TICKERS)} indices + {len(unders)} F&O stocks)")
+    return universe
+
+
 def _get_fo_universe() -> list[str]:
     global _fo_universe_cache
     if _fo_universe_cache is None:
         from ..config import settings as _cfg
-        raw = _cfg.fo_universe
-        _fo_universe_cache = [t.strip() for t in raw.split(',') if t.strip()]
-        logger.info(f"F&O universe: {_fo_universe_cache}")
+        # Master flag: when False, scan indices only regardless of fo_universe.
+        if not getattr(_cfg, 'fo_full_universe', True):
+            _fo_universe_cache = list(_INDEX_TICKERS)
+            logger.info(f"F&O universe: indices only (fo_full_universe=False) → {_fo_universe_cache}")
+        else:
+            raw = (_cfg.fo_universe or '').strip()
+            if raw.upper() == 'ALL':
+                _fo_universe_cache = _resolve_all_fo_underlyings()
+            else:
+                _fo_universe_cache = [t.strip() for t in raw.split(',') if t.strip()]
+                logger.info(f"F&O universe: {_fo_universe_cache}")
     return _fo_universe_cache
 
 # Keep FO_UNIVERSE as a property-like accessor for backward compat
@@ -109,6 +139,23 @@ _stop_event     = threading.Event()
 _manual_trigger = threading.Event()   # set by trigger_now() to force a scan even off-hours
 _wake_event     = threading.Event()   # wakes the loop's wait() without killing the thread
 _scan_lock      = threading.Lock()
+
+# ── Tick-driven live scanning ────────────────────────────────────────────────
+# WS tick callbacks wake the scan loop the instant price moves meaningfully,
+# instead of waiting the full fo_scan_interval_sec (e.g. 180s). Reuses _wake_event.
+_fo_tick_callbacks: dict = {}         # ticker → callback fn
+_latest_tick_price: dict = {}         # ticker → latest WS ltp
+_scan_baseline_price: dict = {}       # ticker → price at last scan (move measured vs this)
+_last_tick_wake_ts: float = 0.0       # monotonic ts of last tick-triggered wake (debounce)
+_FO_TICK_WAKE_PCT = 0.05              # % index move since last scan that triggers a rescan
+_FO_TICK_WAKE_DEBOUNCE = 15.0         # min seconds between tick-triggered scans
+
+# ── Staggered scanning (large universe) ──────────────────────────────────────
+# With 200+ F&O stocks, scanning all every cycle is slow (broker throttle). So:
+# indices scan EVERY cycle (priority, tick-relevant); stocks scan in a rotating
+# window of STOCK_BATCH_PER_CYCLE per cycle → full coverage every few cycles.
+_stock_scan_offset = 0
+STOCK_BATCH_PER_CYCLE = 60
 
 # ── Ticket cache: lock entry price to first signal per underlying per day ──
 # Prevents re-pricing when auto-entry retries on subsequent scan cycles.
@@ -428,19 +475,17 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
     }
 
 
-# ── Stage 2: Cerebrum LLM confirmation ───────────────────────────────────────
+# ── Pure-technical scan (no LLM) ─────────────────────────────────────────────
 
-def _scan_one(ticker: str, llm_client) -> Optional[dict]:
+def _scan_one(ticker: str) -> Optional[dict]:
     """
-    Two-stage scan:
-      1. Quick technical pre-filter (instant, no LLM)
-      2. Cerebrum confirmation (LLM) — only if Stage 1 passes
+    Pure-technical scan — Supertrend + ADX + DI + MACD + EMA (no LLM).
 
-    If Cerebrum crashes (nested executor etc.), Stage 1 result is used as fallback.
-    If Stage 1 fails (ranging market), skip entirely.
+    LLM (Cerebrum) confirmation removed: it added network latency + 300s timeout
+    risk and no proven alpha. Speed matters more — signals must fire instantly.
+    ADX gate stays at 15 (in _technical_cio) so strong setups still trade.
     """
     from ..api.market import _fetch_market_data
-    broker = get_broker()
 
     logger.info(f"Scanner: analysing {ticker}")
     try:
@@ -452,10 +497,9 @@ def _scan_one(ticker: str, llm_client) -> Optional[dict]:
     price   = float(raw.get('price', 0))
     company = raw.get('company_name', ticker)
 
-    # Stage 1: pure technical check
     tech_cio = _technical_cio(ticker, raw)
     if tech_cio is None:
-        logger.info(f"Scanner: {ticker} pre-filter SKIP (ADX weak / no trend)")
+        logger.info(f"Scanner: {ticker} SKIP (ADX weak / no trend)")
         return {
             'final_verdict': 'HOLD', 'confidence_to_trade': 10,
             'short_term_action': 'AVOID', 'instrument_type': 'EQ',
@@ -463,91 +507,14 @@ def _scan_one(ticker: str, llm_client) -> Optional[dict]:
             '_source': 'prefilter',
         }
 
-    logger.info(f"Scanner: {ticker} Stage-1 → {tech_cio['final_verdict']} "
+    logger.info(f"Scanner: {ticker} → {tech_cio['final_verdict']} "
                 f"conf={tech_cio['confidence_to_trade']}% ({tech_cio['instrument_type']})")
-
-    # Stage 2: Cerebrum LLM (confirmation — runs in current thread, avoids nested executor crash)
-    try:
-        from ..domain.services.cerebrum.runner import AnalysisRunner
-
-        def _noop_emit(evt, payload): pass
-
-        result = AnalysisRunner().run(
-            ticker=ticker,
-            emit_fn=_noop_emit,
-            llm_client=llm_client,
-            market_data_fn=lambda t: raw,
-        )
-        cio = result.get('cio', {})
-        cio['_ticker']  = ticker
-        cio['_price']   = result.get('price', price)
-        cio['_company'] = result.get('company_name', company)
-        cio['_source']  = 'cerebrum'
-
-        c_verdict = cio.get('final_verdict', 'HOLD')
-        t_verdict = tech_cio['final_verdict']
-        t_bullish = t_verdict in ('BUY', 'STRONG BUY')
-        c_bullish = c_verdict in ('BUY', 'STRONG BUY')
-        t_bearish = t_verdict in ('SELL', 'STRONG SELL')
-        c_bearish = c_verdict in ('SELL', 'STRONG SELL')
-        t_actionable = t_bullish or t_bearish
-        c_actionable = c_bullish or c_bearish
-        t_conf       = int(tech_cio.get('confidence_to_trade', 0))
-
-        if (t_bullish and c_bullish) or (t_bearish and c_bearish):
-            c_conf = int(cio.get('confidence_to_trade', 50))
-            blended = min(95, max(t_conf, c_conf) + 10)
-            cio['confidence_to_trade'] = blended
-            logger.info(f"Scanner: {ticker} Cerebrum CONFIRMS Stage-1 → conf {blended}% "
-                        f"(stage1={t_conf}%, cerebrum={c_conf}%)")
-        elif t_actionable and t_conf >= 62 and not c_actionable:
-            # Stage 1 says BUY/SELL strongly; Cerebrum waters down to HOLD.
-            # Trust deterministic technicals — LLM is systematically over-cautious.
-            # Subtract a fixed penalty (5) without flooring — lets the user
-            # distinguish "Cerebrum mildly disagrees" from "everything is 60%".
-            cio['final_verdict']       = t_verdict
-            cio['confidence_to_trade'] = max(t_conf - 5, 40)
-            cio['instrument_type']     = tech_cio['instrument_type']
-            cio['strike_price']        = cio.get('strike_price') or tech_cio['strike_price']
-            cio['estimated_premium']   = cio.get('estimated_premium') or tech_cio['estimated_premium']
-            cio['short_term_action']   = tech_cio['short_term_action']
-            # Restore Stage-1 agent agreement counts. Without this the safety
-            # gate would see Cerebrum's HOLD-time counts (often 0/0) and
-            # always reject with "Only 0/2 agents bearish for PE".
-            cio['bull_count']          = tech_cio['bull_count']
-            cio['bear_count']          = tech_cio['bear_count']
-            cio['neutral_count']       = tech_cio.get('neutral_count', 1)
-            logger.info(f"Scanner: {ticker} Stage-1 actionable + Cerebrum HOLD → "
-                        f"trust Stage-1 ({t_verdict} conf={cio['confidence_to_trade']}%)")
-        elif (t_bullish and c_bearish) or (t_bearish and c_bullish):
-            cio['confidence_to_trade'] = int(cio.get('confidence_to_trade', 0)) // 2
-            logger.info(f"Scanner: {ticker} Stage-1 vs Cerebrum DISAGREE → conf halved")
-        elif cio.get('confidence_to_trade', 0) < t_conf:
-            cio['confidence_to_trade'] = t_conf
-            cio['instrument_type']    = cio.get('instrument_type') or tech_cio['instrument_type']
-            cio['strike_price']       = cio.get('strike_price') or tech_cio['strike_price']
-            cio['estimated_premium']  = cio.get('estimated_premium') or tech_cio['estimated_premium']
-            cio['short_term_action']  = cio.get('short_term_action') or tech_cio['short_term_action']
-
-        # Always use Stage-1 instrument type (CE/PE) — Cerebrum's prompt biases toward FUT
-        # on clear trends, but we want option strikes for the user.
-        if tech_cio['instrument_type'] in ('CE', 'PE'):
-            cio['instrument_type'] = tech_cio['instrument_type']
-            cio['strike_price']    = cio.get('strike_price') or tech_cio['strike_price']
-
-        return cio
-
-    except Exception as e:
-        logger.warning(f"Cerebrum failed for {ticker} ({e}) — using Stage-1 technical result")
-        return tech_cio
+    return tech_cio
 
 
-def _run_scan_cycle(llm_client):
+def _run_scan_cycle():
     """
-    One full scan cycle.
-    Uses plain threading.Thread (NOT ThreadPoolExecutor) to avoid nested-executor
-    crashes — Cerebrum internally uses ThreadPoolExecutor for agents + debate,
-    so nesting executors causes RuntimeError in Python 3.12.
+    One full scan cycle — pure technical, no LLM.
     Results flow back via a queue.Queue as each ticker completes.
     """
     with _scan_lock:
@@ -565,7 +532,7 @@ def _run_scan_cycle(llm_client):
                 'timestamp': now_ist().isoformat()})
 
     result_q: queue.Queue = queue.Queue()
-    MAX_PARALLEL = 4  # max concurrent Cerebrum pipelines
+    MAX_PARALLEL = 4  # max concurrent scan workers
 
     def _worker(ticker: str):
         try:
@@ -579,15 +546,32 @@ def _run_scan_cycle(llm_client):
                         'timestamp': now_ist().isoformat()})
             with _scan_lock:
                 _state['scanned'].append(ticker)
-            cio = _scan_one(ticker, llm_client)
+            cio = _scan_one(ticker)
             result_q.put((ticker, cio))
         except Exception as exc:
             logger.error(f"Worker error {ticker}: {exc}")
             result_q.put((ticker, None))
 
+    # Build this cycle's ticker list: indices always + a rotating stock window.
+    # Keeps each cycle fast on a large universe while covering all stocks over time.
+    _full = list(FO_UNIVERSE)
+    _indices = [t for t in _full if t.startswith('^')]
+    _stocks  = [t for t in _full if not t.startswith('^')]
+    if len(_stocks) > STOCK_BATCH_PER_CYCLE:
+        global _stock_scan_offset
+        n = len(_stocks)
+        off = _stock_scan_offset % n
+        _batch = (_stocks + _stocks)[off:off + STOCK_BATCH_PER_CYCLE]
+        _stock_scan_offset = (off + STOCK_BATCH_PER_CYCLE) % n
+        cycle_tickers = _indices + _batch
+        logger.info(f"Scan cycle: {len(_indices)} indices + {len(_batch)} stocks "
+                    f"(rotating {off}..{off + STOCK_BATCH_PER_CYCLE} of {n})")
+    else:
+        cycle_tickers = _indices + _stocks
+
     # Launch tickers in batches of MAX_PARALLEL
     signals  = []
-    pending  = list(FO_UNIVERSE)
+    pending  = list(cycle_tickers)
     active   = []
 
     while (pending or active) and not _stop_event.is_set():
@@ -616,7 +600,7 @@ def _run_scan_cycle(llm_client):
         price   = float(cio.get('_price', 0))
         verdict = cio.get('final_verdict', 'HOLD')
         conf    = cio.get('confidence_to_trade', 0)
-        source  = cio.get('_source', 'cerebrum')
+        source  = cio.get('_source', 'technical')
         itype   = cio.get('instrument_type', 'EQ')
         strike  = float(cio.get('strike_price', 0) or 0)
 
@@ -940,15 +924,12 @@ def _run_scan_cycle(llm_client):
 
 
 def _pre_warm():
-    """Warm caches/clients ~5 min before market open so the FIRST scan cycle
-    at 09:15 doesn't pay cold-start penalties.
+    """Warm caches ~5 min before market open so the FIRST scan cycle at 09:15
+    doesn't pay cold-start penalties.
 
-    Warms three things:
+    Warms two things (no LLM — pure-technical scanner):
       1. F&O instrument master (large CSV; 2-5s to parse first time)
-      2. IndMoney spot LTP cache for each universe ticker (TLS handshake +
-         WebSocket subscription)
-      3. LLM client TLS handshake (Bedrock / OpenAI-compat — first call adds
-         100-500ms otherwise)
+      2. Spot LTP cache for each universe ticker (TLS handshake + WS subscribe)
 
     Best-effort: failures are logged but do not abort the scanner.
     """
@@ -970,15 +951,6 @@ def _pre_warm():
                 pass
     except Exception as e:
         logger.warning(f"Pre-warm: spot fetch failed: {e}")
-    # 3. LLM TLS handshake
-    try:
-        from ..infrastructure.llm.client import LLMClient
-        from ..config import settings as _cfg
-        LLMClient.from_settings(_cfg).chat(messages=[{'role': 'user', 'content': 'ping'}],
-                         max_tokens=4)
-        logger.info("Pre-warm: LLM client warm")
-    except Exception as e:
-        logger.warning(f"Pre-warm: LLM handshake failed: {e}")
     logger.info("Scanner pre-warm complete")
 
 
@@ -1059,11 +1031,75 @@ def _fast_reversal_check():
         logger.debug(f"[reversal] checked {checked} open positions")
 
 
-def _scanner_loop():
-    from ..infrastructure.llm.client import LLMClient
+def _on_fo_tick(ticker: str, ltp: float):
+    """Live index tick → wake the scan loop the instant price moves meaningfully.
+    Runs on the broker WS thread — MUST stay fast, no REST/heavy work here."""
+    from time import monotonic
+    global _last_tick_wake_ts
+    if _stop_event.is_set() or not ltp or ltp <= 0:
+        return
+    _latest_tick_price[ticker] = ltp
+    if not _mkt.is_market_hours():
+        return
+    baseline = _scan_baseline_price.get(ticker)
+    if not baseline:
+        # First tick after a scan sets the baseline; scan cycle also refreshes it.
+        _scan_baseline_price[ticker] = ltp
+        return
+    move_pct = abs(ltp - baseline) / baseline * 100
+    if move_pct < _FO_TICK_WAKE_PCT:
+        return
+    now = monotonic()
+    if now - _last_tick_wake_ts < _FO_TICK_WAKE_DEBOUNCE:
+        return
+    _last_tick_wake_ts = now
+    _scan_baseline_price[ticker] = ltp   # reset baseline so we don't re-fire on the same move
+    logger.info(f"[fo] Tick wake: {ticker} moved {move_pct:.2f}% since last scan → immediate rescan")
+    _wake_event.set()
 
-    logger.info(f"F&O scanner started (continuous, "
-                f"sleep={_scan_interval()}s between cycles, "
+
+def _register_fo_tick_callbacks():
+    """Subscribe to INDEX WS ticks so signals fire live, not on the 180s timer.
+    Only indices (^-prefixed) are tick-subscribed — they drive the market; a large
+    stock universe (FO_UNIVERSE='ALL') would otherwise open 200+ WS subs and wake
+    a full-universe scan on every stock tick. Stocks scan on the safety poll.
+
+    Tick-wake triggers a FULL-universe rescan, so it's only enabled for small
+    universes (indices). With a large stock universe the interval poll is used —
+    a per-tick 200-stock rescan would be far too heavy."""
+    if len(list(FO_UNIVERSE)) > 4:
+        logger.info(f"[fo] Large universe ({len(list(FO_UNIVERSE))}) — tick-wake disabled, "
+                    f"using {_scan_interval()}s interval scan")
+        return
+    try:
+        _broker = get_broker()
+        for ticker in FO_UNIVERSE:
+            if not ticker.startswith('^') or ticker in _fo_tick_callbacks:
+                continue
+            cb = lambda sym, ltp, tick, t=ticker: _on_fo_tick(t, float(ltp or 0))
+            _broker.subscribe_ticks([ticker], cb)
+            _fo_tick_callbacks[ticker] = cb
+            logger.info(f"[fo] Registered live tick callback for {ticker}")
+    except Exception as e:
+        logger.warning(f"[fo] Tick callback registration failed: {e}")
+
+
+def _unregister_fo_tick_callbacks():
+    try:
+        _broker = get_broker()
+        for ticker in list(_fo_tick_callbacks):
+            try:
+                _broker.unsubscribe_ticks([ticker])
+            except Exception:
+                pass
+        _fo_tick_callbacks.clear()
+    except Exception:
+        pass
+
+
+def _scanner_loop():
+    logger.info(f"F&O scanner started (continuous, tick-driven + "
+                f"{_scan_interval()}s safety poll, "
                 f"reversal_check_every={REVERSAL_CHECK_INTERVAL}s, "
                 f"universe={len(FO_UNIVERSE)} tickers)")
 
@@ -1080,11 +1116,15 @@ def _scanner_loop():
             if manual:
                 _manual_trigger.clear()
             try:
-                from ..config import settings as _cfg
-                llm = LLMClient.from_settings(_cfg)
-                _run_scan_cycle(llm)
+                _run_scan_cycle()
             except Exception as e:
                 logger.error(f"Scan cycle error: {e}", exc_info=True)
+            # Reset tick-wake baseline to the just-scanned prices so the next
+            # rescan fires only on a fresh move relative to this scan.
+            for _t in FO_UNIVERSE:
+                _px = _latest_tick_price.get(_t)
+                if _px:
+                    _scan_baseline_price[_t] = _px
             _sleep_sec = _scan_interval() or 180
             with _scan_lock:
                 _state['next_scan'] = (now_ist() + timedelta(seconds=_sleep_sec)).isoformat()
@@ -1140,11 +1180,13 @@ def start():
     _scanner_thread = threading.Thread(
         target=_scanner_loop, name='FOScanner', daemon=True)
     _scanner_thread.start()
+    _register_fo_tick_callbacks()   # live tick-driven scanning
     logger.info("F&O scanner thread started")
 
 
 def stop():
     _stop_event.set()
+    _unregister_fo_tick_callbacks()
     if _scanner_thread:
         _scanner_thread.join(timeout=15)
 

@@ -679,7 +679,6 @@ async function _seedTradeFeed() {
     const res = await service.get('/api/trade/pnl/trades', { params: { mode: 'scalp', limit: 30, date: today } })
     // Interceptor unwraps response.data, so res = {success, trades}
     const trades = res?.trades || res?.data?.trades || res?.data || []
-    console.log('[scalp] _seedTradeFeed: got', trades.length, 'trades from DB')
     if (Array.isArray(trades) && trades.length) {
       const historyItems = trades.map(t => ({
         type: 'trade_history',
@@ -693,7 +692,6 @@ async function _seedTradeFeed() {
       // DB returns newest-first, reverse so oldest is first → latest at bottom
       const liveEvents = tradeFeed.value.filter(e => !e._replay)
       tradeFeed.value = [...historyItems.reverse(), ...liveEvents]
-      console.log('[scalp] tradeFeed total:', tradeFeed.value.length, '(history:', historyItems.length, 'live:', liveEvents.length, ')')
     }
   } catch (e) { console.error('_seedTradeFeed error', e) }
 }

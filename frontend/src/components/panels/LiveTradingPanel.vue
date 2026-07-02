@@ -1441,6 +1441,11 @@ const liveOptionChain = computed(() => {
 
 // ── Live ticket cards ──────────────────────────────────────────────────────
 const liveTicketCards = computed(() => {
+  // LIVE ticket cards ("✋ I entered this") removed — the FnO scanner card already
+  // shows the full ticket + track button; this panel keeps only WATCHING + P&L +
+  // the tick streams (which use the liveTickets store below, not this computed).
+  return []
+  // eslint-disable-next-line no-unreachable
   const tickets = liveTickets.value
   const out = []
   for (const [under, t] of Object.entries(tickets)) {
@@ -1674,22 +1679,28 @@ onMounted(() => {
     (price) => { if (price) brokerLivePrice.value = price },
   )
 
-  // Subscribe to tick streams for all underlyings we care about
+  // Subscribe to tick streams for the symbols we care about — CAPPED.
+  // A large F&O universe can open 20+ positions; streaming every underlying +
+  // option (~50 EventSources) floods the HTTP/2 connection and trips the
+  // `priority` PriorityLoop bug → connection resets → UI can't load. Cap the
+  // count; positions beyond the cap get P&L from the server-side reprice (/tracked
+  // + tracked_monitor), not per-symbol ticks.
+  const _MAX_TICK_STREAMS = 12
   watch(
     () => {
       const set = new Set(['^NSEI', '^BSESN'])
+      if (chartTicker.value) set.add(chartTicker.value)
+      // Active signal tickets first (what the user is about to trade)
+      for (const t of Object.values(liveTickets.value || {})) {
+        if (set.size >= _MAX_TICK_STREAMS) break
+        if (t?.trading_symbol) set.add(t.trading_symbol)
+      }
+      // Then open positions' option symbols (for live P&L) up to the cap
       for (const rec of trackedPositions.value || []) {
-        const u = rec?.ticket?.underlying
+        if (set.size >= _MAX_TICK_STREAMS) break
         const opt = rec?.ticket?.trading_symbol
-        if (u) set.add(u)
         if (opt) set.add(opt)
       }
-      for (const t of Object.values(liveTickets.value || {})) {
-        if (!t) continue
-        if (t.underlying) set.add(t.underlying)
-        if (t.trading_symbol) set.add(t.trading_symbol)
-      }
-      if (chartTicker.value) set.add(chartTicker.value)
       return [...set]
     },
     (underlyings, prev) => {

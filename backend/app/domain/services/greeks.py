@@ -132,22 +132,32 @@ def pick_strike_by_delta(spot: float, target_delta: float, dte_days: float,
                          iv: float, opt_type: str = 'CE', step: int = 50,
                          rate: float = RISK_FREE_RATE,
                          search_pct: float = 0.20) -> int:
-    """Find strike (rounded to step) whose BS-delta is closest to target_delta."""
+    """Find strike (rounded to step) whose BS-delta is closest to target_delta.
+
+    DTE is floored at 1 day for the delta calculation: on expiry day (DTE=0)
+    the BS delta degenerates to a step function (every ITM strike → 1.0, every
+    OTM → 0.0), which makes the "closest to target" search collapse onto the
+    deepest-ITM strike in iteration order. Flooring keeps the delta curve smooth
+    so an ATM-ish strike is chosen. This floor affects strike *selection* only —
+    P&L/theta greeks elsewhere still use the true DTE.
+    """
     target = abs(target_delta)
     typ = opt_type.upper()
-    candidates: list[tuple[float, int]] = []
+    dte_eff = max(float(dte_days), 1.0)
+    candidates: list[tuple[float, float, int]] = []
     span = int(spot * search_pct)
     base = int(round(spot / step) * step)
     for k in range(base - span, base + span + step, step):
         if k <= 0:
             continue
-        g = greeks(spot, k, dte_days, iv, rate, typ)
+        g = greeks(spot, k, dte_eff, iv, rate, typ)
         d = abs(g.delta)
-        candidates.append((abs(d - target), k))
+        # Tie-break on distance-to-ATM so near-equal deltas prefer the ATM strike.
+        candidates.append((abs(d - target), abs(k - base), k))
     if not candidates:
         return base
     candidates.sort()
-    return candidates[0][1]
+    return candidates[0][2]
 
 
 _DEFAULT_INDEX_IV = 0.14

@@ -71,14 +71,16 @@ class Settings(BaseSettings):
     fo_max_lots_per_trade: int = 2
     fo_max_risk_pct: float = 20.0
     fo_scan_interval_sec: int = 180
-    fo_universe: str = '^NSEI,^BSESN'
+    fo_universe: str = 'ALL'   # 'ALL' = indices + every F&O stock (from broker master); or CSV like '^NSEI,^BSESN'
+    fo_full_universe: bool = False   # True → scan full F&O stock universe; False → indices only (^NSEI, ^BSESN)
     fo_min_dte: int = 0
     fo_max_dte: int = 35
     fo_signal_min_dte: int = 0
     fo_min_confidence: int = 70
     fo_min_agents: int = 3
     fo_target_delta: float = 0.55
-    auto_entry_min_confidence: int = 85
+    auto_entry_min_confidence: int = 70   # pure-technical (no LLM boost) tops ~75-85; 85 was unreachable
+    fo_max_positions: int = 6             # max concurrent open swing positions (risk + limits UI tick-streams)
     sl_max_points_sensex: int = 50
     sl_max_points_nifty: int = 15
     daily_loss_limit_inr: float = 10_000.0
@@ -114,11 +116,14 @@ class Settings(BaseSettings):
     scalp_atr_t1_mult: float = 2.0
     scalp_use_atr_sl: bool = True
     scalp_max_spread_pct: float = 2.0
+    # Let winners run: at T1, tighten the trailing stop instead of hard-exiting,
+    # so a runner rides toward T2 and beyond (trail-protected). False = classic T1 exit.
+    scalp_let_winners_run: bool = True
     scalp_reentry_cooldown_sec: int = 45
     scalp_max_entries_per_day: int = 9999
-    scalp_zerohero_exit_min: int = 50
-    scalp_zerohero_reenter_min: int = 5
-    scalp_zerohero_final_min: int = 20
+    scalp_zerohero_exit_min: int = 50    # 14:50 — clear all scalp positions (ready for zero-hero)
+    scalp_zerohero_reenter_min: int = 0  # 15:00 sharp — zero-hero OTM entry window opens
+    scalp_zerohero_final_min: int = 20   # 15:20 — final exit
 
     # ══════════════════════════════════════════════════════════════════════════
     # FOREX (CDS Currency Futures)
@@ -148,6 +153,10 @@ class Settings(BaseSettings):
     crypto_scan_timeframe: str = '5m'
     crypto_scan_trend_tf: str = '1h'
     crypto_min_confidence: int = 60
+    # Chop filter: require the trend-TF (1h) to be genuinely TRENDING (ADX >= this)
+    # before dip-buying/bounce-selling. Ranging 1h (low ADX) = whipsaw = losses.
+    # 0 disables the filter.
+    crypto_trend_adx_min: float = 15.0
     crypto_sl_pct: float = 0.10
     crypto_tp_pct: float = 0.0
     crypto_trail_pct: float = 0.02

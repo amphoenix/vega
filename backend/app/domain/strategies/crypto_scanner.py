@@ -203,6 +203,7 @@ def _compute_signal(candles: list[dict], trend_candles: list[dict],
     trend_1h_up = None
     trend_1h_srsi_k = 50.0
     trend_1h_rsi_3 = 50.0
+    trend_1h_adx = None
     if trend_candles and len(trend_candles) >= 30:
         trend_closes = [c['close'] for c in trend_candles]
         trend_ema20 = ema_series(trend_closes, 20)
@@ -212,6 +213,11 @@ def _compute_signal(candles: list[dict], trend_candles: list[dict],
         t_srsi = stoch_rsi(trend_closes, 14, 14, 3, 3)
         if t_srsi:
             trend_1h_srsi_k = t_srsi['k']
+        # 1h ADX — trend STRENGTH (chop filter). Low ADX = ranging = whipsaw.
+        try:
+            trend_1h_adx = adx([CandleData.from_dict(c) for c in trend_candles], 14)
+        except Exception:
+            trend_1h_adx = None
         t_rsi3 = rsi(trend_closes, 3)
         if t_rsi3 is not None:
             trend_1h_rsi_3 = t_rsi3
@@ -227,6 +233,15 @@ def _compute_signal(candles: list[dict], trend_candles: list[dict],
     sell_conditions: list[str] = []
     buy_guards_pass = True
     sell_guards_pass = True
+
+    # ── CHOP FILTER: skip when 1h is ranging (low ADX) — the main loss source.
+    # Dip-buying / bounce-selling into a choppy 1h gets whipsawed. Only trade
+    # when the 1h is genuinely trending. crypto_trend_adx_min=0 disables.
+    _adx_min = float(getattr(settings, 'crypto_trend_adx_min', 0) or 0)
+    if _adx_min > 0 and (trend_1h_adx is None or trend_1h_adx < _adx_min):
+        _adx_txt = f'{trend_1h_adx:.0f}' if trend_1h_adx is not None else 'n/a'
+        logger.info('SIGNAL SKIP — 1h chop (ADX=%s < %.0f), no trend', _adx_txt, _adx_min)
+        return {'skip': True, 'reason': f'1h chop · ADX {_adx_txt} < {_adx_min:.0f}'}
 
     # ── LONG PROTECTIONS (NFI RSI_3 guards + ClucMay volume cap) ──────
     if rsi_3 is not None and rsi_3 < 5.0:
@@ -754,6 +769,15 @@ class CryptoScanner:
                 self._update_position_price(symbol, candles[-1]['close'])
             return
 
+        # Skip marker (e.g. 1h chop) → surface in the signals feed so the UI shows
+        # the scanner IS working + WHY it's not entering, then keep prices fresh.
+        if result.get('skip'):
+            self._record_skip(symbol, result.get('reason', 'skipped'),
+                              candles[-1]['close'] if candles else 0)
+            if candles:
+                self._update_position_price(symbol, candles[-1]['close'])
+            return
+
         side = result['side']
         price = candles[-1]['close']
         has_position = symbol in self._positions
@@ -1051,6 +1075,7 @@ class CryptoScanner:
                 qty=qty,
                 lot_size=1,
                 brokerage=brokerage,
+                gross_pnl_override=pnl,   # direction-aware (SHORT = entry-exit); record_trade's default is LONG-only
                 exit_reason=f'{reason}|{bot_tag}',
                 market_type='crypto',
                 direction=side,
@@ -1122,6 +1147,32 @@ class CryptoScanner:
             result['indicators'].get('vol_ratio', 0),
             executed,
         )
+
+    def _record_skip(self, symbol: str, reason: str, price: float) -> None:
+        """Record a SKIP into the signals feed so the UI shows the scanner is
+        working + why it isn't entering (e.g. 1h chop). Dedup: one skip per
+        symbol+reason per scan (don't spam identical skips)."""
+        sig = {
+            'id':         str(uuid.uuid4()),
+            'symbol':     symbol,
+            'side':       'SKIP',
+            'price':      price,
+            'confidence': 0,
+            'sl_dist':    0,
+            'tp_dist':    0,
+            'indicators': {},
+            'reason':     reason,
+            'ts':         int(clock() * 1000),
+            'executed':   False,
+            'pnl':        None,
+        }
+        with self._lock:
+            # replace prior skip for this symbol so the feed stays clean
+            self._signals = [s for s in self._signals
+                             if not (s.get('side') == 'SKIP' and s.get('symbol') == symbol)]
+            self._signals.append(sig)
+            if len(self._signals) > _MAX_SIGNALS:
+                self._signals = self._signals[-_MAX_SIGNALS:]
 
     def reset_daily(self) -> None:
         """Reset daily P&L counter (called at midnight)."""

@@ -121,6 +121,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as _e:
         logger.warning('Crypto F&O scanner auto-start failed: %s', _e)
 
+    # Auto-start BTST scanner (arms the 15:20 auto-scan; no manual Start needed)
+    try:
+        from .engines.btst_scanner import start as _btst_start
+        _btst_start()
+        logger.info('BTST scanner auto-started (auto-scan @ 15:20 IST)')
+    except Exception as _e:
+        logger.warning('BTST scanner auto-start failed: %s', _e)
+
     # Sync tracked positions watcher for positions pinned before this boot
     try:
         from .engines.monitor import tracked_monitor as _tm

@@ -26,9 +26,13 @@ BTST_CONFIG_SCHEMA: dict[str, dict] = {
     'BTST_ADX_MIN':            {'default': 20,      'type': float, 'label': 'ADX Min',                 'group': 'Filters'},
     'BTST_SCAN_START':         {'default': '15:20', 'type': str,   'label': 'Scan Start (IST)',        'group': 'Schedule'},
     'BTST_SCAN_END':           {'default': '15:28', 'type': str,   'label': 'Scan End (IST)',          'group': 'Schedule'},
-    'BTST_MORNING_EXIT_TIME':  {'default': '09:15', 'type': str,   'label': 'Morning Exit Time (IST)', 'group': 'Schedule'},
+    'BTST_MORNING_EXIT_TIME':  {'default': '09:20', 'type': str,   'label': 'Morning Exit Time (IST)', 'group': 'Schedule'},
     'BTST_HARD_EXIT_BY':       {'default': '10:00', 'type': str,   'label': 'Hard Exit By (IST)',      'group': 'Schedule'},
     'BTST_PAPER_MODE':         {'default': True,    'type': bool,  'label': 'Paper Mode',              'group': 'Trade'},
+    'BTST_MACRO_BLOCK_DATES':  {'default': '',      'type': str,   'label': 'Extra Macro Block Dates (YYYY-MM-DD, comma-sep)', 'group': 'Filters'},
+    'BTST_MAX_DAILY_LOSS':     {'default': 0,       'type': float, 'label': 'Max Daily Loss (₹, 0=disabled)',                'group': 'Limits'},
+    'BTST_MAX_VIX':            {'default': 20,      'type': float, 'label': 'Max VIX for entry',                            'group': 'Filters'},
+    'BTST_MAX_DAILY_NOTIONAL': {'default': 0,       'type': float, 'label': 'Max Daily Notional (₹, 0=disabled)',           'group': 'Limits'},
 }
 
 # ── Module State ──────────────────────────────────────────────────────────────
@@ -54,6 +58,9 @@ _state_lock = threading.Lock()
 
 _running = False
 _running_lock = threading.Lock()
+
+_btst_killed: bool = False        # kill switch — set when daily loss limit hit
+_btst_daily_loss: float = 0.0     # running daily realized loss (negative = loss)
 
 # ── SSE ───────────────────────────────────────────────────────────────────────
 
@@ -136,23 +143,27 @@ def _enrich_positions_with_ltp(positions: list) -> list:
         p = dict(pos)
         if p.get('status') == 'HOLDING':
             try:
-                ltp = _get_current_price(p['symbol'])
-                entry = float(p.get('entry_price') or 0)
+                option_sym = p.get('option_symbol', '')
                 entry_prem = float(p.get('entry_premium') or 0)
-                if entry > 0 and ltp > 0:
-                    if p['direction'] == 'bull':
-                        pnl_pct = round((ltp - entry) / entry * 100, 2)
-                    else:
-                        pnl_pct = round((entry - ltp) / entry * 100, 2)
-                    p['pnl_pct'] = pnl_pct
-                    qty = int(p.get('qty', 1))
-                    lot_size = int(p.get('lot_size', 1))
-                    if entry_prem > 0:
-                        current_prem = ltp  # for options, LTP is the premium
-                        p['pnl_abs'] = round((current_prem - entry_prem) * qty * lot_size, 2) if p['direction'] == 'bull' else round((entry_prem - current_prem) * qty * lot_size, 2)
-                    else:
+                qty = int(p.get('qty', 1))
+                lot_size = int(p.get('lot_size', 1))
+                if option_sym and entry_prem > 0:
+                    # Use option LTP for P&L — not the underlying index price
+                    option_ltp = _get_current_price(option_sym)
+                    if option_ltp > 0:
+                        pnl_pct = round((option_ltp - entry_prem) / entry_prem * 100, 2)
+                        pnl_abs = round((option_ltp - entry_prem) * qty * lot_size, 2)
+                        p['pnl_pct'] = pnl_pct
+                        p['pnl_abs'] = pnl_abs
+                        p['current_price'] = option_ltp
+                else:
+                    entry = float(p.get('entry_price') or 0)
+                    ltp = _get_current_price(p['symbol'])
+                    if entry > 0 and ltp > 0:
+                        pnl_pct = round((ltp - entry) / entry * 100, 2) if p['direction'] == 'bull' else round((entry - ltp) / entry * 100, 2)
+                        p['pnl_pct'] = pnl_pct
                         p['pnl_abs'] = round((ltp - entry) * qty, 2) if p['direction'] == 'bull' else round((entry - ltp) * qty, 2)
-                    p['current_price'] = ltp
+                        p['current_price'] = ltp
             except Exception:
                 pass
         enriched.append(p)
@@ -310,14 +321,12 @@ def _stage1_filter(symbol: str, df: 'pd.DataFrame', direction: str) -> bool:
         rolling_low = float(df['Low'].iloc[-21:-1].min())
 
         if direction == 'bull':
-            if range_position < 0.90:
-                return False
-            if close < rolling_high * 0.995:
+            # Near day low → oversold → mean-reversion bounce candidate
+            if range_position > 0.30:
                 return False
         else:
-            if range_position > 0.10:
-                return False
-            if close > rolling_low * 1.005:
+            # Near day high → overbought → mean-reversion fade candidate
+            if range_position < 0.70:
                 return False
 
         return True
@@ -416,7 +425,7 @@ def _fetch_option_quotes(symbol: str, spot: float, direction: str) -> 'list[dict
 
 def _run_stage1() -> tuple[list[str], list[str]]:
     # Index instruments don't have meaningful volume/ADX for stock-style filters.
-    # Both directions go straight to LLM scoring.
+    # Both directions go straight to technical scoring.
     bull = list(BTST_UNIVERSE)
     bear = list(BTST_UNIVERSE)
     with _state_lock:
@@ -728,9 +737,11 @@ def _technical_fallback_score(
     rationale = ', '.join(parts) if parts else f'ADX={adx:.0f} RSI={rsi:.0f}'
 
     entry_prem = float(best_quote.get('ltp', 0) or 0)
-    # Target: +30% on premium (overnight gap move), SL: -40% on premium
-    target_prem = round(entry_prem * 1.30, 1) if entry_prem > 0 else None
+    # Target: +44% on premium (+40% return + ~4% overnight theta drag to maintain 1:1 R:R net)
+    target_prem = round(entry_prem * 1.44, 1) if entry_prem > 0 else None
     sl_prem = round(entry_prem * 0.60, 1) if entry_prem > 0 else None
+    # Store option trading symbol for accurate LTP lookups at exit
+    option_sym = best_quote.get('symbol') or best_quote.get('trading_symbol', '')
 
     return {
         'symbol':         symbol,
@@ -746,30 +757,11 @@ def _technical_fallback_score(
         'target_premium': target_prem,
         'sl_premium':     sl_prem,
         'opt_type':       'CE' if direction == 'bull' else 'PE',
+        'option_symbol':  option_sym,
         'lot_size':       best_quote.get('lot_size', 0),
         'ts':             _now_ist().isoformat(),
         '_source':        'technical',
     }
-
-
-# ── LLM response cache (symbol+direction+date → result dict) ─────────────────
-_llm_cache: dict[str, dict] = {}
-_llm_cache_lock = threading.Lock()
-_LLM_CACHE_MAX = 64
-
-def _llm_cache_key(symbol: str, direction: str) -> str:
-    return f'{symbol}|{direction}|{_now_ist().strftime("%Y-%m-%d")}'
-
-def _llm_cache_get(key: str) -> 'dict | None':
-    with _llm_cache_lock:
-        return _llm_cache.get(key)
-
-def _llm_cache_put(key: str, val: dict) -> None:
-    with _llm_cache_lock:
-        if len(_llm_cache) >= _LLM_CACHE_MAX:
-            oldest = next(iter(_llm_cache))
-            del _llm_cache[oldest]
-        _llm_cache[key] = val
 
 
 def _score_candidate(
@@ -958,6 +950,16 @@ def _get_db() -> sqlite3.Connection:
         key TEXT PRIMARY KEY,
         value TEXT
     )''')
+    # Migrations for schema additions
+    for _sql in (
+        'ALTER TABLE btst_positions ADD COLUMN option_symbol TEXT',
+        'ALTER TABLE btst_signals ADD COLUMN option_symbol TEXT',
+    ):
+        try:
+            conn.execute(_sql)
+            conn.commit()
+        except Exception:
+            pass  # column already exists
     return conn
 
 
@@ -979,6 +981,19 @@ def _get_current_price(symbol: str) -> float:
 
 
 def _enter_paper_position(signal: dict) -> dict | None:
+    # Daily notional cap check
+    max_daily_notional = float(_config.get('BTST_MAX_DAILY_NOTIONAL', 0))
+    if max_daily_notional > 0:
+        with _state_lock:
+            held_notional = sum(
+                float(p.get('notional', 0))
+                for p in _state['positions']
+                if p.get('status') == 'HOLDING'
+            )
+        if held_notional >= max_daily_notional:
+            _log(f'Skipping {signal["symbol"]}: daily notional cap ₹{max_daily_notional:,.0f} reached (held=₹{held_notional:,.0f})', 'warn')
+            return None
+
     entry_price = _get_current_price(signal['symbol'])
     entry_prem = float(signal.get('entry_premium') or 0)
     if entry_price <= 0 and entry_prem <= 0:
@@ -1004,6 +1019,7 @@ def _enter_paper_position(signal: dict) -> dict | None:
         'strike': signal.get('strike'),
         'expiry': signal.get('expiry'),
         'opt_type': signal.get('opt_type', 'CE'),
+        'option_symbol': signal.get('option_symbol', ''),
         'lot_size': lot_size,
         'entry_premium': entry_prem or None,
         'target_premium': signal.get('target_premium'),
@@ -1038,13 +1054,13 @@ def _save_positions() -> None:
                 conn.execute(
                     '''INSERT INTO btst_positions
                        (date,symbol,direction,entry_price,qty,notional,rationale,target_pct,
-                        risk_note,ai_score,strike,expiry,opt_type,lot_size,entry_premium,
+                        risk_note,ai_score,strike,expiry,opt_type,option_symbol,lot_size,entry_premium,
                         target_premium,sl_premium,status,ts,exit_price,exit_ts,pnl_pct,pnl_abs,exit_reason)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                     (today, p.get('symbol'), p.get('direction'), p.get('entry_price'),
                      p.get('qty'), p.get('notional'), p.get('rationale'), p.get('target_pct'),
                      p.get('risk_note'), p.get('ai_score'), p.get('strike'), str(p.get('expiry', '')),
-                     p.get('opt_type'), p.get('lot_size'), p.get('entry_premium'),
+                     p.get('opt_type'), p.get('option_symbol', ''), p.get('lot_size'), p.get('entry_premium'),
                      p.get('target_premium'), p.get('sl_premium'), p.get('status'),
                      p.get('ts'), p.get('exit_price'), p.get('exit_ts'),
                      p.get('pnl_pct'), p.get('pnl_abs'), p.get('exit_reason')),
@@ -1184,6 +1200,47 @@ def trigger_now() -> None:
     t.start()
 
 
+# ── Macro Calendar Block ──────────────────────────────────────────────────────
+
+# Dates when overnight gap risk is too high for BTST entries.
+# Covers: RBI MPC decision days, Fed FOMC days, India Union Budget.
+# US CPI/NFP omitted — those are morning India time and gap has already occurred.
+# UPDATE this set at start of each calendar year.
+_MACRO_BLOCK_DATES: frozenset[str] = frozenset({
+    # RBI MPC 2025 (remaining)
+    '2025-10-09', '2025-12-06',
+    # RBI MPC 2026 (6 meetings — last Fri of each bi-monthly cycle)
+    '2026-02-07', '2026-04-09', '2026-06-06', '2026-08-08', '2026-10-10', '2026-12-05',
+    # Fed FOMC 2025 (remaining)
+    '2025-09-17', '2025-11-07', '2025-12-17',
+    # Fed FOMC 2026
+    '2026-01-28', '2026-03-18', '2026-05-06', '2026-06-17',
+    '2026-07-29', '2026-09-16', '2026-10-28', '2026-12-16',
+    # India Union Budget
+    '2026-02-01',
+    # India Interim Budget / Economic Survey (if applicable)
+    '2027-02-01',
+})
+
+
+def _is_macro_risk_day() -> bool:
+    """Block BTST entries when overnight macro event risk is elevated.
+
+    Checks hardcoded calendar + user-configured override dates.
+    Returns True = block, False = safe to scan.
+    """
+    today_str = _now_ist().date().isoformat()
+    if today_str in _MACRO_BLOCK_DATES:
+        _log(f'Macro block: {today_str} is a known high-risk event day — no BTST entries')
+        return True
+    override_str = str(_config.get('BTST_MACRO_BLOCK_DATES', '') or '')
+    for d in override_str.split(','):
+        if d.strip() == today_str:
+            _log(f'Macro block: {today_str} in user override list — no BTST entries')
+            return True
+    return False
+
+
 # ── Scan Cycle ────────────────────────────────────────────────────────────────
 
 def _scan_cycle(force: bool = False) -> None:
@@ -1201,6 +1258,30 @@ def _scan_cycle(force: bool = False) -> None:
         _state['status'] = 'SCANNING'
 
     _log('Starting afternoon scan cycle')
+
+    if not force and _btst_killed:
+        _log('Scan blocked — daily loss kill switch active', 'warn')
+        with _state_lock:
+            _state['status'] = 'IDLE'
+        return
+
+    if not force and _is_macro_risk_day():
+        with _state_lock:
+            _state['status'] = 'IDLE'
+        return
+
+    # VIX gate: elevated overnight gap risk above threshold
+    max_vix = float(_config.get('BTST_MAX_VIX', 20))
+    if max_vix > 0 and not force:
+        try:
+            vix = _get_current_price('^INDIAVIX')
+            if vix and vix > max_vix:
+                _log(f'Scan blocked — VIX {vix:.1f} > {max_vix} (elevated overnight gap risk)', 'warn')
+                with _state_lock:
+                    _state['status'] = 'IDLE'
+                return
+        except Exception:
+            pass
 
     try:
         bull_candidates, bear_instruments = _run_stage1()
@@ -1294,20 +1375,25 @@ def _build_exit_prompt(pos: dict, gap_pct: float, candle: 'dict | None') -> str:
 
 
 def _record_exit(pos: dict, reason: str) -> None:
-    exit_price = _get_current_price(pos['symbol'])
+    # Use option LTP for P&L; fall back to index LTP only if option_symbol not stored
+    option_sym = pos.get('option_symbol', '')
+    exit_price = _get_current_price(option_sym) if option_sym else 0.0
+    if exit_price <= 0:
+        exit_price = _get_current_price(pos['symbol'])  # fallback — will be index LTP
     entry = float(pos['entry_price']) or 0.0
     entry_prem = float(pos.get('entry_premium') or 0)
     qty = int(pos.get('qty', 1))
     lot_size = int(pos.get('lot_size', 1))
-    if not entry:
-        pnl_pct = 0.0
-    elif pos['direction'] == 'bull':
-        pnl_pct = (exit_price - entry) / entry * 100
+    # P&L: BTST always buys the option (CE or PE); profit = exit_premium - entry_premium
+    if entry_prem > 0 and option_sym:
+        pnl_pct = (exit_price - entry_prem) / entry_prem * 100
+    elif entry > 0:
+        pnl_pct = (exit_price - entry) / entry * 100 if pos['direction'] == 'bull' else (entry - exit_price) / entry * 100
     else:
-        pnl_pct = (entry - exit_price) / entry * 100
-    # Compute gross P&L using premium * qty * lot_size (options) or price * qty
+        pnl_pct = 0.0
+    # Compute gross P&L using option premium × qty × lot_size
     if entry_prem > 0:
-        gross_pnl = (exit_price - entry_prem) * qty * lot_size if pos['direction'] == 'bull' else (entry_prem - exit_price) * qty * lot_size
+        gross_pnl = (exit_price - entry_prem) * qty * lot_size
     else:
         gross_pnl = (exit_price - entry) * qty if pos['direction'] == 'bull' else (entry - exit_price) * qty
     gross_pnl = round(gross_pnl, 2)
@@ -1323,6 +1409,7 @@ def _record_exit(pos: dict, reason: str) -> None:
     pnl_abs = round(gross_pnl - brokerage, 2)
     pnl_pct = round(pnl_pct, 2)
 
+    global _btst_killed, _btst_daily_loss
     with _state_lock:
         for p in _state['positions']:
             if p['symbol'] == pos['symbol'] and p['status'] == 'HOLDING':
@@ -1341,6 +1428,14 @@ def _record_exit(pos: dict, reason: str) -> None:
             s['wins'] += 1
         else:
             s['losses'] += 1
+
+    # Kill switch: trip if cumulative daily loss exceeds limit
+    max_loss = float(_config.get('BTST_MAX_DAILY_LOSS', 0))
+    if max_loss > 0 and pnl_abs < 0:
+        _btst_daily_loss += pnl_abs  # pnl_abs is negative on loss
+        if abs(_btst_daily_loss) >= max_loss:
+            _btst_killed = True
+            _log(f'Kill switch tripped — daily loss ₹{abs(_btst_daily_loss):,.0f} >= limit ₹{max_loss:,.0f}', 'error')
 
     _broadcast({
         'type': 'exit', 'symbol': pos['symbol'],
@@ -1422,43 +1517,50 @@ def _exit_position(pos: dict, gap_pct: float = 0.0, candle: 'dict | None' = None
     entry_prem = float(pos.get('entry_premium') or pos.get('entry_price') or 0)
     target_prem = float(pos.get('target_premium') or 0)
     sl_prem = float(pos.get('sl_premium') or 0)
+    # current = index LTP (for gap % checks only)
     current = _get_current_price(pos['symbol'])
     entry_price = float(pos.get('entry_price') or 0)
     is_bull = pos['direction'] == 'bull'
+    # option_ltp = actual option premium (for target/SL checks and P&L)
+    option_sym = pos.get('option_symbol', '')
+    option_ltp = _get_current_price(option_sym) if option_sym else 0.0
 
-    if is_bull:
-        pnl_pct = (current - entry_price) / entry_price * 100 if entry_price > 0 else 0
+    # P&L from option premium; both CE long and PE long profit when premium rises
+    if entry_prem > 0 and option_ltp > 0:
+        pnl_pct = (option_ltp - entry_prem) / entry_prem * 100
+    elif entry_price > 0:
+        pnl_pct = (current - entry_price) / entry_price * 100 if is_bull else (entry_price - current) / entry_price * 100
     else:
-        pnl_pct = (entry_price - current) / entry_price * 100 if entry_price > 0 else 0
+        pnl_pct = 0.0
 
-    # Target hit
-    if target_prem > 0 and entry_prem > 0:
-        if (is_bull and current >= target_prem) or (not is_bull and current <= entry_price * (1 - (target_prem - entry_prem) / entry_prem)):
+    # Target hit — compare option LTP against stored target premium (same for CE and PE long)
+    if target_prem > 0 and entry_prem > 0 and option_ltp > 0:
+        if option_ltp >= target_prem:
             _record_exit(pos, f'target hit — P&L {pnl_pct:+.1f}%')
             return
 
-    # SL hit
-    if sl_prem > 0 and entry_prem > 0:
-        if (is_bull and current <= sl_prem) or (not is_bull and current >= entry_price * (1 + (entry_prem - sl_prem) / entry_prem)):
+    # SL hit — option premium dropped below SL level
+    if sl_prem > 0 and entry_prem > 0 and option_ltp > 0:
+        if option_ltp <= sl_prem:
             _record_exit(pos, f'SL hit — P&L {pnl_pct:+.1f}%')
             return
 
-    # Favourable gap >= 1% → book profit
+    # Favourable gap >= 1% in our direction → book profit (index-based check)
     if gap_pct >= 1.0:
         _record_exit(pos, f'gap-up profit +{gap_pct:.1f}%')
         return
 
-    # Adverse gap >= 1% → cut loss
+    # Adverse gap >= 1% against us → cut loss (index-based check)
     if gap_pct <= -1.0:
         _record_exit(pos, f'gap-down loss {gap_pct:.1f}%')
         return
 
-    # If P&L > 2% at any recheck → exit
+    # P&L > 2% at any recheck → exit
     if pnl_pct >= 2.0:
         _record_exit(pos, f'profit target +{pnl_pct:.1f}%')
         return
 
-    # If P&L < -2% at any recheck → cut
+    # P&L < -2% at any recheck → cut
     if pnl_pct <= -2.0:
         _record_exit(pos, f'loss cut {pnl_pct:.1f}%')
         return
@@ -1468,6 +1570,11 @@ def _exit_position(pos: dict, gap_pct: float = 0.0, candle: 'dict | None' = None
 
 
 def _morning_exit_check() -> None:
+    global _btst_killed, _btst_daily_loss
+    # Reset daily kill switch — new trading day
+    _btst_killed = False
+    _btst_daily_loss = 0.0
+
     with _state_lock:
         if _state['status'] != 'HOLDING':
             return
@@ -1527,12 +1634,12 @@ def _init_scheduler() -> None:
         )
         scheduler.add_job(
             _morning_exit_check,
-            CronTrigger(hour=9, minute=15, timezone='Asia/Kolkata'),
+            CronTrigger(hour=9, minute=20, timezone='Asia/Kolkata'),
             id='btst_morning_exit',
             replace_existing=True,
         )
         scheduler.start()
-        _log('APScheduler started: scan@15:20, close@15:28, exit@09:15')
+        _log('APScheduler started: scan@15:20, close@15:28, exit@09:20')
     except Exception as e:
         _log(f'APScheduler init failed: {e}', 'error')
 

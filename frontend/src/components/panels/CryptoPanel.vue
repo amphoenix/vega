@@ -171,7 +171,7 @@
                 <span class="muted">{{ pc.confidence }}% · {{ pc.holdTime }}</span>
                 <span class="cr-pos-levels">
                   <span class="dn">SL {{ formatPrice(pc.sl) }}</span>
-                  <span class="up">TP {{ formatPrice(pc.tp) }}</span>
+                  <span class="up">TP {{ pc.tp > 0 ? formatPrice(pc.tp) : 'Trail' }}</span>
                 </span>
               </div>
               <div class="cr-pos-tax">

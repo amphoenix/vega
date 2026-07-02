@@ -2,7 +2,7 @@
 
 **Multi-Market Trading Terminal**
 
-A professional-grade trading terminal combining real-time broker WebSocket data, full-stack technical analysis with pure-Python indicators, a two-stage F&O signal scanner, a momentum scalp scanner, browser-side Black-Scholes option pricing (live chain ladder + per-ticket repricing), and a full auto-entry/auto-exit execution engine — all in a single browser-based interface.
+A professional-grade trading terminal combining real-time broker WebSocket data, full-stack technical analysis with pure-Python indicators, a pure-technical (LLM-free) F&O signal scanner, a momentum scalp scanner with let-winners-run trailing exits, browser-side Black-Scholes option pricing (live chain ladder + per-ticket repricing), and a full auto-entry/auto-exit execution engine — all in a single browser-based interface. Broker-agnostic: swap Dhan ⇄ IndMoney (or add another) via `config/brokers.yaml`, zero code changes.
 
 **Broker-agnostic** — switch between INDmoney, Dhan, or any future broker by changing one line in `config/brokers.yaml`. Zero code changes.
 
@@ -117,6 +117,11 @@ Fast momentum-based scalp trading on 1-minute candles — **no LLM, pure technic
 - `_on_option_tick` fires on each tick — instant SL/T1 check, no polling
 - Cache keyed by **scrip code** (not trading symbol) — different expiry contracts on same strike never share a cache slot
 - On exit: WS subscription unregistered so dead contract ticks stop immediately
+
+**Let winners run (`SCALP_LET_WINNERS_RUN`, default on):**
+- At T1, the position does **not** hard-exit. Instead the SL is floored to breakeven+brokerage and the graduated trailing stop rides the position toward T2 and beyond.
+- Exit becomes the **trailing SL** or **T2** — so a strong move is captured in full instead of being capped at the first target. Downside is locked at T1-level.
+- Set `SCALP_LET_WINNERS_RUN=false` to restore the classic hard T1 exit.
 
 **Risk controls:**
 | Control | Detail |

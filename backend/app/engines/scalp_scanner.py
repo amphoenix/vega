@@ -62,6 +62,7 @@ SCALP_ATR_SL_MULT   = lambda: _settings.scalp_atr_sl_mult
 SCALP_ATR_T1_MULT   = lambda: _settings.scalp_atr_t1_mult
 SCALP_USE_ATR_SL    = lambda: _settings.scalp_use_atr_sl
 SCALP_MAX_SPREAD_PCT = lambda: _settings.scalp_max_spread_pct
+SCALP_LET_WINNERS_RUN = lambda: _settings.scalp_let_winners_run
 SCALP_LOTS_PER_TRADE = lambda: _settings.scalp_max_lots_per_trade
 SCALP_REENTRY_COOLDOWN = lambda: _settings.scalp_reentry_cooldown_sec
 SCALP_MAX_ENTRIES_PER_DAY = lambda: _settings.scalp_max_entries_per_day
@@ -95,6 +96,8 @@ _state = {
 # Dedup: track last candle timestamp per ticker to avoid re-signalling same bar
 _last_signal_candle: dict = {}  # {ticker: candle_date_str}
 _option_ltp_cache: dict[str, float] = {}   # opt_code.upper() → latest ltp from option WS tick
+_last_option_tick_ts: float = 0.0          # clock() of last option WS tick — staleness guard
+_WS_STALE_SEC = 12.0                        # ticks older than this → treat WS as dead (poller takes over)
 _atm_ws_ltp: dict[str, float] = {}        # trading_symbol → latest ltp from pre-subscribed ATM WS
 _atm_subscribed: dict[str, dict] = {}     # ticker → {strike, ce_symbol, pe_symbol, ce_cb, pe_cb}
 _atm_bid_ask: dict[str, tuple] = {}       # trading_symbol → (bid, ask) refreshed every 60s
@@ -513,6 +516,8 @@ def _on_option_tick(tick: dict, opt_code: str, trading_symbol: str):
     if not ltp:
         return
     code_upper = opt_code.strip().upper()
+    global _last_option_tick_ts
+    _last_option_tick_ts = clock()
     _option_ltp_cache[code_upper] = ltp
     try:
         from ..infrastructure.db import tracked_positions as _tp
@@ -578,9 +583,21 @@ def _on_option_tick(tick: dict, opt_code: str, trading_symbol: str):
                 _tick_high_water.pop(pid, None)
                 try_auto_exit(pid, 'past_t2', rec, ltp)
             elif t1 > 0 and ltp >= t1:
-                logger.info(f"[scalp] Tick T1: {trading_symbol} ltp={ltp:.2f} >= t1={t1:.2f}")
-                _tick_high_water.pop(pid, None)
-                try_auto_exit(pid, 'past_t1', rec, ltp)
+                if SCALP_LET_WINNERS_RUN() and entry > 0:
+                    # Let winners run: don't exit at T1. Lock in profit by flooring SL to
+                    # breakeven+brokerage, then ride toward T2 (graduated trail above keeps
+                    # ratcheting SL up on further ticks; SL or T2 becomes the real exit).
+                    lock_sl = round(entry + brokerage_per_unit, 2)
+                    if lock_sl > sl:
+                        ex['stop_loss_inr'] = lock_sl
+                        _tp.upsert(rec)
+                        logger.info(f"[scalp] T1 reached, letting winner run: {trading_symbol} "
+                                    f"ltp={ltp:.2f} >= t1={t1:.2f} — SL locked ₹{sl:.2f}→₹{lock_sl:.2f}")
+                    check_scalp_hold_timeout(pid, rec, ltp)
+                else:
+                    logger.info(f"[scalp] Tick T1: {trading_symbol} ltp={ltp:.2f} >= t1={t1:.2f}")
+                    _tick_high_water.pop(pid, None)
+                    try_auto_exit(pid, 'past_t1', rec, ltp)
             else:
                 # Hold timeout check — runs on every tick, no REST
                 check_scalp_hold_timeout(pid, rec, ltp)
@@ -745,8 +762,15 @@ def _get_cached_vix() -> Optional[float]:
 
 
 def scalp_ws_active() -> bool:
-    """True when at least one scalp position has an active option WS subscription."""
-    return _scalp_open_count > 0
+    """True only when a scalp position is open AND option ticks are actually fresh.
+
+    Returns False when ticks have gone stale (>_WS_STALE_SEC) so the tracked_monitor
+    poller resumes REST-based SL/timeout checks instead of relying on dead WS ticks —
+    otherwise a stalled feed would leave positions un-exited until a manual refresh.
+    """
+    if _scalp_open_count <= 0:
+        return False
+    return (clock() - _last_option_tick_ts) < _WS_STALE_SEC
 
 
 def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
@@ -1016,7 +1040,14 @@ def _build_scalp_ticket(signal: dict, ticker: str) -> Optional[dict]:
 
         atm_strike = round(spot / strike_interval) * strike_interval
 
-        contract = _broker.resolve_option_contract(ticker, opt_type, atm_strike)
+        # Zero-hero 3PM window: use 1-strike OTM (cheaper, higher-gamma lottery) instead
+        # of ATM. CE → strike above spot, PE → strike below spot.
+        strike = atm_strike
+        if _check_zerohero_window() == 'zerohero':
+            strike = atm_strike + strike_interval if opt_type == 'CE' else atm_strike - strike_interval
+            logger.info(f"[scalp] Zero-hero OTM strike for {ticker} {opt_type}: {strike} (ATM {atm_strike})")
+
+        contract = _broker.resolve_option_contract(ticker, opt_type, strike)
         if not contract:
             logger.debug(f"[scalp] No contract found for {ticker} {opt_type} {atm_strike}")
             return None
@@ -1091,8 +1122,8 @@ def _build_scalp_ticket(signal: dict, ticker: str) -> Optional[dict]:
             'display_symbol':  display,
             'underlying':      ticker,
             'option_type':     opt_type,
-            'strike':          atm_strike,
-            'strike_price':    atm_strike,
+            'strike':          strike,
+            'strike_price':    strike,
             'expiry':          contract.get('expiry_s', ''),
             'security_id':     contract.get('security_id', ''),
             'lot_size':        lot_size,

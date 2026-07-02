@@ -409,14 +409,18 @@ def plan_option_trade(
     rr_ratio        = round(expected_pnl_t1 / max_loss, 2) if max_loss > 0 else 0
 
     # 8. Time window
+    #    Allow intraday entries until 14:45; only the final ~45 min is AVOID
+    #    (theta cliff). Expiry-day contracts are cut earlier via `on_expiry`.
     now_t = now_ist().time()
+    on_expiry = meta['expiry'] == today_ist()
     if now_t < SAFE_OPEN:
         entry_window = f"{SAFE_OPEN.strftime('%H:%M')}–09:45 IST"
-    elif now_t <= dt_time(13, 0):
-        entry_window = f"NOW – within 30 min (deadline 14:30 IST)"
+    elif on_expiry and now_t > dt_time(13, 0):
+        entry_window = "AVOID — expiry-day theta cliff (after 13:00)"
+    elif now_t <= dt_time(14, 45):
+        entry_window = "NOW – intraday"
     else:
-        entry_window = "AVOID — late session, theta + low momentum"
-    on_expiry = meta['expiry'] == today_ist()
+        entry_window = "AVOID — last 45 min, theta cliff"
     time_exit = ("13:00 IST (expiry-day theta cliff)" if on_expiry
                  else f"{FORCE_EXIT.strftime('%H:%M')} IST today")
 
@@ -424,6 +428,7 @@ def plan_option_trade(
         'underlying':     underlying,
         'spot':           round(spot, 2),
         'bias':           bias,
+        'trade_mode':     'swing',          # so P&L/exit/guards attribute correctly
         'option_type':    opt_type,
         'trading_symbol': meta['trading_symbol'],
         'display_symbol': meta.get('display_symbol') or meta['trading_symbol'],

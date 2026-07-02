@@ -11,9 +11,8 @@
         </span>
       </div>
       <div class="btst-controls">
-        <button class="btst-btn start" @click="handleStart" :disabled="state.status !== 'IDLE'">Start</button>
-        <button class="btst-btn stop"  @click="handleStop"  :disabled="state.status === 'IDLE'">Stop</button>
-        <button class="btst-btn trigger" @click="handleTrigger" title="Manual scan trigger">🔍 Scan</button>
+        <!-- Always on, auto-scans @ 15:20 IST. 🔍 Scan = manual override for late starts. -->
+        <button class="btst-btn trigger" @click="handleTrigger" title="Manual scan (auto-runs at 15:20 IST)">🔍 Scan</button>
       </div>
     </div>
 

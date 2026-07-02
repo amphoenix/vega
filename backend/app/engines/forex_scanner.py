@@ -1,11 +1,10 @@
 """
 Forex (Currency Derivatives) Auto-Scanner — background service.
 
-Mirrors the fo_scanner two-stage pipeline for NSE CDS currency pairs:
-  Stage 1 — Technical pre-filter (Supertrend, ADX, RSI, EMA, MACD)
-  Stage 2 — Cerebrum LLM confirmation (optional)
+Pure-technical pipeline for NSE CDS currency pairs (no LLM):
+  Supertrend + ADX + RSI + EMA + MACD → verdict + confidence.
 
-Instruments: FUTCUR (currency futures) on NSE CDS via Dhan.
+Instruments: FUTCUR (currency futures) on NSE CDS via the active broker.
 Pairs: USDINR, EURINR, GBPINR, JPYINR
 
 Market hours: 09:00 – 17:00 IST (NSE CDS segment)
@@ -412,10 +411,10 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
     }
 
 
-# ── Stage 2: Cerebrum LLM confirmation ───────────────────────────────────────
+# ── Pure-technical scan (no LLM) ─────────────────────────────────────────────
 
-def _scan_one(ticker: str, llm_client) -> Optional[dict]:
-    """Two-stage scan: technical pre-filter + optional LLM confirmation."""
+def _scan_one(ticker: str) -> Optional[dict]:
+    """Pure-technical scan — Supertrend + ADX + RSI + EMA + MACD (no LLM)."""
     logger.info(f"Forex scanner: analysing {ticker}")
     try:
         raw = _fetch_forex_data(ticker)
@@ -438,10 +437,8 @@ def _scan_one(ticker: str, llm_client) -> Optional[dict]:
             '_source': 'prefilter',
         }
 
-    logger.info(f"Forex scanner: {ticker} Stage-1 → {tech_cio['final_verdict']} "
+    logger.info(f"Forex scanner: {ticker} → {tech_cio['final_verdict']} "
                 f"conf={tech_cio['confidence_to_trade']}% ({tech_cio['direction']})")
-
-    # Technical-only mode — no LLM needed for currency derivatives
     return tech_cio
 
 
@@ -584,8 +581,8 @@ def _build_forex_ticket(cio: dict) -> Optional[dict]:
 
 # ── Scan cycle ───────────────────────────────────────────────────────────────
 
-def _run_scan_cycle(llm_client):
-    """One full scan cycle across all forex pairs."""
+def _run_scan_cycle():
+    """One full scan cycle across all forex pairs (pure technical)."""
     with _scan_lock:
         _state['last_scan'] = now_ist().isoformat()
         _state['scanned']   = []
@@ -614,7 +611,7 @@ def _run_scan_cycle(llm_client):
                         'timestamp': now_ist().isoformat()})
             with _scan_lock:
                 _state['scanned'].append(ticker)
-            cio = _scan_one(ticker, llm_client)
+            cio = _scan_one(ticker)
             result_q.put((ticker, cio))
         except Exception as exc:
             logger.error(f"Forex worker error {ticker}: {exc}")
@@ -874,15 +871,13 @@ def _scanner_loop():
     with _scan_lock:
         _state['running'] = True
 
-    llm_client = None
-
     while not _stop_event.is_set():
         manual = _manual_trigger.is_set()
         if manual or _mkt.is_cds_hours():
             if manual:
                 _manual_trigger.clear()
             try:
-                _run_scan_cycle(llm_client)
+                _run_scan_cycle()
             except Exception as e:
                 logger.error(f"Forex scan cycle error: {e}", exc_info=True)
 

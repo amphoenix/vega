@@ -850,11 +850,36 @@ async def news_feed(
 # ── F&O scanner data feed ────────────────────────────────────────────────────
 # Used by engines/fo_scanner._scan_one — must not be removed.
 
+_equity_meta_cache: dict[str, tuple] = {}   # ticker → (base, security_id, exchange)
+
+
+def _resolve_equity_meta(ticker: str) -> tuple:
+    """Resolve a stock ticker → (base, security_id, exchange) via the ACTIVE broker's
+    instrument master, so stocks fetch LIVE broker candles instead of delayed (15-min)
+    yfinance. Broker-agnostic: uses BrokerAdapter.search_instruments. Cached per ticker."""
+    key = ticker.upper()
+    if key in _equity_meta_cache:
+        return _equity_meta_cache[key]
+    base = key.replace('.NS', '').replace('.BO', '')
+    meta = (base, '', 'NSE')
+    try:
+        for inst in (get_broker().search_instruments(base, exchange='NSE') or []):
+            if (inst.instrument_type or '').upper() == 'EQUITY' and inst.symbol.upper() == base:
+                meta = (base, str(inst.security_id), inst.exchange or 'NSE')
+                break
+    except Exception:
+        pass
+    _equity_meta_cache[key] = meta
+    return meta
+
+
 def _fetch_market_data(ticker: str) -> dict:
     """Fetch all market data needed for the F&O scan pipeline.
 
-    Price priority:  broker LTP → yfinance close
-    OHLCV priority:  broker 5-min (7 days) → broker daily (200 days) → yfinance
+    Broker-first (LIVE). yfinance is a last-resort fallback only (it's ~15-min
+    delayed) — never the primary source for price/OHLCV.
+      Index  : broker maps ^NSEI/^BSESN internally.
+      Stock  : resolve equity security_id + exchange → broker 5-min candles.
     """
     import yfinance as yf
     from ..shared.indicators import CandleData, ema, rsi, atr, adx_full, supertrend, macd
@@ -868,11 +893,26 @@ def _fetch_market_data(ticker: str) -> dict:
     broker = get_broker()
 
     # ── 1. Live price + OHLCV via broker ─────────────────────────────────
-    ind_price = broker.get_ltp(ticker)
-
-    raw_candles = broker.get_candles(ticker, interval='5m', days=7) or []
-    if len(raw_candles) < 20:
-        raw_candles = broker.get_candles(ticker, interval='1d', days=200) or []
+    if is_index:
+        ind_price = broker.get_ltp(ticker)
+        raw_candles = broker.get_candles(ticker, interval='5m', days=7) or []
+        if len(raw_candles) < 20:
+            raw_candles = broker.get_candles(ticker, interval='1d', days=200) or []
+    else:
+        # Stock: resolve equity security_id so we hit the broker (live), not yfinance.
+        # Skip a separate get_ltp call (one throttled Dhan call per stock × 200 stocks
+        # is the scan-time killer, and equity LTP isn't reliably served) — use the last
+        # 5-min candle close as price instead.
+        _eq_base, _eq_sec, _eq_exch = _resolve_equity_meta(ticker)
+        ind_price = None
+        if _eq_sec:
+            raw_candles = broker.get_candles(_eq_base, interval='5m', days=7,
+                                             exchange=_eq_exch, security_id=_eq_sec) or []
+            if len(raw_candles) < 20:
+                raw_candles = broker.get_candles(_eq_base, interval='1d', days=200,
+                                                 exchange=_eq_exch, security_id=_eq_sec) or []
+        else:
+            raw_candles = []
 
     broker_hist: list[dict] = []
     for c in raw_candles:
