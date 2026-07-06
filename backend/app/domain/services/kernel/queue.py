@@ -1,7 +1,6 @@
 import itertools
 import queue as _queue
-import threading
-from typing import Any, Optional
+from typing import Any
 
 HIGH   = 0
 NORMAL = 1
@@ -25,7 +24,7 @@ class PriorityQueue:
         seq = next(_counter)
         self._q.put((priority, seq, item))
 
-    def pop(self, timeout: Optional[float] = None) -> Any:
+    def pop(self, timeout: float | None = None) -> Any:
         priority, seq, item = self._q.get(timeout=timeout)
         return item
 

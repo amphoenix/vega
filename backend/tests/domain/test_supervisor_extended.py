@@ -6,9 +6,11 @@ day rollover, force-reset, P&L restoration.
 """
 
 import pytest
-from app.domain.safety.kill_switch import KillSwitchEngine, KillSwitchConfig
+
+from app.domain.safety.kill_switch import KillSwitchConfig, KillSwitchEngine
 from app.domain.supervisor.trade_supervisor import (
-    TradeSupervisor, SupervisorConfig, Denial,
+    SupervisorConfig,
+    TradeSupervisor,
 )
 
 

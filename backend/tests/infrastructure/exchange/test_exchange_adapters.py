@@ -5,12 +5,13 @@ Tests run in stub mode (no SDKs installed) by default.
 Mock-based tests exercise the real code paths with mocked SDK objects.
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 
 from app.domain.value_objects.instrument import Instrument, polymarket_instrument
-from app.domain.value_objects.market import MarketType, AssetClass, Currency, ExchangeId
-from app.infrastructure.exchange.base import Order, Ticker, Balance, ExchangePosition
+from app.domain.value_objects.market import AssetClass, Currency, ExchangeId, MarketType
+from app.infrastructure.exchange.base import Order, Ticker
 from app.infrastructure.exchange.ccxt_adapter import CCXTAdapter, CCXTConfig
 from app.infrastructure.exchange.polymarket_adapter import PolymarketAdapter, PolymarketConfig
 

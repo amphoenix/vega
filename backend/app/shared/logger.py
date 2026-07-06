@@ -11,13 +11,12 @@ so handlers are wired once and consistently.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
-import logging
 from logging.handlers import RotatingFileHandler
 
 from .time import today_ist_str
-
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
 _ROOT_NAME = 'vega'

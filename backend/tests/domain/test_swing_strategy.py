@@ -4,13 +4,14 @@ Tests for domain/strategies/swing.py — SwingAIStrategy.
 
 import pytest
 
-from app.domain.strategies.swing import (
-    SwingAIStrategy, SwingConfig, SwingDailyState, TechnicalSignal,
-    ThesisFlip, TimeframeData,
-)
 from app.domain.strategies.base import StrategyState
+from app.domain.strategies.swing import (
+    SwingAIStrategy,
+    SwingConfig,
+    SwingDailyState,
+    TechnicalSignal,
+)
 from app.domain.value_objects.market import MarketType
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

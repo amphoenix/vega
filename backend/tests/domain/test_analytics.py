@@ -5,18 +5,14 @@ Tests core metrics, drawdown, streaks, regime breakdown,
 mode/market breakdown, and session summary.
 """
 
-import pytest
 from datetime import datetime, timedelta
 
 from app.domain.analytics.engine import (
-    AnalyticsEngine, CoreMetrics, DrawdownMetrics,
-    StreakMetrics, RegimePerformance, SessionSummary,
+    AnalyticsEngine,
 )
-from app.domain.entities.trade import Trade, TradeState
+from app.domain.entities.trade import Trade
 from app.domain.value_objects.instrument import crypto_instrument
-from app.domain.value_objects.market import MarketType
 from app.shared.time import IST
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

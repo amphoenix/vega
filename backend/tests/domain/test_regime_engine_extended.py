@@ -6,7 +6,8 @@ and multi-step regime walks.
 """
 
 import pytest
-from app.domain.regime.regime_engine import RegimeEngine, RegimeSnapshot, Regime
+
+from app.domain.regime.regime_engine import Regime, RegimeEngine, RegimeSnapshot
 
 
 @pytest.fixture

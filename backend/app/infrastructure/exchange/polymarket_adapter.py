@@ -23,13 +23,13 @@ Dependencies:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from ...domain.value_objects.instrument import Instrument
-from ...domain.value_objects.market import MarketType, ExchangeId
+from ...domain.value_objects.market import ExchangeId, MarketType
 from ...shared.logger import get_logger
-from .base import ExchangeAdapter, Order, Ticker, Balance, ExchangePosition
+from .base import Balance, ExchangeAdapter, ExchangePosition, Order, Ticker
 
 logger = get_logger('polymarket')
 
@@ -116,7 +116,7 @@ class PolymarketAdapter(ExchangeAdapter):
             )
         """
         try:
-            from polymarket import SecureClient, PublicClient, PRODUCTION, ApiKeyCreds
+            from polymarket import PRODUCTION, ApiKeyCreds, PublicClient, SecureClient
 
             # Build creds if provided
             creds: ApiKeyCreds | None = None

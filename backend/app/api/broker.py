@@ -16,17 +16,17 @@ import queue as _queue
 import threading as _threading
 from concurrent.futures import ThreadPoolExecutor
 
-from ..shared.time import clock, datetime, now_ist
+from ..shared.time import clock, now_ist
 
 # Dedicated pool for blocking broker REST calls (get_ltp, etc.)
 # Keeps them off the default executor so SSE streams don't starve API requests.
 _broker_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix='broker-ltp')
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from ..dependencies import get_broker
+from ..infrastructure.broker.base import resolve_option_security
 from ..shared.logger import get_logger
 
 logger = get_logger('api.broker')
@@ -333,13 +333,22 @@ _SSE_MAX_MINUTES = 30  # hard cap on SSE connection duration
 async def _stream_ticker_impl(ticker: str, request: Request):
     b = get_broker()
     loop = asyncio.get_running_loop()
+
+    # Option tickers ('SENSEX-JUL2026-78200-CE') aren't real broker symbols —
+    # resolve to (exchange, security_id) first, same as the ohlcv() historical
+    # path, or ticks silently never arrive (wrong exchange segment / no match).
+    exchange, security_id = await loop.run_in_executor(
+        _broker_pool, resolve_option_security, b, ticker)
+
     # create_tick_queue may do sync WS setup — run off event loop
-    code, q = await loop.run_in_executor(_broker_pool, b.create_tick_queue, ticker)
+    code, q = await loop.run_in_executor(
+        _broker_pool, b.create_tick_queue, ticker, exchange, security_id)
 
     async def event_generator():
         try:
             # Emit initial LTP immediately so chart doesn't wait
-            ltp = await loop.run_in_executor(_broker_pool, b.get_ltp, ticker)
+            ltp = await loop.run_in_executor(
+                _broker_pool, b.get_ltp, ticker, exchange or 'NFO', security_id)
             if ltp is not None and ltp > 0:
                 yield {'data': json.dumps({
                     'price': ltp, 'ticker': ticker,

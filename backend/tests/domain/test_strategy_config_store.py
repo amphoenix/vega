@@ -2,12 +2,10 @@
 Tests for domain/services/strategy_config_store.py — versioned strategy configs.
 """
 
-import pytest
 
 from app.domain.services.strategy_config_store import (
-    StrategyConfigStore, ConfigVersion, ConfigDiff, _compute_diff,
+    StrategyConfigStore,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

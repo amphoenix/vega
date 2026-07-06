@@ -7,7 +7,8 @@ Provides callbacks for scanners and position monitor.
 
 from __future__ import annotations
 
-from typing import Callable, Any
+from collections.abc import Callable
+from typing import Any
 
 from ...shared.logger import get_logger
 

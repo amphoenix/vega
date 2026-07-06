@@ -2,9 +2,11 @@
 Tests for Kill Switch Engine — system-level safety circuit breaker.
 """
 
-import pytest
 from app.domain.safety.kill_switch import (
-    KillSwitchEngine, KillSwitchConfig, KillSwitchLevel, TriggerType,
+    KillSwitchConfig,
+    KillSwitchEngine,
+    KillSwitchLevel,
+    TriggerType,
 )
 
 

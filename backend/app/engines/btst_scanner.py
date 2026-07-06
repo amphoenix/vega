@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
-import sqlite3
-
-from app.shared.logger import get_logger
-from app.shared.time import now_ist as _now_ist, IST, is_trading_day, clock
 import pathlib
 import queue
-import re
+import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 from typing import Any
 
+from app.shared.logger import get_logger
+from app.shared.time import now_ist as _now_ist
 
 # ── Config Schema ─────────────────────────────────────────────────────────────
 
@@ -226,7 +221,7 @@ BTST_UNIVERSE: list[str] = ['NIFTY', 'SENSEX']
 import pandas as pd  # noqa: E402
 
 
-def _fetch_ohlcv(symbol: str) -> 'pd.DataFrame | None':
+def _fetch_ohlcv(symbol: str) -> pd.DataFrame | None:
     try:
         from ..dependencies import get_broker
         broker = get_broker()
@@ -246,7 +241,7 @@ def _fetch_ohlcv(symbol: str) -> 'pd.DataFrame | None':
     return None
 
 
-def _fetch_intraday_5m(symbol: str) -> 'pd.DataFrame | None':
+def _fetch_intraday_5m(symbol: str) -> pd.DataFrame | None:
     """Fetch today's 5m candles for accurate intraday state at scan time (15:20)."""
     try:
         from ..dependencies import get_broker
@@ -266,7 +261,7 @@ def _fetch_intraday_5m(symbol: str) -> 'pd.DataFrame | None':
     return None
 
 
-def _stage1_filter(symbol: str, df: 'pd.DataFrame', direction: str) -> bool:
+def _stage1_filter(symbol: str, df: pd.DataFrame, direction: str) -> bool:
     if df is None or len(df) < 21:
         return False
     try:
@@ -323,11 +318,12 @@ _OPTION_META: dict[str, dict] = {
 }
 
 
-def _fetch_option_quotes(symbol: str, spot: float, direction: str) -> 'list[dict]':
+def _fetch_option_quotes(symbol: str, spot: float, direction: str) -> list[dict]:
     """Return ATM + 1 OTM option quotes for CE (bull) or PE (bear), next weekly expiry."""
     try:
-        from ..dependencies import get_broker
         import datetime as _dt
+
+        from ..dependencies import get_broker
         broker = get_broker()
         meta = _OPTION_META.get(symbol, {})
         step = meta.get('step', 50)
@@ -440,13 +436,13 @@ def _get_market_context() -> tuple[float, float]:
 
 def _build_score_prompt(
     symbol: str,
-    df_daily: 'pd.DataFrame',
-    df_5m: 'pd.DataFrame | None',
+    df_daily: pd.DataFrame,
+    df_5m: pd.DataFrame | None,
     direction: str,
     nifty_chg: float,
     sensex_chg: float,
-    option_quotes: 'list[dict] | None' = None,
-    technicals: 'dict | None' = None,
+    option_quotes: list[dict] | None = None,
+    technicals: dict | None = None,
 ) -> str:
     # Previous 5 completed daily sessions (exclude today's incomplete candle)
     prev_days = df_daily.iloc[:-1].tail(5)[['Open', 'High', 'Low', 'Close', 'Volume']].round(2)
@@ -515,7 +511,7 @@ def _build_score_prompt(
             )
         option_section = f'Available {opt_type} options:\n' + '\n'.join(opt_lines) + '\n'
     else:
-        option_section = f'Option chain unavailable — estimate premiums based on spot and typical IV.\n'
+        option_section = 'Option chain unavailable — estimate premiums based on spot and typical IV.\n'
 
     return (
         f'You are a BTST options trading analyst for Indian equity markets.\n\n'
@@ -541,13 +537,13 @@ def _build_score_prompt(
 
 def _technical_fallback_score(
     symbol: str,
-    df_daily: 'pd.DataFrame',
-    df_5m: 'pd.DataFrame | None',
+    df_daily: pd.DataFrame,
+    df_5m: pd.DataFrame | None,
     direction: str,
-    technicals: 'dict | None',
-    option_quotes: 'list[dict]',
+    technicals: dict | None,
+    option_quotes: list[dict],
     nifty_chg: float = 0.0,
-) -> 'dict | None':
+) -> dict | None:
     """Pure technical BTST scorer.
 
     BTST logic: buy oversold for overnight gap-up recovery (bull CE),
@@ -619,7 +615,7 @@ def _technical_fallback_score(
         # MACD bullish cross or histogram turning positive
         if macd_hist is not None and macd_hist > 0:
             score += 5
-            parts.append(f'MACD+')
+            parts.append('MACD+')
         if macd_cross == 'bullish':
             score += 3
             parts.append('MACD cross↑')
@@ -748,13 +744,13 @@ def _technical_fallback_score(
 
 def _score_candidate(
     symbol: str,
-    df_daily: 'pd.DataFrame',
-    df_5m: 'pd.DataFrame | None',
+    df_daily: pd.DataFrame,
+    df_5m: pd.DataFrame | None,
     direction: str,
-    technicals: 'dict | None' = None,
+    technicals: dict | None = None,
     nifty_chg: float = 0.0,
     sensex_chg: float = 0.0,
-) -> 'dict | None':
+) -> dict | None:
     # Spot from 5m close or daily
     spot = float(df_5m['Close'].iloc[-1]) if df_5m is not None and len(df_5m) >= 1 else float(df_daily['Close'].iloc[-1])
     option_quotes = _fetch_option_quotes(symbol, spot, direction)
@@ -797,7 +793,9 @@ def _run_stage2(
             # Compute technicals inline from daily data (no yfinance needed)
             technicals = {}
             if df_d is not None and len(df_d) >= 21:
-                from ..shared.indicators import CandleData, ema, rsi as _rsi_fn, adx_full, supertrend, macd as _macd_fn
+                from ..shared.indicators import CandleData, adx_full, ema, supertrend
+                from ..shared.indicators import macd as _macd_fn
+                from ..shared.indicators import rsi as _rsi_fn
                 closes = [float(x) for x in df_d['Close']]
                 candles = [CandleData(open=float(o), high=float(h), low=float(l), close=float(c), volume=float(v))
                            for o, h, l, c, v in zip(df_d['Open'], df_d['High'], df_d['Low'], df_d['Close'], df_d['Volume'])]
@@ -835,7 +833,7 @@ def _run_stage2(
     )
     results: list[dict] = []
 
-    def _score_task(symbol: str, direction: str) -> 'dict | None':
+    def _score_task(symbol: str, direction: str) -> dict | None:
         entry = prefetched.get(symbol, {})
         df_daily = entry.get('df_daily')
         df_5m = entry.get('df_5m')
@@ -1322,7 +1320,7 @@ def _close_entry_window() -> None:
 
 # ── Morning Exit ──────────────────────────────────────────────────────────────
 
-def _fetch_opening_candle(symbol: str) -> 'dict | None':
+def _fetch_opening_candle(symbol: str) -> dict | None:
     try:
         from ..dependencies import get_broker
         candles = get_broker().get_candles(symbol, interval='5m', days=1) or []
@@ -1338,7 +1336,7 @@ def _fetch_opening_candle(symbol: str) -> 'dict | None':
     return None
 
 
-def _build_exit_prompt(pos: dict, gap_pct: float, candle: 'dict | None') -> str:
+def _build_exit_prompt(pos: dict, gap_pct: float, candle: dict | None) -> str:
     candle_str = (
         f'O={candle["open"]:.2f} H={candle["high"]:.2f} L={candle["low"]:.2f} C={candle["close"]:.2f}'
         if candle else 'unavailable'
@@ -1497,7 +1495,7 @@ def _schedule_recheck(pos: dict, retry_count: int) -> None:
     t.start()
 
 
-def _exit_position(pos: dict, gap_pct: float = 0.0, candle: 'dict | None' = None) -> None:
+def _exit_position(pos: dict, gap_pct: float = 0.0, candle: dict | None = None) -> None:
     """Rule-based BTST exit — no LLM.
     
     Rules:

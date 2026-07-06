@@ -17,17 +17,15 @@ Safety gates (ALL must pass before any trade):
 """
 from __future__ import annotations
 
-import os
+import json
 import queue
 import threading
-import json
 from datetime import timedelta
-from typing import Callable, Optional
 
-from ..shared.logger import get_logger
-from ..shared import time as _mkt
-from ..shared.time import now_ist
 from ..dependencies import get_broker
+from ..shared import time as _mkt
+from ..shared.logger import get_logger
+from ..shared.time import now_ist
 
 logger = get_logger('vega.fo_scanner')
 
@@ -107,7 +105,7 @@ _LOT_SIZE_FALLBACK = {
 }
 
 
-def _lot_size_for(ticker: str) -> Optional[int]:
+def _lot_size_for(ticker: str) -> int | None:
     """Resolve lot size from broker master; fall back to a small static map."""
     try:
         lot = get_broker().underlying_lot_size(ticker)
@@ -134,7 +132,7 @@ def _min_agent_agreement(): return _fo_cfg().fo_min_agents
 def _signal_min_dte(): return _fo_cfg().fo_signal_min_dte
 def _max_risk_pct(): return _fo_cfg().fo_max_risk_pct
 
-_scanner_thread: Optional[threading.Thread] = None
+_scanner_thread: threading.Thread | None = None
 _stop_event     = threading.Event()
 _manual_trigger = threading.Event()   # set by trigger_now() to force a scan even off-hours
 _wake_event     = threading.Event()   # wakes the loop's wait() without killing the thread
@@ -281,7 +279,7 @@ def _build_trading_symbol(ticker: str, cio: dict, price: float) -> str:
 
 # ── Stage 1: pure technical pre-filter (no LLM) ──────────────────────────────
 
-def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
+def _technical_cio(ticker: str, raw: dict) -> dict | None:
     """
     Build a CIO-compatible dict purely from ta_utils indicators — zero LLM calls.
     Returns a tradeable signal with confidence penalised when leading indicators
@@ -477,7 +475,7 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
 
 # ── Pure-technical scan (no LLM) ─────────────────────────────────────────────
 
-def _scan_one(ticker: str) -> Optional[dict]:
+def _scan_one(ticker: str) -> dict | None:
     """
     Pure-technical scan — Supertrend + ADX + DI + MACD + EMA (no LLM).
 
@@ -614,8 +612,7 @@ def _run_scan_cycle():
             # Invalidate if direction flipped (e.g., was PE now CE).
             _cache_key = f"{ticker}:{itype}"
             _opposite  = f"{ticker}:{'CE' if itype == 'PE' else 'PE'}"
-            if _opposite in _ticket_cache:
-                del _ticket_cache[_opposite]
+            _ticket_cache.pop(_opposite, None)
             bias = 'BULL' if itype == 'CE' else 'BEAR'
             _fnum = lambda v: float(v) if v not in (None, '', 0) else None
             atr = _fnum(cio.get('_atr')) or _fnum(cio.get('atr'))

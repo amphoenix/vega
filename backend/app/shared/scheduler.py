@@ -15,11 +15,11 @@ Usage:
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from .logger import get_logger
-from .time import IST, now_ist, datetime, dt_time, monotonic, sleep
+from .time import dt_time, monotonic, now_ist
 
 logger = get_logger('scheduler')
 

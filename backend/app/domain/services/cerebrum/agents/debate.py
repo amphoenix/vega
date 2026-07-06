@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, List
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from ..agent import AgentOutput
 
@@ -12,7 +11,7 @@ def run_debate(
     ticker: str,
     company: str,
     price: float,
-    agent_results: List[AgentOutput],
+    agent_results: list[AgentOutput],
     tech_block: str,
     fund_block: str,
     risk_block: str,

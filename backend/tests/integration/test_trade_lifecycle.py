@@ -6,21 +6,21 @@ No mocks. Tests the complete path from signal → risk check → order → fill 
 Uses a minimal stub broker (not the real adapter) purely for testing the pipeline.
 """
 
-import pytest
 import uuid
 from datetime import date
-from typing import Optional
 
-from app.domain.entities.trade import Trade, TradeState
+import pytest
+
 from app.domain.entities.signal import Signal
-from app.domain.value_objects.option_leg import OptionLeg, OptionType
-from app.domain.safety.kill_switch import KillSwitchEngine, KillSwitchConfig
-from app.domain.supervisor.trade_supervisor import TradeSupervisor, SupervisorConfig
+from app.domain.entities.trade import Trade, TradeState
 from app.domain.risk.budget_guard import check_budget
 from app.domain.risk.exposure_guard import ExposureGuard
 from app.domain.risk.position_sizer import compute_size
+from app.domain.safety.kill_switch import KillSwitchConfig, KillSwitchEngine
 from app.domain.services.brokerage_calc import calc_brokerage
-from app.infrastructure.broker.base import BrokerAdapter, OrderResult, QuoteResult, PositionInfo
+from app.domain.supervisor.trade_supervisor import SupervisorConfig, TradeSupervisor
+from app.domain.value_objects.option_leg import OptionLeg, OptionType
+from app.infrastructure.broker.base import BrokerAdapter, OrderResult, PositionInfo
 
 
 class _StubBroker(BrokerAdapter):

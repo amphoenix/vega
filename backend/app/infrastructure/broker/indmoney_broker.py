@@ -17,17 +17,23 @@ import json
 import os
 import queue as _queue
 import threading
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 import requests as _requests
 
+from ...shared import time as _shared_time
 from ...shared.logger import get_logger
 from ...shared.parse_expiry import parse_expiry, parse_expiry_datetime
-from ...shared import time as _shared_time
-from ...shared.time import clock, datetime, timedelta, fmt_candle_date, now_ist, sleep
+from ...shared.time import clock, datetime, fmt_candle_date, now_ist, sleep, timedelta
 from .base import (
-    BrokerAdapter, CandleData, HoldingInfo, InstrumentInfo,
-    OrderResult, PositionInfo, QuoteResult,
+    BrokerAdapter,
+    CandleData,
+    HoldingInfo,
+    InstrumentInfo,
+    OrderResult,
+    PositionInfo,
+    QuoteResult,
 )
 
 logger = get_logger('indmoney_broker')
@@ -77,14 +83,14 @@ class INDMoneyBroker(BrokerAdapter):
         self._tick_callbacks: dict[str, set] = {}
         self._callback_lock = threading.Lock()
         self._ws_instance = None
-        self._ws_thread: Optional[threading.Thread] = None
+        self._ws_thread: threading.Thread | None = None
         self._ws_lock = threading.Lock()
         self._subscribers: dict[str, set] = {}
         self._sub_lock = threading.Lock()
         self._ws_msg_count = 0
 
         # Cash cache (60s TTL)
-        self._cash_cache: Optional[tuple[float, float]] = None
+        self._cash_cache: tuple[float, float] | None = None
         self._cash_lock = threading.Lock()
 
         # Scrip code cache: "SBIN.NS" → "NSE_2885"
@@ -143,7 +149,7 @@ class INDMoneyBroker(BrokerAdapter):
                 if val:
                     self._fno_sym_index.setdefault(val, []).append(inst)
 
-    def _resolve_fo_instrument(self, symbol: str) -> Optional[dict]:
+    def _resolve_fo_instrument(self, symbol: str) -> dict | None:
         """Resolve F&O trading symbol → instrument master row (nearest expiry)."""
         self._build_fno_index()
         sym = symbol.upper()
@@ -203,7 +209,7 @@ class INDMoneyBroker(BrokerAdapter):
         'INDIAVIX':   'NSE_40000007',
     }
 
-    def _scrip_code(self, ticker: str, source: str = 'equity') -> Optional[str]:
+    def _scrip_code(self, ticker: str, source: str = 'equity') -> str | None:
         """Convert Yahoo-style ticker → IndStocks scrip code (NSE_3045)."""
         key = f'{ticker}|{source}'
         with self._scrip_lock:
@@ -239,7 +245,7 @@ class INDMoneyBroker(BrokerAdapter):
             return self._scrip_code(ticker, 'fno')
         return None
 
-    def _security_id(self, ticker: str, source: str = 'equity') -> Optional[str]:
+    def _security_id(self, ticker: str, source: str = 'equity') -> str | None:
         code = self._scrip_code(ticker, source)
         return code.split('_', 1)[1] if code else None
 
@@ -368,7 +374,7 @@ class INDMoneyBroker(BrokerAdapter):
     # ── Core: get_ltp ─────────────────────────────────────────────────────
 
     def get_ltp(self, symbol: str, exchange: str = 'NFO',
-                security_id: str = '') -> Optional[float]:
+                security_id: str = '') -> float | None:
         if self._stub:
             return None
 
@@ -422,7 +428,7 @@ class INDMoneyBroker(BrokerAdapter):
             pass
         return None
 
-    def _option_ltp(self, symbol: str) -> Optional[float]:
+    def _option_ltp(self, symbol: str) -> float | None:
         """Get LTP for F&O contract via resolved instrument."""
         inst = self._resolve_fo_instrument(symbol)
         if not inst:
@@ -453,7 +459,7 @@ class INDMoneyBroker(BrokerAdapter):
     # ── Core: get_quote ───────────────────────────────────────────────────
 
     def get_quote(self, symbol: str, exchange: str = 'NFO',
-                  security_id: str = '') -> Optional[QuoteResult]:
+                  security_id: str = '') -> QuoteResult | None:
         if self._stub:
             return None
 
@@ -488,7 +494,7 @@ class INDMoneyBroker(BrokerAdapter):
             logger.warning(f'Quote error {symbol}: {e}')
             return None
 
-    def _option_quote(self, symbol: str) -> Optional[QuoteResult]:
+    def _option_quote(self, symbol: str) -> QuoteResult | None:
         """Full quote for F&O contract with bid/ask from market depth."""
         inst = self._resolve_fo_instrument(symbol.upper())
         if not inst:
@@ -589,7 +595,7 @@ class INDMoneyBroker(BrokerAdapter):
     def load_instruments(self, source: str = 'fno') -> list:
         return self._load_instruments(source)
 
-    def underlying_lot_size(self, underlying: str) -> Optional[int]:
+    def underlying_lot_size(self, underlying: str) -> int | None:
         base = self._norm(underlying)
         today = _shared_time.today_ist()
         rows = self._load_instruments('fno')
@@ -616,7 +622,7 @@ class INDMoneyBroker(BrokerAdapter):
 
     def resolve_option_contract(
         self, underlying: str, option_type: str, strike: float,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         base = self._norm(underlying)
         today = _shared_time.today_ist()
         rows = self._load_instruments('fno')
@@ -872,11 +878,18 @@ class INDMoneyBroker(BrokerAdapter):
             self._ws_unsubscribe(codes)
         return True
 
-    def create_tick_queue(self, symbol: str) -> tuple[str, _queue.Queue]:
+    def create_tick_queue(
+        self, symbol: str, exchange: str = '', security_id: str = '',
+    ) -> tuple[str, _queue.Queue]:
         """Create a queue fed by WebSocket ticks for *symbol*.
 
         Returns (scrip_code, queue).  Mirrors old backend's SSE stream
         pattern: queue gets JSON payloads pushed from _ws_on_message.
+
+        exchange/security_id accepted for interface parity with DhanBroker
+        but not yet used — same limitation as get_ltp above (_scrip_code
+        does its own lookup). Fine for now: option live-tick resolution
+        is only exercised on the active broker (Dhan).
         """
         code = self._scrip_code(symbol)
         if not code:
@@ -1128,7 +1141,7 @@ class INDMoneyBroker(BrokerAdapter):
 
     def get_instrument(
         self, symbol: str, exchange: str = 'NFO',
-    ) -> Optional[InstrumentInfo]:
+    ) -> InstrumentInfo | None:
         if self._stub:
             return None
         inst = self._resolve_fo_instrument(symbol)

@@ -3,11 +3,11 @@ Integration tests for audit log persistence (SQLite).
 """
 
 import os
-import tempfile
-import pytest
 from unittest.mock import patch
 
-from app.domain.audit.decision_log import DecisionRecord, DecisionOutcome
+import pytest
+
+from app.domain.audit.decision_log import DecisionOutcome, DecisionRecord
 from app.infrastructure.db import state_store
 
 

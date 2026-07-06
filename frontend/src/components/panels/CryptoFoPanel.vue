@@ -310,7 +310,7 @@ const refresh = async () => {
     if (p.data?.data) pnl.value = p.data.data
     if (pos.data?.data) positions.value = pos.data.data
     if (sig.data?.data) signals.value = (sig.data.data || []).reverse()
-  } catch (e) { /* silent */ }
+  } catch (_e) { /* silent */ }
 }
 
 onMounted(() => {

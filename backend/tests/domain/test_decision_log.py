@@ -3,8 +3,11 @@ Tests for Decision Log — audit trail for trade decisions.
 """
 
 import pytest
+
 from app.domain.audit.decision_log import (
-    DecisionRecord, DecisionLog, DecisionOutcome,
+    DecisionLog,
+    DecisionOutcome,
+    DecisionRecord,
 )
 
 

@@ -27,17 +27,27 @@ Scans configurable universe every 300s via Binance REST.
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 import uuid
-from typing import Optional
 
 import requests
 
 from ...config import settings
+from ...domain.value_objects.instrument import crypto_instrument
+from ...infrastructure.exchange.ccxt_adapter import CCXTAdapter, CCXTConfig
 from ...shared.indicators import (
-    ema_series, rsi, macd, atr_from_dicts, volume_ratio,
-    adx, bollinger_bands, CandleData, detect_candle_patterns,
-    stoch_rsi, aroon, roc,
+    CandleData,
+    adx,
+    aroon,
+    atr_from_dicts,
+    bollinger_bands,
+    detect_candle_patterns,
+    ema_series,
+    macd,
+    rsi,
+    stoch_rsi,
+    volume_ratio,
 )
 from ...shared.logger import get_logger
 from ...shared.time import clock
@@ -46,6 +56,67 @@ logger = get_logger('crypto_scanner')
 
 _BINANCE = 'https://api.binance.com'
 _MAX_SIGNALS = 100
+
+
+# ── Async<->sync execution bridge ───────────────────────────────────────────
+# CCXTAdapter is asyncio-based; the scanner loop is a plain thread. A single
+# dedicated background event loop (rather than asyncio.run() per call) keeps
+# the exchange's aiohttp connection pool and rate limiter alive across calls.
+_async_loop: asyncio.AbstractEventLoop | None = None
+_async_loop_lock = threading.Lock()
+
+
+def _get_async_loop() -> asyncio.AbstractEventLoop:
+    global _async_loop
+    if _async_loop is None:
+        with _async_loop_lock:
+            if _async_loop is None:
+                loop = asyncio.new_event_loop()
+                threading.Thread(target=loop.run_forever, daemon=True,
+                                  name='crypto-ccxt-loop').start()
+                _async_loop = loop
+    return _async_loop
+
+
+def _run_async(coro, timeout: float = 20.0):
+    return asyncio.run_coroutine_threadsafe(coro, _get_async_loop()).result(timeout=timeout)
+
+
+# ── Execution exchange: perpetual futures (not spot — spot can't short) ────
+# Separate instance from dependencies.get_crypto_exchange() (which stays spot
+# for the manual quick-trade API). Same account/keys, default_type='swap'.
+_exchange: CCXTAdapter | None = None
+_exchange_lock = threading.Lock()
+_leveraged_symbols: set[str] = set()
+
+
+def _get_exchange() -> CCXTAdapter:
+    global _exchange
+    if _exchange is None:
+        with _exchange_lock:
+            if _exchange is None:
+                config = CCXTConfig(
+                    exchange_name=settings.crypto_exchange,
+                    api_key=settings.crypto_api_key,
+                    secret=settings.crypto_api_secret,
+                    password=settings.crypto_passphrase,
+                    default_type='swap',
+                    paper_mode=(settings.crypto_mode != 'live'),
+                    paper_capital=settings.crypto_capital_usd,
+                )
+                ex = CCXTAdapter(config)
+                _run_async(ex.connect())
+                _exchange = ex
+    return _exchange
+
+
+def _to_perp_symbol(binance_symbol: str) -> str:
+    """'BTCUSDT' -> 'BTC/USDT:USDT' (CCXT unified linear-swap symbol)."""
+    for quote in ('USDT', 'USDC', 'BUSD'):
+        if binance_symbol.endswith(quote) and len(binance_symbol) > len(quote):
+            base = binance_symbol[:-len(quote)]
+            return f'{base}/{quote}:{quote}'
+    return binance_symbol
 
 
 def _fetch_klines(symbol: str, interval: str = '5m', limit: int = 200) -> list[dict]:
@@ -85,7 +156,7 @@ def _fetch_klines(symbol: str, interval: str = '5m', limit: int = 200) -> list[d
 def _compute_signal(candles: list[dict], trend_candles: list[dict],
                     min_confidence: int = None,
                     sl_pct: float = None,
-                    tp_pct: float = None) -> Optional[dict]:
+                    tp_pct: float = None) -> dict | None:
     """Combined entry logic from 3 proven Freqtrade strategies.
 
     Sources (in priority order):
@@ -401,7 +472,7 @@ def _compute_signal(candles: list[dict], trend_candles: list[dict],
     max_cats = 16
     min_votes = 4  # TREND_1H + dip_trigger + 2 confirms (realistic)
 
-    side: Optional[str] = None
+    side: str | None = None
     confidence = 0
     conditions: list[str] = []
 
@@ -507,7 +578,7 @@ class CryptoScanner:
     """
 
     def __init__(self, bot_config=None) -> None:
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
 
@@ -546,6 +617,7 @@ class CryptoScanner:
         """Persist open positions to SQLite so they survive server restarts."""
         try:
             import json as _json
+
             from ...infrastructure.db import state_store
             with self._lock:
                 data = _json.dumps(list(self._positions.values()))
@@ -558,6 +630,7 @@ class CryptoScanner:
         """Restore open positions from SQLite on startup."""
         try:
             import json as _json
+
             from ...infrastructure.db import state_store
             bot_key = self._bot.bot_id if self._bot else 'singleton'
             raw = state_store.get_state(f'crypto_positions:{bot_key}')
@@ -669,7 +742,7 @@ class CryptoScanner:
             cfg['bot_name'] = self._bot.name
         return cfg
 
-    def manual_close(self, symbol: str) -> Optional[dict]:
+    def manual_close(self, symbol: str) -> dict | None:
         """Close a position manually. Returns trade result or None."""
         with self._lock:
             pos = self._positions.get(symbol)
@@ -965,10 +1038,7 @@ class CryptoScanner:
             # BB mid exit needs enough profit to cover fees (~0.2% exchange)
             # 1% was too low — $10 on $1000 gets eaten by fees
             if bb_mid and profit_pct > 0.03:
-                if side == 'LONG' and price > bb_mid:
-                    self._close_position(symbol, price, reason='bb_mid_exit')
-                    continue
-                elif side == 'SHORT' and price < bb_mid:
+                if (side == 'LONG' and price > bb_mid) or (side == 'SHORT' and price < bb_mid):
                     self._close_position(symbol, price, reason='bb_mid_exit')
                     continue
 
@@ -1004,50 +1074,98 @@ class CryptoScanner:
     def _open_position(self, symbol: str, price: float, signal: dict,
                        direction: str = 'LONG') -> None:
         qty = self._calc_qty(price)
+        if qty <= 0:
+            return
+
+        try:
+            exchange = _get_exchange()
+            perp_symbol = _to_perp_symbol(symbol)
+            if perp_symbol not in _leveraged_symbols:
+                _run_async(exchange.set_leverage(1, perp_symbol))
+                _leveraged_symbols.add(perp_symbol)
+            instrument = crypto_instrument(perp_symbol, exchange=exchange.exchange_id, is_perpetual=True)
+            side = 'buy' if direction == 'LONG' else 'sell'
+            order = _run_async(exchange.place_order(instrument, side, qty, price=price))
+        except Exception as exc:
+            logger.error('EXEC FAIL open %s %s: %s', direction, symbol, exc)
+            return
+
+        if order.status == 'REJECTED' or order.fill_price <= 0:
+            logger.error('EXEC REJECTED open %s %s: %s', direction, symbol, order.raw)
+            return
+
+        fill_price = order.fill_price
+        qty = order.filled_qty or qty
+        mode = 'paper' if exchange.is_paper else 'live'
 
         tp_dist = signal['tp_dist']
         if direction == 'LONG':
-            sl_price = round(price - signal['sl_dist'], 6)
-            tp_price = round(price + tp_dist, 6) if tp_dist > 0 else 0.0
+            sl_price = round(fill_price - signal['sl_dist'], 6)
+            tp_price = round(fill_price + tp_dist, 6) if tp_dist > 0 else 0.0
         else:  # SHORT
-            sl_price = round(price + signal['sl_dist'], 6)
-            tp_price = round(price - tp_dist, 6) if tp_dist > 0 else 0.0
+            sl_price = round(fill_price + signal['sl_dist'], 6)
+            tp_price = round(fill_price - tp_dist, 6) if tp_dist > 0 else 0.0
 
         with self._lock:
             self._positions[symbol] = {
                 'symbol':        symbol,
                 'side':          direction,
-                'entry_price':   price,
+                'entry_price':   fill_price,
                 'qty':           qty,
                 'entry_time':    int(clock() * 1000),
-                'current_price': price,
+                'current_price': fill_price,
                 'pnl':           0.0,
                 'sl':            sl_price,
                 'tp':            tp_price,
                 'confidence':    signal['confidence'],
-                'notional':      round(price * qty, 2),
-                'peak_price':    price,    # for trailing SL (LONG)
-                'trough_price':  price,    # for trailing SL (SHORT)
+                'notional':      round(fill_price * qty, 2),
+                'peak_price':    fill_price,    # for trailing SL (LONG)
+                'trough_price':  fill_price,    # for trailing SL (SHORT)
                 'be_activated':  False,    # break-even SL activated?
                 'bb_mid':        signal.get('bb_mid'),  # CombinedBinHAndCluc exit level
                 'bot_id':        self._bot.bot_id if self._bot else None,
-                'mode':          'paper',
+                'mode':          mode,
+                'order_id':      order.order_id,
             }
         self._save_positions()
         bot_label = f'bot:{self._bot.bot_id[:8]}' if self._bot else 'singleton'
-        logger.info('OPEN %s %s @ %.6f  qty=%.6f  SL=%.6f  TP=%.6f  conf=%d  [%s|paper]',
-                     direction, symbol, price, qty, sl_price, tp_price, signal['confidence'], bot_label)
+        logger.info('OPEN %s %s @ %.6f  qty=%.6f  SL=%.6f  TP=%.6f  conf=%d  [%s|%s]',
+                     direction, symbol, fill_price, qty, sl_price, tp_price, signal['confidence'], bot_label, mode)
 
-    def _close_position(self, symbol: str, price: float, reason: str = '') -> Optional[dict]:
+    def _close_position(self, symbol: str, price: float, reason: str = '') -> dict | None:
+        with self._lock:
+            pos = self._positions.get(symbol)
+        if not pos:
+            return None
+
+        side = pos.get('side', 'LONG')
+        qty = pos['qty']
+
+        try:
+            exchange = _get_exchange()
+            perp_symbol = _to_perp_symbol(symbol)
+            instrument = crypto_instrument(perp_symbol, exchange=exchange.exchange_id, is_perpetual=True)
+            close_side = 'sell' if side == 'LONG' else 'buy'
+            order = _run_async(exchange.place_order(instrument, close_side, qty, price=price))
+        except Exception as exc:
+            logger.error('EXEC FAIL close %s (%s): %s — position stays open, retry next cycle',
+                         symbol, reason, exc)
+            return None
+
+        if order.status == 'REJECTED' or order.fill_price <= 0:
+            logger.error('EXEC REJECTED close %s (%s): %s — position stays open, retry next cycle',
+                         symbol, reason, order.raw)
+            return None
+
+        price = order.fill_price
+
         with self._lock:
             pos = self._positions.pop(symbol, None)
         if not pos:
             return None
         self._save_positions()
 
-        qty = pos['qty']
         entry = pos['entry_price']
-        side = pos.get('side', 'LONG')
 
         if side == 'LONG':
             pnl = round((price - entry) * qty, 2)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List
+from typing import Any
 
 _DOMAIN_DEFAULTS = [
     {'name': 'Technical Expert',    'role': 'Technical Analyst',  'firm': 'Independent Research', 'domain': 'technical',   'data_focus': 'RSI, EMA, VWAP, ATR, momentum',             'entity_source': 'domain_expert'},
@@ -16,10 +16,10 @@ def extract_entities(
     llm_client: Any,
     ticker: str,
     company: str,
-    news_titles: List[str],
-    real_analysts: List[str],
-    real_holders: List[str],
-) -> List[dict]:
+    news_titles: list[str],
+    real_analysts: list[str],
+    real_holders: list[str],
+) -> list[dict]:
     """
     Extract named analysts, fund managers, and insiders from news and
     ownership data, then merge with domain defaults to build the
@@ -56,7 +56,7 @@ Only include people you are confident about — do not hallucinate names.
 If fewer than 5 real entities are found, return an empty array rather than fabricating people.
 Return only the JSON array — no markdown, no extra text."""
 
-    extracted: List[dict] = []
+    extracted: list[dict] = []
     try:
         response = llm_client.complete(
             agent_id='EntityExtractor',

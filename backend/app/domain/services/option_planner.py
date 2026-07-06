@@ -11,11 +11,10 @@ Public API:
 from __future__ import annotations
 
 import math
-from typing import Optional
 
-from . import greeks as gk
 from ...shared.logger import get_logger
-from ...shared.time import date, datetime, dt_time, now_ist, today_ist, SAFE_OPEN, FORCE_EXIT
+from ...shared.time import FORCE_EXIT, SAFE_OPEN, date, datetime, dt_time, now_ist, today_ist
+from . import greeks as gk
 
 logger = get_logger('option_planner')
 
@@ -72,7 +71,7 @@ def _field(inst: dict, key: str, default=''):
     return default
 
 
-def _parse_expiry(s) -> Optional[date]:
+def _parse_expiry(s) -> date | None:
     if s is None or s == '':
         return None
     s = str(s).strip()
@@ -98,7 +97,7 @@ def _load_fno_instruments():
     return _get_broker().load_instruments('fno')
 
 
-def _nearest_expiry(base: str, opt_type: str, max_dte: int, min_dte: int) -> Optional[dict]:
+def _nearest_expiry(base: str, opt_type: str, max_dte: int, min_dte: int) -> dict | None:
     today = today_ist()
     best  = None
     for inst in _load_fno_instruments():
@@ -119,7 +118,7 @@ def _nearest_expiry(base: str, opt_type: str, max_dte: int, min_dte: int) -> Opt
     return best
 
 
-def _live_spot(ticker: str) -> Optional[float]:
+def _live_spot(ticker: str) -> float | None:
     try:
         broker = _get_broker()
         p = broker.get_ltp(ticker, exchange='NSE')
@@ -149,7 +148,7 @@ def _atm_iv_estimate(base: str, spot: float, expiry_d: date, opt_type: str = 'CE
     return gk.default_iv(base)
 
 
-def _resolve_strike(base: str, target_strike: int, expiry_d: date, opt_type: str) -> Optional[dict]:
+def _resolve_strike(base: str, target_strike: int, expiry_d: date, opt_type: str) -> dict | None:
     for inst in _load_fno_instruments():
         sym = str(_field(inst, 'trading_symbol', '')).strip().upper()
         if not sym.startswith(base):
@@ -198,18 +197,18 @@ def _compute_fees(side: str, opt_type: str, premium: float, lot: int) -> dict:
 def plan_option_trade(
     underlying: str,
     bias: str,
-    spot: Optional[float] = None,
+    spot: float | None = None,
     target_delta: float = 0.50,
     min_dte: int = 3,
     max_dte: int = 21,
     rationale: str = '',
-    spot_target_1: Optional[float] = None,
-    spot_target_2: Optional[float] = None,
-    spot_stop_loss: Optional[float] = None,
-    atr: Optional[float] = None,
-    expected_days_to_t1: Optional[int] = None,
-    expected_days_to_t2: Optional[int] = None,
-) -> Optional[dict]:
+    spot_target_1: float | None = None,
+    spot_target_2: float | None = None,
+    spot_stop_loss: float | None = None,
+    atr: float | None = None,
+    expected_days_to_t1: int | None = None,
+    expected_days_to_t2: int | None = None,
+) -> dict | None:
     """Produce a concrete option trade ticket. Returns dict or None."""
     bias = bias.upper()
     opt_type = 'CE' if bias == 'BULL' else 'PE'

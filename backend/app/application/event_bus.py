@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
-from typing import Callable, Any
+from collections.abc import Callable
+from typing import Any
 
 from ..domain.events.events import DomainEvent
 from ..shared.logger import get_logger

@@ -17,8 +17,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field, asdict
-from typing import Optional
+from dataclasses import asdict, dataclass
 
 from ...shared.logger import get_logger
 
@@ -45,7 +44,7 @@ class BotConfig:
     trade_cooldown_sec: int = 600
 
     @classmethod
-    def from_dict(cls, d: dict) -> 'BotConfig':
+    def from_dict(cls, d: dict) -> BotConfig:
         known = {f.name for f in cls.__dataclass_fields__.values()}
         return cls(**{k: v for k, v in d.items() if k in known})
 
@@ -113,7 +112,7 @@ class CryptoBot:
     def get_pnl(self) -> dict:
         return self._get_scanner().get_pnl()
 
-    def manual_close(self, symbol: str) -> Optional[dict]:
+    def manual_close(self, symbol: str) -> dict | None:
         return self._get_scanner().manual_close(symbol)
 
     def reset_daily(self) -> None:
@@ -281,7 +280,7 @@ class BotManager:
                 count += 1
         return count
 
-    def get_bot(self, bot_id: str) -> Optional[CryptoBot]:
+    def get_bot(self, bot_id: str) -> CryptoBot | None:
         self._ensure_loaded()
         return self._bots.get(bot_id)
 

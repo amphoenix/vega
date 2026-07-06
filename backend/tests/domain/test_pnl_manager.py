@@ -3,8 +3,9 @@ Tests for PnL Manager — trade result computation.
 """
 
 import pytest
-from app.domain.entities.trade import Trade, TradeState
-from app.domain.services.pnl_manager import compute_trade_result, TradeResult
+
+from app.domain.entities.trade import Trade
+from app.domain.services.pnl_manager import compute_trade_result
 
 
 def _make_closed_trade(

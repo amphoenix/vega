@@ -31,14 +31,12 @@ Safety:
 
 from __future__ import annotations
 
-import os
 import threading
-from typing import Optional
 
-from ..shared import time as _mkt
-from ..shared.time import datetime, timezone, timedelta, clock, sleep, now_ist
-from ..shared.logger import get_logger
 from ..dependencies import get_broker
+from ..shared import time as _mkt
+from ..shared.logger import get_logger
+from ..shared.time import clock, datetime, now_ist, sleep, timedelta, timezone
 
 logger = get_logger('vega.services.order_executor')
 
@@ -220,8 +218,9 @@ def _save_exit_fired() -> None:
     Without this, a restart between SELL order placement and fill confirmation
     can fire a second exit order → unintended short position at broker."""
     try:
-        from ..infrastructure.db.pnl_store import set_trading_state
         import json as _j
+
+        from ..infrastructure.db.pnl_store import set_trading_state
         set_trading_state('_EXIT_FIRED', _j.dumps(_exit_fired))
     except Exception:
         pass
@@ -230,8 +229,9 @@ def _save_exit_fired() -> None:
 def _save_sl_direction_ledger() -> None:
     """Persist _sl_direction_ledger so same-direction re-entry blocks survive restarts."""
     try:
-        from ..infrastructure.db.pnl_store import set_trading_state
         import json as _j
+
+        from ..infrastructure.db.pnl_store import set_trading_state
         set_trading_state('_SL_DIR_LEDGER', _j.dumps(_sl_direction_ledger))
     except Exception:
         pass
@@ -240,8 +240,9 @@ def _save_sl_direction_ledger() -> None:
 def _save_daily_ledger() -> None:
     """Persist _daily_ledger so per-symbol entry/SL counts survive restarts."""
     try:
-        from ..infrastructure.db.pnl_store import set_trading_state
         import json as _j
+
+        from ..infrastructure.db.pnl_store import set_trading_state
         set_trading_state('_DAILY_LEDGER', _j.dumps(_daily_ledger))
     except Exception:
         pass
@@ -291,7 +292,7 @@ def _restore_daily_pnl() -> None:
     today_str = now_ist().strftime('%Y-%m-%d')
 
     try:
-        from ..infrastructure.db.pnl_store import last_trade_date, get_trading_state
+        from ..infrastructure.db.pnl_store import get_trading_state, last_trade_date
         persisted_ks_date = get_trading_state('SWING_KILL_SWITCH_DATE', '')
         pnl = _swing_pnl_from_db()
         if persisted_ks_date == today_str:
@@ -382,7 +383,7 @@ def is_force_exit_pending(track_id: str) -> bool:
 
 
 def record_exit_pnl(entry_premium: float, exit_premium: float, qty: int,
-                    net_pnl: Optional[float] = None):
+                    net_pnl: float | None = None):
     """Record realized P&L from an exit. Pass net_pnl (after brokerage) when available.
     Reads daily total from DB (single source of truth) and triggers kill-switch if breached."""
     global _daily_kill_switch
@@ -474,7 +475,7 @@ def enforce_strict_sl(ticket: dict) -> dict:
 
 # ── Auto-entry ────────────────────────────────────────────────────────────────
 
-def try_auto_entry(signal: dict) -> Optional[dict]:
+def try_auto_entry(signal: dict) -> dict | None:
     """
     Called by fo_scanner after a signal passes all gates.
     Returns the tracked record if entry was placed, else None.
@@ -1170,7 +1171,7 @@ def _trail_sl_to_breakeven(rec: dict, exited_qty: int):
 
 # ── Scalp entry ──────────────────────────────────────────────────────────────
 
-def try_scalp_entry(signal: dict) -> Optional[dict]:
+def try_scalp_entry(signal: dict) -> dict | None:
     """
     Called by scalp_scanner when a momentum signal fires.
     Uses scalp-specific gates: separate kill-switch, higher re-entry limits.

@@ -15,16 +15,17 @@ Features:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
+from ..domain.entities.signal import Signal
+from ..domain.safety.kill_switch import KillSwitchConfig, KillSwitchEngine
+from ..domain.supervisor.trade_supervisor import Denial, SupervisorConfig, TradeSupervisor
+from ..infrastructure.broker.base import BrokerAdapter, BrokerFactory, OrderResult
 from ..shared.logger import get_logger
 from ..shared.time import now_ist
-from ..domain.entities.signal import Signal
-from ..domain.safety.kill_switch import KillSwitchEngine, KillSwitchConfig
-from ..domain.supervisor.trade_supervisor import TradeSupervisor, SupervisorConfig, Denial
-from ..infrastructure.broker.base import BrokerAdapter, BrokerFactory, OrderResult
 
 logger = get_logger('paper_validator')
 

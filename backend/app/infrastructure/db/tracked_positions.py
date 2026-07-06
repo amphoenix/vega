@@ -16,9 +16,8 @@ import os
 import tempfile
 import threading
 import uuid
-from typing import List, Optional
 
-from ...shared.time import datetime, now_ist
+from ...shared.time import now_ist
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 _DATA_DIR  = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
@@ -26,10 +25,10 @@ _FILE_PATH = os.path.abspath(os.path.join(_DATA_DIR, 'tracked_positions.json'))
 _lock      = threading.Lock()
 
 # In-memory read cache: invalidated on every _write(), avoids ~20 disk reads/min.
-_cache: Optional[List[dict]] = None
+_cache: list[dict] | None = None
 
 
-def _read() -> List[dict]:
+def _read() -> list[dict]:
     global _cache
     if _cache is not None:
         return list(_cache)
@@ -37,7 +36,7 @@ def _read() -> List[dict]:
         _cache = []
         return []
     try:
-        with open(_FILE_PATH, 'r') as f:
+        with open(_FILE_PATH) as f:
             data = json.load(f)
         _cache = data if isinstance(data, list) else []
         return list(_cache)
@@ -45,7 +44,7 @@ def _read() -> List[dict]:
         return []
 
 
-def _write(items: List[dict]) -> None:
+def _write(items: list[dict]) -> None:
     global _cache
     os.makedirs(_DATA_DIR, exist_ok=True)
     # Atomic write: write to temp file, fsync, then rename over the target.
@@ -67,7 +66,7 @@ def _write(items: List[dict]) -> None:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
-def list_tracked() -> List[dict]:
+def list_tracked() -> list[dict]:
     """Return all tracked positions, newest first."""
     with _lock:
         items = _read()
@@ -108,8 +107,8 @@ def add_tracked(ticket: dict, qty: int = 1, notes: str = '') -> dict:
     return record
 
 
-def remove_tracked(track_id: str, exit_premium: Optional[float] = None,
-                    exit_reason: str = '') -> Optional[dict]:
+def remove_tracked(track_id: str, exit_premium: float | None = None,
+                    exit_reason: str = '') -> dict | None:
     """
     Remove a tracked position. Returns the removed record (with exit metadata
     appended) so the caller can show a final P&L summary.
@@ -134,7 +133,7 @@ def remove_tracked(track_id: str, exit_premium: Optional[float] = None,
     return rec
 
 
-def upsert(record: dict) -> Optional[dict]:
+def upsert(record: dict) -> dict | None:
     """Update an existing tracked position in-place (e.g. trailing SL changes).
     Matches by record 'id'. Returns the updated record or None if not found."""
     track_id = record.get('id')
@@ -150,7 +149,7 @@ def upsert(record: dict) -> Optional[dict]:
     return None
 
 
-def update_notes(track_id: str, notes: str) -> Optional[dict]:
+def update_notes(track_id: str, notes: str) -> dict | None:
     with _lock:
         items = _read()
         for r in items:

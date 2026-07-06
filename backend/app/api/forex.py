@@ -7,17 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time as _time
-
-from ..shared.time import clock
+from datetime import UTC
 
 import requests
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-from ..shared.logger import get_logger
 from ..dependencies import get_broker
+from ..shared.logger import get_logger
+from ..shared.time import clock
 
 logger = get_logger('api.forex')
 router = APIRouter(prefix='/api/forex', tags=['forex'])
@@ -84,7 +83,7 @@ def _is_broker_pair(pair: str) -> bool:
 def _resolve_contract(cds_base: str) -> dict | None:
     """Resolve nearest FUTCUR contract — cached 1 hour."""
     global _contract_cache_ts
-    now = _time.time()
+    now = clock()
     if cds_base in _contract_cache and (now - _contract_cache_ts) < 3600:
         return _contract_cache[cds_base]
     try:
@@ -217,13 +216,13 @@ def _broker_ohlcv(pair: str, interval: str, limit: int) -> list | None:
 
 def _parse_candle_ts(ts_str: str) -> int:
     """Convert broker candle date string to epoch milliseconds."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     if not ts_str:
         return int(clock() * 1000)
     for fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%d', '%d-%m-%Y %H:%M', '%d-%m-%Y'):
         try:
             dt = datetime.strptime(ts_str.strip(), fmt)
-            return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+            return int(dt.replace(tzinfo=UTC).timestamp() * 1000)
         except ValueError:
             continue
     # Fallback: try parsing as epoch seconds

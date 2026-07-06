@@ -1509,7 +1509,7 @@ const liveOptionChain = computed(() => {
 
   const snap = {}
   for (const r of rows) snap[r.strike] = { ce: r.ce_premium, pe: r.pe_premium }
-  _chainPrevPrices.value = snap
+  _chainPrevPrices.value = snap // eslint-disable-line vue/no-side-effects-in-computed-properties
 
   let peak_oi_strike = null, peak_oi_total = 0
   for (const r of rows) {

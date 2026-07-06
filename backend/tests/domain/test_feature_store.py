@@ -2,14 +2,12 @@
 Tests for domain/services/feature_store.py — FeatureStore + MTF aggregation.
 """
 
-import pytest
-from unittest.mock import patch
 
 from app.domain.services.feature_store import (
-    FeatureStore, FeatureStoreConfig, FeatureRecord,
+    FeatureRecord,
+    FeatureStore,
+    FeatureStoreConfig,
 )
-from app.shared.time import now_ist
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

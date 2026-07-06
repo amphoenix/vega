@@ -17,11 +17,11 @@ Pure domain — no I/O, no framework imports.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from ..safety.kill_switch import KillSwitchEngine
 from ...shared.logger import get_logger
 from ...shared.time import datetime, now_ist
+from ..safety.kill_switch import KillSwitchEngine
 
 logger = get_logger('supervisor')
 

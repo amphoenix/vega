@@ -1,11 +1,18 @@
 """Tests for domain exception hierarchy."""
 
 import pytest
+
 from app.domain.exceptions import (
-    VegaError, TradingError, InvalidStateTransition,
-    RiskError, BudgetExceeded, KillSwitchActive,
-    BrokerError, BrokerConnectionError,
-    MarketDataError, ConfigError,
+    BrokerConnectionError,
+    BrokerError,
+    BudgetExceeded,
+    ConfigError,
+    InvalidStateTransition,
+    KillSwitchActive,
+    MarketDataError,
+    RiskError,
+    TradingError,
+    VegaError,
 )
 
 

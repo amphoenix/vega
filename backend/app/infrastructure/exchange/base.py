@@ -17,12 +17,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from ...domain.value_objects.instrument import Instrument
-from ...domain.value_objects.market import MarketType, Currency, ExchangeId
-from ...shared.time import now_ist
-
+from ...domain.value_objects.market import ExchangeId, MarketType
 
 # ── Data classes ─────────────────────────────────────────────────────────────
 

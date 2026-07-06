@@ -1,12 +1,14 @@
 """Tests for Dhan broker adapter and BrokerFactory."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.infrastructure.broker.base import (
-    BrokerFactory, register_broker,
-    BrokerAdapter, OrderResult, QuoteResult, PositionInfo,
-    HoldingInfo, CandleData, InstrumentInfo,
+    BrokerFactory,
+    CandleData,
+    HoldingInfo,
+    register_broker,
 )
 from app.infrastructure.broker.dhan_broker import DhanBroker
 
@@ -249,7 +251,8 @@ class TestBrokerFactory:
         assert 'zerodha' in _BROKER_REGISTRY
 
     def test_is_paper_mode(self):
-        from unittest.mock import patch, PropertyMock
+        from unittest.mock import patch
+
         from app.config import Settings
         with patch('app.config.settings', Settings(trading_mode='paper')):
             assert BrokerFactory.is_paper_mode()

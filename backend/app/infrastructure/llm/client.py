@@ -13,10 +13,11 @@ import json
 import re
 import threading
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ...shared.logger import get_logger
-from ...shared.time import monotonic, sleep as _sleep
+from ...shared.time import monotonic
+from ...shared.time import sleep as _sleep
 
 logger = get_logger('llm')
 
@@ -199,7 +200,7 @@ class LLMClient:
         self._pool = _OpenAIPool(clients)
 
     @classmethod
-    def from_settings(cls, settings: Any) -> 'LLMClient':
+    def from_settings(cls, settings: Any) -> LLMClient:
         """Factory: build from a Settings instance."""
         return cls(
             provider=settings.llm_provider,
@@ -217,10 +218,10 @@ class LLMClient:
 
     def chat(
         self,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        response_format: Optional[Dict] = None,
+        response_format: dict | None = None,
         json_mode: bool = False,
     ) -> str:
         if self._provider == 'bedrock':
@@ -231,7 +232,7 @@ class LLMClient:
 
     def complete(self, agent_id: str, prompt: str, max_tokens: int = 1000) -> str:
         self._local.agent_id = agent_id
-        messages: List[Dict[str, str]] = []
+        messages: list[dict[str, str]] = []
         # Gemma doesn't support response_format — enforce JSON via system prompt
         if self._no_json_mode:
             messages.append({"role": "system", "content": "You are a JSON-only API. Return ONLY valid JSON — no markdown, no explanation, no code fences."})
@@ -240,10 +241,10 @@ class LLMClient:
 
     def chat_json(
         self,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         temperature: float = 0.3,
         max_tokens: int = 4096,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         response = self.chat(
             messages=messages,
             temperature=temperature,
@@ -256,7 +257,7 @@ class LLMClient:
     # ── Internals ─────────────────────────────────────────────────────────
 
     def _chat_ollama(self, messages, temperature, max_tokens, json_mode: bool = False) -> str:
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             'model':    self.model,
             'messages': messages,
             'think':    False,
@@ -283,7 +284,7 @@ class LLMClient:
         return content
 
     def _chat_bedrock(self, messages, temperature, max_tokens, response_format) -> str:
-        kwargs: Dict[str, Any] = dict(
+        kwargs: dict[str, Any] = dict(
             model=self.model,
             messages=messages,
             temperature=temperature,
@@ -307,7 +308,7 @@ class LLMClient:
         return content
 
     def _chat_openai(self, messages, temperature, max_tokens, response_format) -> str:
-        kwargs: Dict[str, Any] = dict(
+        kwargs: dict[str, Any] = dict(
             model=self.model,
             messages=messages,
             temperature=temperature,
@@ -318,7 +319,7 @@ class LLMClient:
 
         timeout = self._acquire_timeout
         max_attempts = max(1, len(self._pool.slots))
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
 
         for attempt in range(max_attempts):
             slot = self._pool.acquire(timeout)

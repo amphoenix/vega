@@ -3,14 +3,24 @@ Tests for shared/indicators.py — pure TA functions.
 """
 
 import pytest
-from app.shared.indicators import (
-    ema, ema_series, sma, rsi, roc,
-    atr, atr_from_dicts, bollinger_bands,
-    donchian, donchian_from_dicts, DonchianChannel,
-    vwap, vwap_from_dicts, volume_ratio, adx,
-    CandleData,
-)
 
+from app.shared.indicators import (
+    CandleData,
+    adx,
+    atr,
+    atr_from_dicts,
+    bollinger_bands,
+    donchian,
+    donchian_from_dicts,
+    ema,
+    ema_series,
+    roc,
+    rsi,
+    sma,
+    volume_ratio,
+    vwap,
+    vwap_from_dicts,
+)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

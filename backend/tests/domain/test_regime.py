@@ -1,6 +1,6 @@
 """Tests for Regime Engine."""
 
-from app.domain.regime.regime_engine import RegimeEngine, RegimeSnapshot, Regime
+from app.domain.regime.regime_engine import Regime, RegimeEngine, RegimeSnapshot
 
 
 def test_high_vix_is_high_vol():

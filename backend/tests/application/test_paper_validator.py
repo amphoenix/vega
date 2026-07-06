@@ -2,17 +2,19 @@
 Tests for application/paper_validator.py — PaperTradingValidator.
 """
 
-import pytest
 import uuid
-from typing import Optional
 
 from app.application.paper_validator import (
-    DecisionOutcome, PaperDecision, PaperSessionReport, PaperTrade,
-    PaperTradingSession, PaperTradingValidator, PaperValidatorConfig,
+    DecisionOutcome,
+    PaperDecision,
+    PaperTrade,
+    PaperTradingSession,
+    PaperTradingValidator,
+    PaperValidatorConfig,
 )
 from app.domain.entities.signal import Signal
 from app.domain.supervisor.trade_supervisor import SupervisorConfig
-from app.infrastructure.broker.base import BrokerAdapter, OrderResult, QuoteResult, PositionInfo
+from app.infrastructure.broker.base import BrokerAdapter, OrderResult
 
 
 class _StubBroker(BrokerAdapter):

@@ -8,9 +8,8 @@ Infrastructure layer can serialize/deserialize for persistence.
 from __future__ import annotations
 
 import threading
-from typing import Iterator
 
-from ..entities.position import Position, AlertStatus
+from ..entities.position import AlertStatus, Position
 
 
 class PositionStore:

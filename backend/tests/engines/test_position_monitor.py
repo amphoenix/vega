@@ -2,10 +2,9 @@
 Tests for Position Monitor — repricing loop and event emission.
 """
 
-import pytest
-from app.domain.entities.position import Position, AlertStatus
-from app.domain.services.position_store import PositionStore
+from app.domain.entities.position import Position
 from app.domain.events.events import AlertStatusChanged, PositionClosed
+from app.domain.services.position_store import PositionStore
 from app.engines.monitor.position_monitor import PositionMonitor
 
 

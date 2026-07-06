@@ -16,12 +16,10 @@ FUTURE: when this exceeds ~800 LOC, split into:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
-
 
 # ── Trend ────────────────────────────────────────────────────────────────────
 
-def ema(values: list[float], period: int) -> Optional[float]:
+def ema(values: list[float], period: int) -> float | None:
     """Exponential Moving Average. Returns latest EMA value or None."""
     if len(values) < period:
         return None
@@ -44,7 +42,7 @@ def ema_series(values: list[float], period: int) -> list[float]:
     return result
 
 
-def sma(values: list[float], period: int) -> Optional[float]:
+def sma(values: list[float], period: int) -> float | None:
     """Simple Moving Average. Returns latest SMA or None."""
     if len(values) < period:
         return None
@@ -53,7 +51,7 @@ def sma(values: list[float], period: int) -> Optional[float]:
 
 # ── Momentum ─────────────────────────────────────────────────────────────────
 
-def rsi(closes: list[float], period: int = 14) -> Optional[float]:
+def rsi(closes: list[float], period: int = 14) -> float | None:
     """Relative Strength Index. Returns 0-100 or None."""
     if len(closes) < period + 1:
         return None
@@ -77,7 +75,7 @@ def rsi(closes: list[float], period: int = 14) -> Optional[float]:
     return 100.0 - (100.0 / (1.0 + rs))
 
 
-def roc(values: list[float], period: int = 5) -> Optional[float]:
+def roc(values: list[float], period: int = 5) -> float | None:
     """Rate of Change (%). Returns None if insufficient data."""
     if len(values) < period + 1:
         return None
@@ -90,7 +88,7 @@ def roc(values: list[float], period: int = 5) -> Optional[float]:
 def stoch_rsi(
     closes: list[float], rsi_period: int = 14,
     stoch_period: int = 14, k_smooth: int = 3, d_smooth: int = 3,
-) -> Optional[dict]:
+) -> dict | None:
     """Stochastic RSI (NostalgiaForInfinity's primary entry filter).
 
     Calculates RSI, then applies Stochastic formula on the RSI values,
@@ -153,7 +151,7 @@ def stoch_rsi(
     return {'k': round(k_vals[-1], 2), 'd': round(d_val, 2)}
 
 
-def aroon(candles_or_highs, lows_list=None, period: int = 14) -> Optional[dict]:
+def aroon(candles_or_highs, lows_list=None, period: int = 14) -> dict | None:
     """Aroon Up/Down indicator (NFI uses AROONU_14 < 25 for dip entry).
 
     Can accept either:
@@ -208,7 +206,7 @@ class CandleData:
     date: str = ''
 
     @classmethod
-    def from_dict(cls, d: dict) -> 'CandleData':
+    def from_dict(cls, d: dict) -> CandleData:
         return cls(
             open=float(d.get('open', 0)),
             high=float(d.get('high', 0)),
@@ -219,7 +217,7 @@ class CandleData:
         )
 
 
-def atr(candles: list[CandleData], period: int = 14) -> Optional[float]:
+def atr(candles: list[CandleData], period: int = 14) -> float | None:
     """Average True Range from candle data. Returns latest ATR or None."""
     if len(candles) < period + 1:
         return None
@@ -234,14 +232,14 @@ def atr(candles: list[CandleData], period: int = 14) -> Optional[float]:
     return sum(trs[-period:]) / period
 
 
-def atr_from_dicts(candles: list[dict], period: int = 14) -> Optional[float]:
+def atr_from_dicts(candles: list[dict], period: int = 14) -> float | None:
     """ATR directly from candle dicts (convenience wrapper)."""
     return atr([CandleData.from_dict(c) for c in candles], period)
 
 
 def bollinger_bands(
     closes: list[float], period: int = 20, num_std: float = 2.0,
-) -> Optional[tuple[float, float, float]]:
+) -> tuple[float, float, float] | None:
     """Bollinger Bands → (upper, middle, lower) or None."""
     if len(closes) < period:
         return None
@@ -266,7 +264,7 @@ class DonchianChannel:
         return self.high - self.low
 
 
-def donchian(candles: list[CandleData], period: int = 20) -> Optional[DonchianChannel]:
+def donchian(candles: list[CandleData], period: int = 20) -> DonchianChannel | None:
     """Donchian Channel from candle data."""
     if len(candles) < period:
         return None
@@ -278,14 +276,14 @@ def donchian(candles: list[CandleData], period: int = 20) -> Optional[DonchianCh
 
 def donchian_from_dicts(
     candles: list[dict], period: int = 20,
-) -> Optional[DonchianChannel]:
+) -> DonchianChannel | None:
     """Donchian channel from candle dicts."""
     return donchian([CandleData.from_dict(c) for c in candles], period)
 
 
 # ── Volume ───────────────────────────────────────────────────────────────────
 
-def vwap(candles: list[CandleData], session_start: str = '') -> Optional[float]:
+def vwap(candles: list[CandleData], session_start: str = '') -> float | None:
     """Volume-Weighted Average Price.
 
     If session_start is provided (e.g. '2025-06-18 09:15'), only candles
@@ -306,7 +304,7 @@ def vwap(candles: list[CandleData], session_start: str = '') -> Optional[float]:
 
 def vwap_from_dicts(
     candles: list[dict], session_start: str = '',
-) -> Optional[float]:
+) -> float | None:
     """VWAP from candle dicts."""
     return vwap([CandleData.from_dict(c) for c in candles], session_start)
 
@@ -324,7 +322,7 @@ def volume_ratio(candles: list[CandleData], lookback: int = 20) -> float:
 
 # ── ADX ──────────────────────────────────────────────────────────────────────
 
-def adx(candles: list[CandleData], period: int = 14) -> Optional[float]:
+def adx(candles: list[CandleData], period: int = 14) -> float | None:
     """Average Directional Index (Wilder's method). Delegates to adx_full()."""
     result = adx_full(candles, period)
     return result['adx'] if result else None
@@ -332,7 +330,7 @@ def adx(candles: list[CandleData], period: int = 14) -> Optional[float]:
 
 def adx_full(
     candles: list[CandleData], period: int = 14,
-) -> Optional[dict]:
+) -> dict | None:
     """ADX with +DI / -DI breakdown. Returns dict or None.
 
     Keys: adx, plus_di, minus_di
@@ -391,7 +389,7 @@ def adx_full(
 
 def supertrend(
     candles: list[CandleData], period: int = 10, multiplier: float = 3.0,
-) -> Optional[dict]:
+) -> dict | None:
     """Supertrend indicator.
 
     Returns dict with:
@@ -449,7 +447,7 @@ def supertrend(
 def macd(
     closes: list[float],
     fast: int = 12, slow: int = 26, signal_period: int = 9,
-) -> Optional[dict]:
+) -> dict | None:
     """MACD → {macd_line, signal_line, histogram, cross}.
 
     cross: 'BULLISH' | 'BEARISH' | 'NONE'
@@ -627,7 +625,7 @@ def parabolic_sar(
     af_start: float = 0.02,
     af_step: float = 0.02,
     af_max: float = 0.2,
-) -> Optional[float]:
+) -> float | None:
     """Compute Parabolic SAR and return latest value.
 
     Standard Welles Wilder algorithm used by TA-Lib / Freqtrade.

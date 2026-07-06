@@ -19,17 +19,15 @@ Safety gates (mirror fo_scanner):
 """
 from __future__ import annotations
 
-import os
+import json
 import queue
 import threading
-import json
 from datetime import timedelta
-from typing import Optional
 
-from ..shared.logger import get_logger
-from ..shared import time as _mkt
-from ..shared.time import now_ist
 from ..dependencies import get_broker
+from ..shared import time as _mkt
+from ..shared.logger import get_logger
+from ..shared.time import clock, now_ist
 
 logger = get_logger('vega.forex_scanner')
 
@@ -93,7 +91,7 @@ def _max_risk_pct():
     from ..config import settings as _cfg
     return _cfg.forex_max_risk_pct
 
-_scanner_thread: Optional[threading.Thread] = None
+_scanner_thread: threading.Thread | None = None
 _stop_event     = threading.Event()
 _manual_trigger = threading.Event()
 _wake_event     = threading.Event()
@@ -175,8 +173,9 @@ def _fetch_forex_data(ticker: str) -> dict:
       1. Dhan broker for contract resolution + LTP
       2. yfinance for OHLCV candle data (Dhan chart API doesn't support FUTCUR)
     """
-    from ..shared.indicators import CandleData, ema, rsi, atr, adx_full, supertrend, macd
     import yfinance as yf
+
+    from ..shared.indicators import CandleData, adx_full, atr, ema, macd, rsi, supertrend
 
     cds_base = _YAHOO_TO_CDS.get(ticker, ticker.replace('=X', ''))
     broker = get_broker()
@@ -270,11 +269,10 @@ _contract_cache: dict = {}
 _contract_cache_ts: float = 0
 
 
-def _resolve_cur_future_cached(cds_base: str) -> Optional[dict]:
+def _resolve_cur_future_cached(cds_base: str) -> dict | None:
     """Cached wrapper — refreshes instrument lookup at most once per hour."""
-    import time
     global _contract_cache_ts
-    now = time.time()
+    now = clock()
     if cds_base in _contract_cache and (now - _contract_cache_ts) < 3600:
         return _contract_cache[cds_base]
     result = _resolve_cur_future(cds_base)
@@ -286,7 +284,7 @@ def _resolve_cur_future_cached(cds_base: str) -> Optional[dict]:
 
 # ── Stage 1: pure technical pre-filter ───────────────────────────────────────
 
-def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
+def _technical_cio(ticker: str, raw: dict) -> dict | None:
     """
     Build a CIO-compatible dict from technicals — zero LLM.
     Adapted from fo_scanner._technical_cio for currency pairs.
@@ -413,7 +411,7 @@ def _technical_cio(ticker: str, raw: dict) -> Optional[dict]:
 
 # ── Pure-technical scan (no LLM) ─────────────────────────────────────────────
 
-def _scan_one(ticker: str) -> Optional[dict]:
+def _scan_one(ticker: str) -> dict | None:
     """Pure-technical scan — Supertrend + ADX + RSI + EMA + MACD (no LLM)."""
     logger.info(f"Forex scanner: analysing {ticker}")
     try:
@@ -444,7 +442,7 @@ def _scan_one(ticker: str) -> Optional[dict]:
 
 # ── Resolve currency futures contract from Dhan master ───────────────────────
 
-def _resolve_cur_future(cds_base: str) -> Optional[dict]:
+def _resolve_cur_future(cds_base: str) -> dict | None:
     """Find the nearest-month FUTCUR contract for a currency pair via Dhan master."""
     try:
         broker = get_broker()
@@ -453,7 +451,6 @@ def _resolve_cur_future(cds_base: str) -> Optional[dict]:
         logger.warning(f"Forex scanner: failed to load instruments: {e}")
         return None
 
-    from datetime import date as _date
     today = _mkt.today_ist()
     best = None
 
@@ -514,7 +511,7 @@ def _resolve_cur_future(cds_base: str) -> Optional[dict]:
 
 # ── Build trade ticket ───────────────────────────────────────────────────────
 
-def _build_forex_ticket(cio: dict) -> Optional[dict]:
+def _build_forex_ticket(cio: dict) -> dict | None:
     """Build an executable trade ticket for a currency futures position."""
     cds_base = cio.get('_cds_base', '')
     if not cds_base:
@@ -707,7 +704,7 @@ def _run_scan_cycle():
 
 # ── Auto-entry for forex ─────────────────────────────────────────────────────
 
-def _try_forex_auto_entry(signal: dict) -> Optional[dict]:
+def _try_forex_auto_entry(signal: dict) -> dict | None:
     """Place a currency futures entry if all gates pass."""
     from ..config import settings as _cfg
 
@@ -762,7 +759,7 @@ def _try_forex_auto_entry(signal: dict) -> Optional[dict]:
 
     logger.info(f"[forex] AUTO-ENTRY: {direction} {sym} qty={qty} conf={conf}%")
 
-    from .order_executor import _place_cur_buy, _place_cur_sell, _order_broadcast
+    from .order_executor import _order_broadcast, _place_cur_buy, _place_cur_sell
 
     _sec_id = str(ticket.get('security_id', '') or '')
     if direction == 'LONG':

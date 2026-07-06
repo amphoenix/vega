@@ -273,7 +273,7 @@ import { useCryptoStore } from '../../stores/useCryptoStore'
 import {
   getCryptoOrderBook, getCryptoBalances,
   createCryptoTickStream,
-  getCryptoStatus, toggleCryptoAutoTrading,
+  getCryptoStatus,
   getBybitTicker,
   getCryptoScannerPnl, getCryptoScannerSignals,
   getCryptoScannerPositions, getCryptoScannerStatus,
@@ -337,7 +337,7 @@ const fundingCountdown = computed(() => {
   return `${h}h${String(m).padStart(2,'0')}m${String(s).padStart(2,'0')}s`
 })
 
-function indicatorTip(sig) {
+function _indicatorTip(sig) {
   const ind = sig.indicators || {}
   const parts = [
     `Trend: ${ind.trend_1h || '—'}`,
@@ -359,7 +359,6 @@ const positionCards = computed(() => {
   return positions.value.map(p => {
     const entry = Number(p.entry_price) || 0
     const current = Number(p.current_price) || Number(ticker.value?.last) || entry
-    const pnl = Number(p.pnl) || 0
     const pnlPct = entry ? ((current - entry) / entry * 100 * (p.side === 'LONG' ? 1 : -1)).toFixed(2) : '0.00'
     const qty = p.qty || p.size || '—'
     const notional = entry && qty !== '—' ? Math.round(entry * Number(qty)) : 0
@@ -369,7 +368,9 @@ const positionCards = computed(() => {
 })
 
 // Estimated brokerage + Indian crypto tax for open positions
-// Matches backend crypto_scanner.py: 0.1% exchange fee per side + 1% TDS on sell + 30% tax on gains
+// Matches backend brokerage_calc.py _calc_crypto: 0.1% exchange fee per side +
+// 31.2% tax on gains only (115BBH 30% + 4% cess). No TDS — it's a creditable
+// prepaid tax adjusted at ITR filing, not a standalone cost (see backend).
 function estBrokerage(pos) {
   const entry = Number(pos.entry_price) || 0
   const current = Number(pos.current_price) || entry
@@ -377,10 +378,9 @@ function estBrokerage(pos) {
   const entryN = entry * qty
   const exitN = current * qty
   const exchangeFee = (entryN + exitN) * 0.001   // 0.1% per side
-  const tds = exitN * 0.01                       // 1% TDS on sell
   const pnl = Number(pos.pnl) || 0
-  const incomeTax = Math.max(0, pnl) * 0.30      // 30% on gains only
-  return exchangeFee + tds + incomeTax
+  const incomeTax = Math.max(0, pnl) * 0.312     // 31.2% on gains only
+  return exchangeFee + incomeTax
 }
 function estNet(pos) {
   return (Number(pos.pnl) || 0) - estBrokerage(pos)
@@ -391,12 +391,11 @@ function estBreakdownTip(pos) {
   const qty = Number(pos.qty) || 0
   const entryN = entry * qty, exitN = current * qty
   const fee = (entryN + exitN) * 0.001
-  const tds = exitN * 0.01
-  const tax = Math.max(0, Number(pos.pnl) || 0) * 0.30
-  return `Exchange: $${fee.toFixed(2)} | TDS 1%: $${tds.toFixed(2)} | Tax 30%: $${tax.toFixed(2)}`
+  const tax = Math.max(0, Number(pos.pnl) || 0) * 0.312
+  return `Exchange: $${fee.toFixed(2)} | Tax 31.2%: $${tax.toFixed(2)}`
 }
 
-function ladderPct(pos, which) {
+function _ladderPct(pos, which) {
   const sl = Number(pos.sl) || 0
   const tp = Number(pos.tp) || sl * 2
   const lo = Math.min(sl, Number(pos.entry_price) * 0.95)

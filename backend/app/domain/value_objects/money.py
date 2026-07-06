@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 _CURRENCY_SYMBOLS = {
     'INR': '₹', 'USDT': '$', 'USDC': '$',
     'BTC': '₿', 'ETH': 'Ξ',

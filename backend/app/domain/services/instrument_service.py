@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 from ...shared.logger import get_logger
-from ...shared.time import date, datetime, timedelta, now_ist
+from ...shared.time import date, datetime, now_ist, timedelta
 
 logger = get_logger('instrument_service')
 

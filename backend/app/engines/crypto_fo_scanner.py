@@ -21,7 +21,6 @@ import json
 import math
 import threading
 import uuid
-from typing import Optional
 
 from ..config import settings
 from ..shared.logger import get_logger
@@ -41,7 +40,7 @@ _ANN_FACTOR = 8760.0
 # Volatility Estimators
 # ══════════════════════════════════════════════════════════════════════════════
 
-def yang_zhang_rv(candles: list[dict], window: int = 24) -> Optional[float]:
+def yang_zhang_rv(candles: list[dict], window: int = 24) -> float | None:
     """Yang-Zhang (2000) realized volatility estimator.
 
     5-8x more efficient than close-to-close on same bar count.
@@ -105,7 +104,7 @@ def yang_zhang_rv(candles: list[dict], window: int = 24) -> Optional[float]:
     return annual_vol
 
 
-def close_to_close_rv(closes: list[float], window: int = 24) -> Optional[float]:
+def close_to_close_rv(closes: list[float], window: int = 24) -> float | None:
     """Simple close-to-close realized volatility (fallback when OHLC unavailable)."""
     if len(closes) < window + 1:
         return None
@@ -136,8 +135,8 @@ class DeribitClient:
     def __init__(self) -> None:
         self._exchange = None
         self._ws_exchange = None          # ccxt.pro async exchange
-        self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._ws_thread: Optional[threading.Thread] = None
+        self._ws_loop: asyncio.AbstractEventLoop | None = None
+        self._ws_thread: threading.Thread | None = None
         self._ws_running = False
         self._connected = False
         self._markets: dict = {}
@@ -181,7 +180,7 @@ class DeribitClient:
         if self._ws_running:
             return
         try:
-            import ccxt.pro as ccxtpro  # noqa: F811
+            import ccxt.pro as ccxtpro
         except ImportError:
             logger.info('ccxt.pro not available — falling back to REST polling')
             return
@@ -243,7 +242,7 @@ class DeribitClient:
         if self._ws_loop:
             self._ws_loop.call_soon_threadsafe(self._ws_loop.stop)
 
-    def get_live_price(self, symbol: str) -> Optional[float]:
+    def get_live_price(self, symbol: str) -> float | None:
         """Get latest price from WS cache, or None if unavailable."""
         t = self._live_tickers.get(symbol)
         if t and clock() * 1000 - t.get('ts', 0) < 30_000:  # stale after 30s
@@ -368,7 +367,7 @@ class DeribitClient:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def select_options(client: DeribitClient, asset: str, spot: float,
-                   cfg=None) -> Optional[dict]:
+                   cfg=None) -> dict | None:
     """Select ATM straddle for gamma scalp.
 
     Returns dict with call/put symbols, strike, DTE, greeks, or None.
@@ -579,7 +578,7 @@ class CryptoFOScanner:
     """
 
     def __init__(self) -> None:
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._running = False
@@ -1160,9 +1159,14 @@ class CryptoFOScanner:
 
         # Multi-indicator momentum (matching proven Freqtrade + gamma-scalper patterns)
         from ..shared.indicators import (
-            ema_series, rsi, macd, atr_from_dicts, roc, adx,
+            CandleData,
+            adx,
+            atr_from_dicts,
+            ema_series,
+            macd,
+            roc,
+            rsi,
         )
-        from ..shared.indicators import CandleData
 
         ema_fast = ema_series(closes, 9)
         ema_slow = ema_series(closes, 21)
@@ -1196,22 +1200,16 @@ class CryptoFOScanner:
             bias = 'short'
 
         # 2. RSI zone confirmation (15 pts) — avoid overbought/oversold entries
-        if bias == 'long' and 40 < rsi_val < 70:
-            confidence += 15
-        elif bias == 'short' and 30 < rsi_val < 60:
+        if (bias == 'long' and 40 < rsi_val < 70) or (bias == 'short' and 30 < rsi_val < 60):
             confidence += 15
 
         # 3. MACD histogram alignment (15 pts) — momentum confirmation
-        if bias == 'long' and macd_data['histogram'] > 0:
-            confidence += 15
-        elif bias == 'short' and macd_data['histogram'] < 0:
+        if (bias == 'long' and macd_data['histogram'] > 0) or (bias == 'short' and macd_data['histogram'] < 0):
             confidence += 15
 
         # 4. Rate of Change (ROC) momentum (10 pts)
         if roc_val is not None:
-            if bias == 'long' and roc_val > 0.5:
-                confidence += 10
-            elif bias == 'short' and roc_val < -0.5:
+            if (bias == 'long' and roc_val > 0.5) or (bias == 'short' and roc_val < -0.5):
                 confidence += 10
 
         # 5. ADX trend strength (10 pts) — only trade when trend is real
@@ -1335,15 +1333,11 @@ class CryptoFOScanner:
             pos['pnl'] = round(pnl, 2)
 
             # SL check
-            if side == 'LONG' and spot <= pos['sl']:
-                to_close.append((asset, 'sl_hit'))
-            elif side == 'SHORT' and spot >= pos['sl']:
+            if (side == 'LONG' and spot <= pos['sl']) or (side == 'SHORT' and spot >= pos['sl']):
                 to_close.append((asset, 'sl_hit'))
 
             # TP check
-            if side == 'LONG' and spot >= pos['tp']:
-                to_close.append((asset, 'tp_hit'))
-            elif side == 'SHORT' and spot <= pos['tp']:
+            if (side == 'LONG' and spot >= pos['tp']) or (side == 'SHORT' and spot <= pos['tp']):
                 to_close.append((asset, 'tp_hit'))
 
             # Max hold timeout
@@ -1424,7 +1418,7 @@ class CryptoFOScanner:
 # Singleton
 # ══════════════════════════════════════════════════════════════════════════════
 
-_scanner: Optional[CryptoFOScanner] = None
+_scanner: CryptoFOScanner | None = None
 _scanner_lock = threading.Lock()
 
 

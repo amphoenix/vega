@@ -13,7 +13,6 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 # ── Resolve .env path relative to this file ──────────────────────────────────
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 _ENV_FILE = os.path.join(_PROJECT_ROOT, '.env')

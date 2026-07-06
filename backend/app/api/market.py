@@ -7,23 +7,20 @@ fundamentals, graph, AI predict, invest analysis, scan, MC news, quick sim.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import threading
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
-from typing import Optional
 
 import httpx
-
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
-from sse_starlette.sse import EventSourceResponse
 
 from ..config import settings
 from ..dependencies import get_broker
+from ..infrastructure.broker.base import resolve_option_security
 from ..shared.logger import get_logger
-from ..shared.time import clock, datetime, timedelta, fmt_candle_date, now_ist
+from ..shared.time import clock, datetime, fmt_candle_date, now_ist
 
 logger = get_logger('api.market')
 router = APIRouter(prefix='/api/market', tags=['market'])
@@ -209,17 +206,7 @@ def ohlcv(
             # 3rd chart pane can plot the contract when an F&O card is clicked.
             _tu = ticker.upper()
             _is_option = '-CE' in _tu or '-PE' in _tu
-            _sec_id, _exch = '', ''
-            if _is_option and hasattr(broker, 'resolve_option_contract'):
-                try:
-                    _parts = ticker.split('-')
-                    _under, _otype, _strike = _parts[0], _parts[-1], float(_parts[-2])
-                    _exch = 'BFO' if _under.upper() in ('SENSEX', 'BANKEX') else 'NFO'
-                    _c = broker.resolve_option_contract(_under, _otype, _strike)
-                    if _c:
-                        _sec_id = str(_c.get('security_id') or _c.get('sec_id') or '')
-                except Exception as _re:
-                    logger.debug(f'ohlcv option resolve failed for {ticker}: {_re}')
+            _exch, _sec_id = resolve_option_security(broker, ticker) if _is_option else ('', '')
             if _sec_id:
                 candles = broker.get_candles(ticker, interval=interval, days=days,
                                              exchange=_exch, security_id=_sec_id)
@@ -326,6 +313,7 @@ async def _fetch_reddit_posts(ticker: str, limit: int = 8) -> list[dict]:
 @router.get('/signals/{ticker:path}')
 async def signals(ticker: str):
     import re as _re
+
     import yfinance as yf
 
     ticker = _normalize_ticker(ticker)
@@ -551,8 +539,8 @@ def search_ticker(q: str = Query('')):
 
 @router.get('/scan')
 def scan_universe(market: str = 'india', limit: int = 50):
-    import sys
     import os as _os
+    import sys
     sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), '..', 'vendor'))
     try:
         from tradingview_screener import Query, col
@@ -729,6 +717,7 @@ def fundamentals(ticker: str):
 @router.get('/mc-news')
 def mc_news(feed: str = 'latest', limit: int = 20):
     import re as _re
+
     import requests as _req
 
     _FEEDS = {
@@ -834,7 +823,7 @@ def _parse_rss(xml_text: str, source: str, limit: int = 20) -> list[dict]:
 
 @router.get('/news')
 async def news_feed(
-    source: Optional[str] = None,
+    source: str | None = None,
     limit: int = Query(default=30, le=100),
 ):
     """
@@ -909,7 +898,8 @@ def _fetch_market_data(ticker: str) -> dict:
       Stock  : resolve equity security_id + exchange → broker 5-min candles.
     """
     import yfinance as yf
-    from ..shared.indicators import CandleData, ema, rsi, atr, adx_full, supertrend, macd
+
+    from ..shared.indicators import CandleData, adx_full, atr, ema, macd, rsi, supertrend
 
     _INDEX_NAMES = {
         '^NSEI': 'NIFTY 50', '^NSEBANK': 'BANKNIFTY',

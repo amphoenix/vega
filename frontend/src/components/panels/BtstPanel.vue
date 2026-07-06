@@ -139,7 +139,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import {
-  startBtst, stopBtst, triggerBtst,
+  triggerBtst,
   getBtstStatus, getBtstStats, createBtstStream,
 } from '../../api/market/btst.js'
 
@@ -209,16 +209,6 @@ function handleSSEEvent(data) {
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
-
-async function handleStart() {
-  await startBtst()
-  await refreshStatus()
-}
-
-async function handleStop() {
-  await stopBtst()
-  await refreshStatus()
-}
 
 async function handleTrigger() {
   await triggerBtst()

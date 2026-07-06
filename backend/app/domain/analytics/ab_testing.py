@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from ...shared.logger import get_logger
 from ...shared.time import datetime, now_ist
@@ -127,7 +127,7 @@ class ABTest:
     variant_a: VariantStats = field(default_factory=lambda: VariantStats(label='A'))
     variant_b: VariantStats = field(default_factory=lambda: VariantStats(label='B'))
     enabled: bool = False
-    started_at: Optional[datetime] = None
+    started_at: datetime | None = None
 
     def start(self) -> None:
         self.enabled = True
@@ -166,7 +166,7 @@ class ABTest:
         return (self.variant_a.trade_count >= self.min_trades
                 and self.variant_b.trade_count >= self.min_trades)
 
-    def get_winner(self) -> Optional[str]:
+    def get_winner(self) -> str | None:
         """Determine the winning variant, or None if inconclusive.
 
         Winner is determined by comparing metrics. Each metric where

@@ -15,15 +15,13 @@ Public API:
 """
 from __future__ import annotations
 
-import json
 import queue as _queue
 import threading
-from typing import Optional
 
 from ...domain.services import greeks as gk
 from ...infrastructure.db import tracked_positions as tp
 from ...shared.logger import get_logger
-from ...shared.time import datetime, date, now_ist, today_ist, is_market_hours
+from ...shared.time import date, datetime, is_market_hours, now_ist, today_ist
 
 logger = get_logger('tracked_monitor')
 
@@ -52,10 +50,10 @@ _high_water:      dict[str, float] = {}
 _subs_lock        = threading.Lock()
 _subscribers:     set[_queue.Queue] = set()
 
-_poller_thread:   Optional[threading.Thread] = None
+_poller_thread:   threading.Thread | None = None
 _poller_stop      = threading.Event()
 
-_force_exit_thread: Optional[threading.Thread] = None
+_force_exit_thread: threading.Thread | None = None
 _force_exit_stop  = threading.Event()
 _force_exit_fired_today = False
 
@@ -98,7 +96,7 @@ def get_status() -> dict:
 
 
 # ── Pricing & classification ──────────────────────────────────────────────────
-def _parse_expiry(s) -> Optional['date']:
+def _parse_expiry(s) -> date | None:
     """Parse many expiry formats → datetime.date."""
     if s is None or s == '':
         return None
@@ -116,7 +114,7 @@ def _parse_expiry(s) -> Optional['date']:
     return None
 
 
-def _reprice(ticket: dict, spot: float) -> Optional[float]:
+def _reprice(ticket: dict, spot: float) -> float | None:
     """BS-reprice an option ticket at a new spot. Returns premium or None."""
     try:
         K = float(ticket.get('strike') or ticket.get('strike_price') or 0)
@@ -308,7 +306,7 @@ def _build_payload(rec: dict, prem: float, status: str, spot: float) -> dict:
             'past_t2'  : f"🟢 T2 HIT — price ₹{prem:.2f} ≤ T2. Full exit.",
             'near_sl'  : f"🟡 NEAR SL — price ₹{prem:.2f} approaching SL.",
             'near_t1'  : f"🔵 NEAR T1 — price ₹{prem:.2f} approaching T1.",
-            'time_exit': f"🚨 FORCE EXIT — past 15:00 IST. Close immediately.",
+            'time_exit': "🚨 FORCE EXIT — past 15:00 IST. Close immediately.",
         }
     else:
         msg_map = {
@@ -317,7 +315,7 @@ def _build_payload(rec: dict, prem: float, status: str, spot: float) -> dict:
             'past_t2'  : f"🟢 T2 HIT — premium ₹{prem:.2f} ≥ T2. Full exit.",
             'near_sl'  : f"🟡 NEAR SL — premium ₹{prem:.2f} approaching SL.",
             'near_t1'  : f"🔵 NEAR T1 — premium ₹{prem:.2f} approaching T1.",
-            'time_exit': f"🚨 FORCE EXIT — past 15:00 IST. Close immediately.",
+            'time_exit': "🚨 FORCE EXIT — past 15:00 IST. Close immediately.",
         }
     return {
         'type'           : 'tracked_alert',

@@ -16,11 +16,10 @@ Uses shared.time for IST timestamps.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 from ...shared.time import now_ist
-
 
 # ── Domain models ────────────────────────────────────────────────────────────
 
@@ -115,7 +114,7 @@ class StrategyConfigStore:
         self._active[strategy_name] = version_num
         return ver
 
-    def get_active(self, strategy_name: str) -> Optional[ConfigVersion]:
+    def get_active(self, strategy_name: str) -> ConfigVersion | None:
         """Get the currently active config version for a strategy."""
         active_num = self._active.get(strategy_name)
         if active_num is None:
@@ -127,7 +126,7 @@ class StrategyConfigStore:
         ver = self.get_active(strategy_name)
         return dict(ver.params) if ver else {}
 
-    def get_version(self, strategy_name: str, version: int) -> Optional[ConfigVersion]:
+    def get_version(self, strategy_name: str, version: int) -> ConfigVersion | None:
         """Get a specific version."""
         return self._get_version(strategy_name, version)
 
@@ -145,7 +144,7 @@ class StrategyConfigStore:
         strategy_name: str,
         from_version: int,
         to_version: int,
-    ) -> Optional[ConfigDiff]:
+    ) -> ConfigDiff | None:
         """Compute diff between two versions. Returns None if either version missing."""
         v_from = self._get_version(strategy_name, from_version)
         v_to = self._get_version(strategy_name, to_version)
@@ -159,7 +158,7 @@ class StrategyConfigStore:
         strategy_name: str,
         target_version: int,
         author: str = 'system',
-    ) -> Optional[ConfigVersion]:
+    ) -> ConfigVersion | None:
         """Rollback to a previous version by creating a new version with its params.
 
         This does NOT rewrite history — it creates a new version with the
@@ -190,7 +189,7 @@ class StrategyConfigStore:
 
     # ── Internal ─────────────────────────────────────────────────────────
 
-    def _get_version(self, strategy_name: str, version: int) -> Optional[ConfigVersion]:
+    def _get_version(self, strategy_name: str, version: int) -> ConfigVersion | None:
         history = self._versions.get(strategy_name, [])
         for v in history:
             if v.version == version:

@@ -21,10 +21,8 @@ Public API:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from ..value_objects.money import BrokerageBreakdown
-
 
 # ── Fee profiles (exchange-mandated, same across all brokers) ────────────────
 
@@ -229,7 +227,7 @@ def set_default_profile(broker_name: str) -> None:
         _default_profile = _PROFILES[key]
 
 
-def get_profile(broker_name: Optional[str] = None) -> FeeProfile:
+def get_profile(broker_name: str | None = None) -> FeeProfile:
     if broker_name:
         return _PROFILES.get(broker_name.lower().strip(), _default_profile)
     return _default_profile
@@ -237,7 +235,7 @@ def get_profile(broker_name: Optional[str] = None) -> FeeProfile:
 
 def calc_brokerage(
     entry_premium: float, exit_premium: float, qty: int,
-    profile: Optional[FeeProfile] = None,
+    profile: FeeProfile | None = None,
 ) -> BrokerageBreakdown:
     """Legacy: round-trip brokerage using F&O profile."""
     return _calc_indian_profile(entry_premium, exit_premium, qty, profile or _default_profile)
@@ -245,7 +243,7 @@ def calc_brokerage(
 
 def total_brokerage(
     entry_premium: float, exit_premium: float, qty: int,
-    profile: Optional[FeeProfile] = None,
+    profile: FeeProfile | None = None,
 ) -> float:
     """Legacy: shorthand total."""
     return calc_brokerage(entry_premium, exit_premium, qty, profile).total

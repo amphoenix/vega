@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 
 from .application.event_bus import EventBus
 from .config import Settings, settings
-from .domain.safety.kill_switch import KillSwitchEngine, KillSwitchConfig
-from .domain.supervisor.trade_supervisor import TradeSupervisor, SupervisorConfig
+from .domain.safety.kill_switch import KillSwitchConfig, KillSwitchEngine
+from .domain.supervisor.trade_supervisor import SupervisorConfig, TradeSupervisor
 from .shared.scheduler import Scheduler
 
 if TYPE_CHECKING:
@@ -60,9 +60,9 @@ def get_settings() -> Settings:
 # ── Broker / Exchange adapters ────────────────────────────────────────────────
 
 _broker_lock = threading.Lock()
-_broker_instance: 'BrokerAdapter | None' = None
+_broker_instance: BrokerAdapter | None = None
 
-def get_broker() -> 'BrokerAdapter':
+def get_broker() -> BrokerAdapter:
     """Active broker adapter — config-driven via config/brokers.yaml.
 
     Thread-safe singleton (lru_cache isn't thread-safe and caused
@@ -80,7 +80,7 @@ def get_broker() -> 'BrokerAdapter':
 
 
 @lru_cache(maxsize=1)
-def get_crypto_exchange() -> 'CCXTAdapter':
+def get_crypto_exchange() -> CCXTAdapter:
     """Crypto exchange via CCXT. paper_mode=True → real ticker, simulated fills."""
     from .infrastructure.exchange.ccxt_adapter import CCXTAdapter, CCXTConfig
     paper = settings.crypto_mode == 'paper'
@@ -97,7 +97,7 @@ def get_crypto_exchange() -> 'CCXTAdapter':
 
 
 @lru_cache(maxsize=1)
-def get_polymarket_exchange() -> 'PolymarketAdapter':
+def get_polymarket_exchange() -> PolymarketAdapter:
     """Polymarket prediction market. paper_mode=True → real prices, simulated fills."""
     from .infrastructure.exchange.polymarket_adapter import PolymarketAdapter, PolymarketConfig
     paper = settings.polymarket_mode == 'paper'

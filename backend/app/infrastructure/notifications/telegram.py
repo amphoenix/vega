@@ -14,16 +14,17 @@ Infrastructure layer — does HTTP I/O.
 from __future__ import annotations
 
 import json
-import urllib.request
 import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
 from .base import (
-    DeliveryResult, Notification, NotificationChannel,
+    DeliveryResult,
+    Notification,
+    NotificationChannel,
     NotificationPriority,
 )
-
 
 _PRIORITY_EMOJI = {
     NotificationPriority.LOW: '\U0001f4ac',       # speech balloon

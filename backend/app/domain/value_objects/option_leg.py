@@ -7,8 +7,9 @@ Immutable value object representing one option contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from ...shared.time import date
 from enum import Enum
+
+from ...shared.time import date
 
 
 class OptionType(str, Enum):

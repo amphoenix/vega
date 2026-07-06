@@ -1,7 +1,8 @@
 """Tests for Trade entity FSM."""
 
-import pytest
 from datetime import date
+
+import pytest
 
 from app.domain.entities.trade import Trade, TradeState
 from app.domain.exceptions import InvalidStateTransition

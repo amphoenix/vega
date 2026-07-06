@@ -2,16 +2,19 @@
 Tests for domain/replay/replay_engine.py — ReplayEngine.
 """
 
-import pytest
 
+from app.domain.entities.signal import Signal
 from app.domain.replay.replay_engine import (
-    ReplayConfig, ReplayDecision, ReplayEngine, ReplayResult,
-    ReplaySession, ReplaySignalRecord, ReplayTick, SimulatedTrade,
+    ReplayConfig,
+    ReplayDecision,
+    ReplayEngine,
+    ReplayResult,
+    ReplaySession,
+    ReplaySignalRecord,
+    ReplayTick,
+    SimulatedTrade,
 )
 from app.domain.strategies.swing import SwingAIStrategy, SwingConfig
-from app.domain.entities.signal import Signal
-from app.domain.value_objects.market import MarketType
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

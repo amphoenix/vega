@@ -10,15 +10,16 @@ import requests
 from .column import Column
 
 if TYPE_CHECKING:
+    from typing import Any, Literal, Self
+
     import pandas as pd
-    from typing import Literal, Any
-    from typing_extensions import Self
+
     from .models import (
-        QueryDict,
-        SortByDict,
-        ScreenerDict,
         FilterOperationDict,
         OperationDict,
+        QueryDict,
+        ScreenerDict,
+        SortByDict,
     )
 
 

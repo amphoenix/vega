@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..entities.trade import Trade, TradeState
-from ..services.brokerage_calc import segment_brokerage, segment_brokerage_breakdown
-from ..value_objects.money import PnL, Money, BrokerageBreakdown
+from ..services.brokerage_calc import segment_brokerage_breakdown
+from ..value_objects.money import BrokerageBreakdown
 
 
 @dataclass(frozen=True, slots=True)

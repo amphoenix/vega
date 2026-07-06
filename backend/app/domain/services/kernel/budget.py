@@ -19,11 +19,10 @@ so day/month aggregations never have to do per-row tz math at query time.
 import os
 import sqlite3
 import threading
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
 
-_PRICING: Dict[str, Dict[str, float]] = {
+_PRICING: dict[str, dict[str, float]] = {
     'claude-opus-4-6':   {'input': 15.00, 'output': 75.00},
     'claude-sonnet-4-6': {'input':  3.00, 'output': 15.00},
     'claude-haiku-4-5':  {'input':  0.80, 'output':  4.00},
@@ -58,22 +57,22 @@ def _cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
 
 
 def _ist_now() -> datetime:
-    return datetime.now(timezone.utc) + _IST_OFFSET
+    return datetime.now(UTC) + _IST_OFFSET
 
 
-def _ist_date_str(dt_utc: Optional[datetime] = None) -> str:
+def _ist_date_str(dt_utc: datetime | None = None) -> str:
     """'YYYY-MM-DD' for the IST calendar day containing the given UTC datetime."""
-    dt_utc = dt_utc or datetime.now(timezone.utc)
+    dt_utc = dt_utc or datetime.now(UTC)
     if dt_utc.tzinfo is None:
-        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        dt_utc = dt_utc.replace(tzinfo=UTC)
     return (dt_utc + _IST_OFFSET).strftime('%Y-%m-%d')
 
 
-def _ist_month_str(dt_utc: Optional[datetime] = None) -> str:
+def _ist_month_str(dt_utc: datetime | None = None) -> str:
     """'YYYY-MM' for the IST calendar month containing the given UTC datetime."""
-    dt_utc = dt_utc or datetime.now(timezone.utc)
+    dt_utc = dt_utc or datetime.now(UTC)
     if dt_utc.tzinfo is None:
-        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        dt_utc = dt_utc.replace(tzinfo=UTC)
     return (dt_utc + _IST_OFFSET).strftime('%Y-%m')
 
 
@@ -104,7 +103,7 @@ class BudgetStore:
 
     def __init__(self):
         self._lock = threading.RLock()
-        self._session_started_utc = datetime.now(timezone.utc).isoformat() + 'Z'
+        self._session_started_utc = datetime.now(UTC).isoformat() + 'Z'
         self._init_db()
 
     # ── DB lifecycle ──────────────────────────────────────────────────────────
@@ -141,7 +140,7 @@ class BudgetStore:
                prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
         total = prompt_tokens + completion_tokens
         cost  = _cost_usd(model, prompt_tokens, completion_tokens)
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         ts_utc  = now_utc.isoformat().replace('+00:00', 'Z')
         ts_ist  = _ist_date_str(now_utc)
         ym_ist  = _ist_month_str(now_utc)

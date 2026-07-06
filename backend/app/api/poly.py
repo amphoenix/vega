@@ -466,8 +466,8 @@ Return ONLY valid JSON in this exact format:
 }}"""
 
     try:
-        from ..infrastructure.llm.client import LLMClient
         from ..config import get_settings
+        from ..infrastructure.llm.client import LLMClient
 
         loop = asyncio.get_running_loop()
 

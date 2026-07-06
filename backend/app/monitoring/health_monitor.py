@@ -18,10 +18,10 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-
-from ..shared.time import monotonic
 from enum import Enum
 from typing import Any
+
+from ..shared.time import monotonic
 
 
 class HealthStatus(str, Enum):
@@ -226,9 +226,7 @@ class HealthMonitor:
             overall = HealthStatus.UNKNOWN
         elif any(c.status == HealthStatus.DOWN for c in components):
             overall = HealthStatus.DOWN
-        elif any(c.status == HealthStatus.DEGRADED for c in components):
-            overall = HealthStatus.DEGRADED
-        elif any(c.status == HealthStatus.UNKNOWN for c in components):
+        elif any(c.status == HealthStatus.DEGRADED for c in components) or any(c.status == HealthStatus.UNKNOWN for c in components):
             overall = HealthStatus.DEGRADED
         else:
             overall = HealthStatus.HEALTHY

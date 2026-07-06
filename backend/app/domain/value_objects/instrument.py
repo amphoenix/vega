@@ -17,11 +17,10 @@ Pure domain — no I/O.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from ...shared.time import date, datetime
-from typing import Optional
+from dataclasses import dataclass
 
-from .market import MarketType, AssetClass, Currency, ExchangeId
+from ...shared.time import date
+from .market import AssetClass, Currency, ExchangeId, MarketType
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +38,7 @@ class Instrument:
     # F&O-specific (optional)
     underlying: str = ''                # NIFTY, SENSEX, BANKNIFTY
     strike: float = 0.0
-    expiry: Optional[date] = None
+    expiry: date | None = None
     option_type: str = ''               # 'CE' or 'PE'
     lot_size: int = 1
 

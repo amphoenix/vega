@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import builtins
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional, Type
+from dataclasses import asdict, dataclass
+from typing import Any
 
 
 @dataclass
@@ -23,7 +24,7 @@ class AgentOutput:
     firm:          str
     verdict:       str
     confidence:    int
-    key_findings:  List[str]
+    key_findings:  list[str]
     reasoning:     str
     entry_price:   float
     stop_loss:     float
@@ -58,20 +59,20 @@ class Agent(ABC):
 
 class AgentRegistry:
     def __init__(self):
-        self._registry: Dict[str, Agent] = {}
+        self._registry: dict[str, Agent] = {}
 
-    def register(self, agent_class: Type[Agent]) -> Type[Agent]:
+    def register(self, agent_class: type[Agent]) -> type[Agent]:
         instance = agent_class()
         self._registry[instance.name()] = instance
         return agent_class
 
-    def get(self, name: str) -> Optional[Agent]:
+    def get(self, name: str) -> Agent | None:
         return self._registry.get(name)
 
-    def list(self) -> List[str]:
+    def list(self) -> builtins.list[str]:
         return list(self._registry.keys())
 
-    def all_instances(self) -> List[Agent]:
+    def all_instances(self) -> builtins.list[Agent]:
         return list(self._registry.values())
 
 

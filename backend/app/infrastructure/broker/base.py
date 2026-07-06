@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import queue
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 from ...shared.logger import get_logger
 
@@ -161,7 +162,7 @@ class BrokerAdapter(ABC):
 
     @abstractmethod
     def get_ltp(self, symbol: str, exchange: str = 'NFO',
-                security_id: str = '') -> Optional[float]:
+                security_id: str = '') -> float | None:
         """Get last traded price for a symbol."""
         ...
 
@@ -177,7 +178,7 @@ class BrokerAdapter(ABC):
 
     @abstractmethod
     def get_quote(self, symbol: str, exchange: str = 'NFO',
-                  security_id: str = '') -> Optional[QuoteResult]:
+                  security_id: str = '') -> QuoteResult | None:
         """Get full quote (LTP, bid, ask, OHLC)."""
         ...
 
@@ -236,13 +237,19 @@ class BrokerAdapter(ABC):
         """Unsubscribe from tick stream."""
         return False
 
-    def create_tick_queue(self, symbol: str) -> tuple[str, queue.Queue]:
+    def create_tick_queue(
+        self, symbol: str, exchange: str = '', security_id: str = '',
+    ) -> tuple[str, queue.Queue]:
         """Create a queue that receives live tick payloads for *symbol*.
 
         Returns (scrip_code, queue).  The queue receives JSON-string
         payloads exactly like the old Flask SSE stream.  Used by the
         SSE ``/stream/{ticker}`` endpoint so ticks arrive from the
         WebSocket in real-time instead of 1-second REST polling.
+
+        exchange/security_id: pass when the caller already resolved the
+        symbol (e.g. via resolve_option_security) — skips broker-side
+        re-resolution, same override pattern as get_ltp/get_quote.
 
         Override in broker implementation.  Default returns ('', empty queue).
         """
@@ -265,19 +272,19 @@ class BrokerAdapter(ABC):
 
     def get_instrument(
         self, symbol: str, exchange: str = 'NFO',
-    ) -> Optional[InstrumentInfo]:
+    ) -> InstrumentInfo | None:
         """Get a specific instrument's details."""
         return None
 
     def resolve_option_contract(
         self, underlying: str, option_type: str, strike: float,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Find the nearest matching option contract for an underlying.
         Returns {trading_symbol, display_symbol, security_id, expiry_date,
         strike, ltp} or None. Override per broker."""
         return None
 
-    def underlying_lot_size(self, underlying: str) -> Optional[int]:
+    def underlying_lot_size(self, underlying: str) -> int | None:
         """Standard lot size for an underlying from the F&O instrument master.
         Override per broker."""
         return None
@@ -286,7 +293,7 @@ class BrokerAdapter(ABC):
         """Load raw instrument master rows. Override per broker."""
         return []
 
-    def get_option_chain(self, underlying: str, expiry: str = '') -> Optional[dict]:
+    def get_option_chain(self, underlying: str, expiry: str = '') -> dict | None:
         """Fetch option chain natively from broker API.
 
         Returns dict with keys: spot, expiry, lot_size, strikes (list of
@@ -354,7 +361,9 @@ class BrokerFactory:
                 product_type: INTRADAY
         """
         import os
+
         from dotenv import load_dotenv
+
         from ..config.config_service import load_yaml
 
         # Ensure .env vars are in os.environ (idempotent, no-op if already set)
@@ -416,9 +425,33 @@ class BrokerFactory:
 
         logger.info('Creating broker: %s (class=%s.%s, kwargs=%s)',
                      name, module_path, class_name,
-                     [k for k in kwargs.keys()])
+                     [k for k in kwargs])
 
         return cls(**kwargs)
+
+
+def resolve_option_security(broker: BrokerAdapter, ticker: str) -> tuple[str, str]:
+    """Resolve a synthetic option ticker ('SENSEX-JUL2026-78200-CE') to a real
+    (exchange, security_id) pair via the broker's instrument master.
+
+    Synthetic tickers aren't real broker symbols — get_candles/get_ltp/
+    create_tick_queue need a resolved security_id or they either fail to
+    subscribe or (worse) silently return the UNDERLYING INDEX's data/ticks.
+    Returns ('', '') if ticker isn't an option or resolution fails.
+    """
+    tu = ticker.upper()
+    if '-CE' not in tu and '-PE' not in tu:
+        return '', ''
+    try:
+        parts = ticker.split('-')
+        underlying, opt_type, strike = parts[0], parts[-1], float(parts[-2])
+        exchange = 'BFO' if underlying.upper() in ('SENSEX', 'BANKEX') else 'NFO'
+        contract = broker.resolve_option_contract(underlying, opt_type, strike)
+        if contract:
+            return exchange, str(contract.get('security_id') or contract.get('sec_id') or '')
+    except Exception as exc:
+        logger.debug('resolve_option_security failed for %s: %s', ticker, exc)
+    return '', ''
 
 
 def _legacy_env_resolve(broker_name: str) -> dict[str, Any]:

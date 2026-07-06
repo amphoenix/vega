@@ -132,7 +132,7 @@ import { fmtTime } from "../utils/formatters";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const {
-  activeTicker, chartTicker, interval, searchSuggestions,
+  activeTicker, chartTicker, interval,
   tickerStats, fomoScore,
   feedItems, signalsLoading,
   signal, signalLoading, signalError,
@@ -343,12 +343,6 @@ const lightMode = ref(localStorage.getItem("theme") === "light");
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
-function onAddFeedItems(items) {
-  for (const item of items) {
-    feedItems.value.unshift({ ...item, id: feedIdCounter++ })
-  }
-}
-
 async function selectTicker(sym) {
   if (!sym) return;
   chartTicker.value = sym.toUpperCase();
@@ -498,7 +492,7 @@ async function loadLevels() {
   try {
     const res = await getTradeLevels(chartTicker.value);
     levels.value = res.data || null;
-  } catch (e) {
+  } catch (_e) {
     levels.value = null;
   } finally {
     levelsLoading.value = false;
@@ -520,7 +514,7 @@ async function checkBrokerStatus() {
     brokerNameRef.value = d.broker || "";
     brokerUserName.value = d.name || "";
     brokerAvailableCash.value = d.available_cash ?? null;
-  } catch (e) {
+  } catch (_e) {
     brokerConnected.value = false;
   }
 }

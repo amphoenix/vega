@@ -1,10 +1,9 @@
 import json
 import os
 import threading
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
-
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from typing import Any
 
 _PERSIST_PATH = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'vega-processes.json')
 
@@ -15,10 +14,10 @@ class ProcessEntry:
     agent_id:     str
     ticker:       str            = ''
     status:       str            = 'running'
-    started_at:   str            = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    ended_at:     Optional[str]  = None
-    duration_ms:  Optional[int]  = None
-    result:       Optional[Any]  = None
+    started_at:   str            = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    ended_at:     str | None  = None
+    duration_ms:  int | None  = None
+    result:       Any | None  = None
     error:        str            = ''
 
     def to_dict(self) -> dict:
@@ -30,7 +29,7 @@ class ProcessStore:
 
     def __init__(self, persist_path: str = _PERSIST_PATH):
         self._lock    = threading.RLock()
-        self._entries: Dict[str, ProcessEntry] = {}
+        self._entries: dict[str, ProcessEntry] = {}
         self._path    = persist_path
         self._load()
 
@@ -44,7 +43,7 @@ class ProcessStore:
         with self._lock:
             e = self._entries.get(execution_id)
             if e:
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 e.status      = 'completed'
                 e.ended_at    = now.isoformat()
                 started       = datetime.fromisoformat(e.started_at)
@@ -56,7 +55,7 @@ class ProcessStore:
         with self._lock:
             e = self._entries.get(execution_id)
             if e:
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 e.status      = 'failed'
                 e.ended_at    = now.isoformat()
                 started       = datetime.fromisoformat(e.started_at)
@@ -64,11 +63,11 @@ class ProcessStore:
                 e.error       = error
         self._save()
 
-    def get(self, execution_id: str) -> Optional[ProcessEntry]:
+    def get(self, execution_id: str) -> ProcessEntry | None:
         with self._lock:
             return self._entries.get(execution_id)
 
-    def all(self) -> Dict[str, dict]:
+    def all(self) -> dict[str, dict]:
         with self._lock:
             return {k: v.to_dict() for k, v in self._entries.items()}
 

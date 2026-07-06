@@ -1,6 +1,7 @@
 """Tests for A/B testing framework."""
 
 import pytest
+
 from app.domain.analytics.ab_testing import ABTest, VariantStats
 
 

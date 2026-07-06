@@ -3,10 +3,11 @@ Tests for monitoring/latency_tracker.py — LatencyTracker.
 """
 
 import time
-import pytest
 
 from app.monitoring.latency_tracker import (
-    LatencyCheckpoint, LatencyStats, LatencyTrace, LatencyTracker,
+    LatencyStats,
+    LatencyTrace,
+    LatencyTracker,
 )
 
 

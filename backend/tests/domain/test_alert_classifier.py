@@ -2,7 +2,7 @@
 Tests for Alert Classifier — position alert status classification.
 """
 
-from app.domain.entities.position import Position, AlertStatus
+from app.domain.entities.position import AlertStatus, Position
 from app.domain.services.alert_classifier import classify_alert
 
 

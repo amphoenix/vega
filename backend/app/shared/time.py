@@ -6,7 +6,8 @@ Pure functions — no I/O, no framework imports.
 
 from __future__ import annotations
 
-from datetime import datetime, date, time as dt_time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from datetime import time as dt_time
 from time import monotonic, monotonic_ns, sleep, time as clock  # re-export
 from zoneinfo import ZoneInfo
 

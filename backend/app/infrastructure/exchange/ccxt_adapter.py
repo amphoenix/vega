@@ -24,12 +24,12 @@ Dependencies:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from ...domain.value_objects.instrument import Instrument
-from ...domain.value_objects.market import MarketType, ExchangeId
+from ...domain.value_objects.market import ExchangeId, MarketType
 from ...shared.logger import get_logger
-from .base import ExchangeAdapter, Order, Ticker, Balance, ExchangePosition
+from .base import Balance, ExchangeAdapter, ExchangePosition, Order, Ticker
 
 logger = get_logger('ccxt_adapter')
 
@@ -146,6 +146,10 @@ class CCXTAdapter(ExchangeAdapter):
     @property
     def is_sandbox(self) -> bool:
         return self._config.sandbox
+
+    @property
+    def is_paper(self) -> bool:
+        return self._paper_mode
 
     @property
     def has_ccxt(self) -> bool:

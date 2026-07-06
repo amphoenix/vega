@@ -2,17 +2,17 @@
 Tests for infrastructure/notifications/ — NotificationService, channels.
 """
 
-import time
-import pytest
 
 from app.infrastructure.notifications.base import (
-    DeliveryResult, Notification, NotificationCategory, NotificationChannel,
+    DeliveryResult,
+    Notification,
+    NotificationCategory,
+    NotificationChannel,
     NotificationPriority,
 )
-from app.infrastructure.notifications.telegram import TelegramChannel, TelegramConfig
 from app.infrastructure.notifications.discord import DiscordChannel, DiscordConfig
 from app.infrastructure.notifications.service import NotificationService
-
+from app.infrastructure.notifications.telegram import TelegramChannel, TelegramConfig
 
 # ── Fake channel for testing (no real HTTP) ──────────────────────────────────
 

@@ -2,9 +2,11 @@
 Tests for Position Store — thread-safe in-memory position container.
 """
 
-import pytest
 import threading
-from app.domain.entities.position import Position, AlertStatus
+
+import pytest
+
+from app.domain.entities.position import AlertStatus, Position
 from app.domain.services.position_store import PositionStore
 
 

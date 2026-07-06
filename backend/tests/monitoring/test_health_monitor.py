@@ -3,10 +3,11 @@ Tests for monitoring/health_monitor.py — HealthMonitor.
 """
 
 import time
-import pytest
 
 from app.monitoring.health_monitor import (
-    ComponentHealth, HealthMonitor, HealthStatus, SystemHealth,
+    ComponentHealth,
+    HealthMonitor,
+    HealthStatus,
 )
 
 

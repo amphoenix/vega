@@ -17,11 +17,10 @@ Set EMBED_MODEL to override embedding model (default: nomic-embed-text).
 """
 
 import os
-import uuid
 import threading
-import json
-from datetime import datetime, timezone
-from typing import List, Tuple, Optional, Dict, Any
+import uuid
+from datetime import UTC, datetime
+from typing import Any
 
 QDRANT_URL   = os.environ.get('QDRANT_URL', 'http://localhost:6333')
 EMBED_MODEL  = os.environ.get('EMBED_MODEL', 'nomic-embed-text')
@@ -65,7 +64,7 @@ class MemoryManager:
 
     # ── Embedding ─────────────────────────────────────────────────────────────
 
-    def _embed(self, text: str) -> Optional[List[float]]:
+    def _embed(self, text: str) -> list[float] | None:
         """
         Get embedding vector for text.
         Tries: ollama (nomic-embed-text) → sentence-transformers fallback.
@@ -97,7 +96,7 @@ class MemoryManager:
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
     def add_memory(self, content: str, agent_id: str = 'CIO',
-                   metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
+                   metadata: dict[str, Any] | None = None) -> str | None:
         """
         Embed content and store in Qdrant. Returns point ID.
         """
@@ -114,7 +113,7 @@ class MemoryManager:
             payload = {
                 'content':    content,
                 'agent_id':   agent_id,
-                'created_at': datetime.now(timezone.utc).isoformat(),
+                'created_at': datetime.now(UTC).isoformat(),
                 **(metadata or {}),
             }
 
@@ -127,7 +126,7 @@ class MemoryManager:
         except Exception:
             return None
 
-    def retrieve_memory(self, query: str, n: int = 5) -> List[Tuple[dict, float]]:
+    def retrieve_memory(self, query: str, n: int = 5) -> list[tuple[dict, float]]:
         """
         Semantic similarity search. Returns list of (payload, score) tuples.
         """
@@ -171,7 +170,7 @@ class MemoryManager:
     # ── CIO-specific helpers ──────────────────────────────────────────────────
 
     def store_cio_decision(self, ticker: str, price: float, verdict: str,
-                           thesis: str, technicals: str, outcome: Optional[str] = None):
+                           thesis: str, technicals: str, outcome: str | None = None):
         """
         Store a CIO decision with full context for future retrieval.
         Called after every invest_analysis run.

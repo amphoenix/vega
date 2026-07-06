@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 from threading import Lock, Thread
 
@@ -21,7 +20,7 @@ from ..config import settings
 from ..dependencies import get_broker
 from ..infrastructure.db import state_store
 from ..shared.logger import get_logger
-from ..shared.time import clock, datetime, timedelta, fmt_candle_date, now_ist, today_ist
+from ..shared.time import clock, datetime, now_ist, timedelta, today_ist
 
 logger = get_logger('api.trade')
 router = APIRouter(prefix='/api/trade', tags=['trade'])
@@ -127,7 +126,6 @@ def _cpr(h: float, l: float, c: float):
 def _compute_levels(df, exec_price: float = None) -> dict:
     """Compute entry, stop-loss, and targets from OHLCV DataFrame."""
     import numpy as np
-    import pandas as pd
     c_ser = df['close']; h_ser = df['high']; l_ser = df['low']
     price = float(c_ser.iloc[-1])
 
@@ -220,9 +218,9 @@ def _compute_levels(df, exec_price: float = None) -> dict:
 
 # ── Tracked positions (persistent JSON store) ────────────────────────────────
 
-from ..infrastructure.db import tracked_positions as tp
-from ..engines.monitor import tracked_monitor as tm
 from ..engines import order_executor as _oe
+from ..engines.monitor import tracked_monitor as tm
+from ..infrastructure.db import tracked_positions as tp
 
 
 @router.get('/tracked')
@@ -529,8 +527,8 @@ async def fo_scanner_stream(request: Request):
 
 # ── Scalp Scanner ────────────────────────────────────────────────────────────
 
-from ..engines import scalp_scanner as _scalp_svc
 from ..engines import btst_scanner as _btst_svc
+from ..engines import scalp_scanner as _scalp_svc
 
 
 @router.get('/scalp-scanner/status')
@@ -619,9 +617,8 @@ async def scalp_scanner_stream(request: Request):
 
 # ── Option chain ─────────────────────────────────────────────────────────────
 
-def _parse_expiry_date(s) -> 'date | None':
+def _parse_expiry_date(s) -> date | None:
     """Parse many expiry formats → datetime.date (ported from old broker_utils)."""
-    from ..shared.time import date as _date
     if s is None or s == '':
         return None
     if isinstance(s, (int, float)):
@@ -867,9 +864,9 @@ def option_chain(
                 s = r['strike']
                 ce_oi = r['ce']['oi'] if r['ce'] else 0
                 pe_oi = r['pe']['oi'] if r['pe'] else 0
-                if K > s:
+                if s < K:
                     pain += (K - s) * ce_oi
-                elif K < s:
+                elif s > K:
                     pain += (s - K) * pe_oi
             scores.append((pain, K))
         max_pain = min(scores)[1]
@@ -960,7 +957,6 @@ def trade_levels(ticker: str, days: int = Query(180)):
         return {'success': True, 'data': cached, '_cached': True}
 
     try:
-        import numpy as np
 
         df = _fetch_ohlcv(ticker, days=days)
         if df is None or len(df) < 5:
@@ -979,7 +975,7 @@ def trade_levels(ticker: str, days: int = Query(180)):
         if rsi < 40:
             reason = f"RSI oversold ({rsi:.1f}) — pivot S1/S2 reversal zone"
         elif price > ema20 > ema50:
-            reason = f"Uptrend intact (EMA20 > EMA50) — buy pullback to EMA20"
+            reason = "Uptrend intact (EMA20 > EMA50) — buy pullback to EMA20"
         elif lv['supports']:
             reason = f"Near pivot support S1 ({lv['supports'][0]:,.2f})"
         else:
@@ -1039,8 +1035,9 @@ def indicators(ticker: str, interval: str = '1d', days: int = 365):
         days = min(days, 59)
 
     try:
-        import numpy as np
         import math
+
+        import numpy as np
 
         df = _fetch_ohlcv(ticker, days=days, interval=interval)
         if df is None:
@@ -1210,7 +1207,6 @@ def intraday_signal(ticker: str):
     ticker = ticker.upper().strip()
     try:
         import numpy as np
-        import pandas as pd
 
         # 1h OHLCV — broker first, yfinance fallback
         df = _fetch_ohlcv(ticker, days=30, interval='1h')

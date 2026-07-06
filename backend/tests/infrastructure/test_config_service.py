@@ -2,9 +2,10 @@
 Tests for Config Service — runtime configuration manager.
 """
 
-import pytest
 from app.infrastructure.config.config_service import (
-    ConfigService, ConfigSnapshot, _is_secret_key, _mask,
+    ConfigService,
+    _is_secret_key,
+    _mask,
 )
 
 

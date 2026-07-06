@@ -10,18 +10,18 @@ Runs as a background thread managed by the engine layer.
 from __future__ import annotations
 
 import threading
-from typing import Callable, Protocol
+from collections.abc import Callable
+from typing import Protocol
 
-from ...shared.time import sleep
-
-from ...domain.entities.position import Position, AlertStatus
-from ...domain.services.alert_classifier import classify_alert
-from ...domain.services.position_store import PositionStore
+from ...domain.entities.position import AlertStatus, Position
 from ...domain.events.events import (
     AlertStatusChanged,
     PositionClosed,
 )
+from ...domain.services.alert_classifier import classify_alert
+from ...domain.services.position_store import PositionStore
 from ...shared.logger import get_logger
+from ...shared.time import sleep
 
 logger = get_logger('position_monitor')
 

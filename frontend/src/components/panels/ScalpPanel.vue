@@ -281,11 +281,6 @@ const _ownStreams = {}
 const niftyPrice  = computed(() => Number(liveSpots.value['^NSEI']) || null)
 const sensexPrice = computed(() => Number(liveSpots.value['^BSESN']) || null)
 const vixPrice    = computed(() => Number(liveSpots.value['^INDIAVIX']) || null)
-const activeScalpPrice = computed(() => {
-  if (!activeScalpTicker.value) return null
-  return Number(liveSpots.value[activeScalpTicker.value]) || null
-})
-
 // ── Computed ─────────────────────────────────────────────────────────────────
 const scalpPositions = computed(() =>
   (storeTrackedPositions.value || []).filter(p =>
@@ -540,11 +535,8 @@ function _notifyOrderEvent(data) {
   const title = data.title || `Scalp ${status}`
   const msg = data.message || data.trading_symbol || ''
 
-  let severity = 'info'
-  let sound = 'info'
   if (data.severity === 'critical' || status.includes('EXIT_FAILED')) {
     // CRITICAL: broker can't exit — user must sell manually
-    severity = 'error'; sound = 'error'
     snack({ severity: 'error', title, message: msg, sound: false })
     playNotifSound('error')
     _desktopNotify('🚨 MANUAL EXIT NEEDED', msg)
@@ -562,6 +554,8 @@ function _notifyOrderEvent(data) {
     }
     return
   }
+  let severity = 'info'
+  let sound = 'info'
   if (status.includes('FILL') || status.includes('BOUGHT') || status.includes('ENTRY')) {
     severity = 'success'; sound = 'entry_buy'
   } else if (status.includes('SOLD') || status.includes('EXIT') || status.includes('T1') || status.includes('T2')) {

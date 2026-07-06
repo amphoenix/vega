@@ -5,16 +5,17 @@ Tests for domain/strategies/scalp.py — NiftyScalpStrategy.
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-from app.shared.time import monotonic
-
 import pytest
 
+from app.domain.strategies.base import StrategyState
 from app.domain.strategies.scalp import (
-    NiftyScalpStrategy, ScalpConfig, ScalpDailyState, MomentumSignal,
+    MomentumSignal,
+    NiftyScalpStrategy,
+    ScalpConfig,
+    ScalpDailyState,
 )
-from app.domain.strategies.base import StrategyConfig, StrategyState
 from app.domain.value_objects.market import MarketType
-
+from app.shared.time import monotonic
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

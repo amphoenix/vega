@@ -13,16 +13,17 @@ Infrastructure layer — does HTTP I/O.
 from __future__ import annotations
 
 import json
-import urllib.request
 import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
 from .base import (
-    DeliveryResult, Notification, NotificationChannel,
+    DeliveryResult,
+    Notification,
+    NotificationChannel,
     NotificationPriority,
 )
-
 
 # Discord embed colors by priority
 _PRIORITY_COLORS = {

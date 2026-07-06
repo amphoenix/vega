@@ -276,7 +276,7 @@ function detectCandlePatterns(candles) {
 
   for (let i = 4; i < candles.length; i++) {
     const c = candles[i], p = candles[i - 1], pp = candles[i - 2]
-    const c3 = candles[i - 3], c4 = candles[i - 4]
+    const c3 = candles[i - 3]
     const bull = c.close > c.open
     const pBull = p.close > p.open, ppBull = pp.close > pp.open, c3Bull = c3.close > c3.open
     const pBody = Math.abs(p.close - p.open)

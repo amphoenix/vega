@@ -22,13 +22,19 @@ from __future__ import annotations
 import json
 import queue as _queue
 import threading
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from ...shared.logger import get_logger
-from ...shared.time import datetime, timedelta, fmt_candle_date, now_ist, clock, sleep, monotonic
+from ...shared.time import clock, datetime, fmt_candle_date, monotonic, now_ist, sleep, timedelta
 from .base import (
-    BrokerAdapter, OrderResult, QuoteResult, PositionInfo,
-    HoldingInfo, CandleData, InstrumentInfo,
+    BrokerAdapter,
+    CandleData,
+    HoldingInfo,
+    InstrumentInfo,
+    OrderResult,
+    PositionInfo,
+    QuoteResult,
 )
 
 logger = get_logger('dhan_broker')
@@ -36,7 +42,8 @@ logger = get_logger('dhan_broker')
 # ── SDK import ────────────────────────────────────────────────────────────────
 
 try:
-    from dhanhq import DhanContext, dhanhq as DhanHQ
+    from dhanhq import DhanContext
+    from dhanhq import dhanhq as DhanHQ
     _HAS_DHAN = True
 except ImportError:
     DhanContext = None  # type: ignore
@@ -134,7 +141,7 @@ class DhanBroker(BrokerAdapter):
 
         # WebSocket tick infrastructure
         self._ws_feed: Any = None
-        self._ws_thread: Optional[threading.Thread] = None
+        self._ws_thread: threading.Thread | None = None
         self._ws_lock = threading.Lock()
         self._sub_lock = threading.Lock()
         self._subscribers: dict[int, set[_queue.Queue]] = {}  # sec_id → {queues}
@@ -145,7 +152,7 @@ class DhanBroker(BrokerAdapter):
         self._symbol_sec_cache: dict[str, tuple[int, str]] = {}  # trading_symbol → (sec_id, segment)
         # Deferred WS start — batch instruments from multiple callers on boot
         self._ws_pending: set[tuple[int, str]] = set()  # (ws_exchange, sec_id_str)
-        self._ws_start_timer: Optional[threading.Timer] = None
+        self._ws_start_timer: threading.Timer | None = None
         self._ws_retry_count: int = 0
         self._WS_BATCH_DELAY: float = 5.0   # seconds to wait for more subscriptions on boot
         self._WS_MAX_RETRIES: int = 5
@@ -401,7 +408,7 @@ class DhanBroker(BrokerAdapter):
                     return seg_val
         return {}
 
-    def _index_ltp(self, symbol: str) -> Optional[float]:
+    def _index_ltp(self, symbol: str) -> float | None:
         """Get index LTP from last intraday candle (marketfeed doesn't support IDX_I)."""
         try:
             candles = self.get_candles(symbol, interval='1m', days=1)
@@ -413,7 +420,7 @@ class DhanBroker(BrokerAdapter):
 
     def get_ltp(
         self, symbol: str, exchange: str = 'NFO', security_id: str = '',
-    ) -> Optional[float]:
+    ) -> float | None:
         if self._stub_mode:
             return None
         try:
@@ -435,7 +442,7 @@ class DhanBroker(BrokerAdapter):
 
     def get_quote(
         self, symbol: str, exchange: str = 'NFO', security_id: str = '',
-    ) -> Optional[QuoteResult]:
+    ) -> QuoteResult | None:
         if self._stub_mode:
             return None
         try:
@@ -529,7 +536,8 @@ class DhanBroker(BrokerAdapter):
             if DhanBroker._instruments_cache is not None:
                 return DhanBroker._instruments_cache
             try:
-                import tempfile, os
+                import os
+                import tempfile
                 # fetch_security_list saves a CSV file — use tempdir
                 old_cwd = os.getcwd()
                 tmpdir = tempfile.mkdtemp()
@@ -662,7 +670,7 @@ class DhanBroker(BrokerAdapter):
 
     def resolve_option_contract(
         self, underlying: str, option_type: str, strike: float,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Find nearest matching option contract for an underlying on Dhan."""
         from ...shared.time import today_ist
         base = underlying.upper().replace('.NS', '').replace('.BO', '').lstrip('^')
@@ -719,7 +727,6 @@ class DhanBroker(BrokerAdapter):
         """Parse expiry date string to date object. Returns None on failure."""
         if not s:
             return None
-        from datetime import date as _date
         s = s.strip()
         if 'T' in s:
             s = s.split('T', 1)[0]
@@ -991,9 +998,11 @@ class DhanBroker(BrokerAdapter):
         BFO: 8,       # BSE_FNO → 8
     }
 
-    def create_tick_queue(self, symbol: str) -> tuple[str, _queue.Queue]:
+    def create_tick_queue(
+        self, symbol: str, exchange: str = '', security_id: str = '',
+    ) -> tuple[str, _queue.Queue]:
         """Subscribe to live ticks via Dhan WebSocket and return (key, queue)."""
-        sec_int, segment = self._resolve_sec(symbol, '', '')
+        sec_int, segment = self._resolve_sec(symbol, exchange, security_id)
         ws_exchange = self._SEG_TO_WS_INT.get(segment, 1)
         q: _queue.Queue = _queue.Queue(maxsize=500)
         key = f'{segment}:{sec_int}'

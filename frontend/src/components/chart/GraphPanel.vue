@@ -247,7 +247,7 @@ const props = defineProps({
   isSimulating: Boolean
 })
 
-const emit = defineEmits(['refresh', 'toggle-maximize'])
+defineEmits(['refresh', 'toggle-maximize'])
 
 const graphContainer = ref(null)
 const graphSvg = ref(null)
@@ -263,7 +263,7 @@ const dismissFinishedHint = () => {
 }
 
 // Watch isSimulating changes, detect simulation end
-watch(() => props.isSimulating, (newValue, oldValue) => {
+watch(() => props.isSimulating, (newValue, _oldValue) => {
   if (wasSimulating.value && !newValue) {
     // Changed from simulating to non-simulating state, show finished hint
     showSimulationFinishedHint.value = true

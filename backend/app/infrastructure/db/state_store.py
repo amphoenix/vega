@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
-from typing import Optional
 
 from ...shared.time import now_ist, today_ist_str
 
@@ -188,10 +187,9 @@ def get_state(key: str, default: str = '') -> str:
 
 
 def set_state(key: str, value: str) -> None:
-    with _lock:
-        with _conn() as c:
-            c.execute('INSERT OR REPLACE INTO trading_state (key, value) VALUES (?, ?)', (key, value))
-            c.commit()
+    with _lock, _conn() as c:
+        c.execute('INSERT OR REPLACE INTO trading_state (key, value) VALUES (?, ?)', (key, value))
+        c.commit()
 
 
 # ── P&L recording ────────────────────────────────────────────────────────────
@@ -216,29 +214,28 @@ def record_trade(
     net_pnl = round(gross_pnl - brokerage, 2)
     now = now_ist()
 
-    with _lock:
-        with _conn() as c:
-            c.execute(
-                '''INSERT INTO pnl_trades
+    with _lock, _conn() as c:
+        c.execute(
+            '''INSERT INTO pnl_trades
                        (timestamp, date, mode, market_type, symbol, underlying,
                         direction, strike_price, entry_prem, exit_prem, qty, lot_size,
                         gross_pnl, brokerage, net_pnl, exit_reason,
                         currency, entry_time, exit_time, order_id, exit_order_id, display_symbol)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                (now.isoformat(), now.strftime('%Y-%m-%d'), mode, market_type,
-                 symbol, underlying, direction, strike_price,
-                 entry_prem, exit_prem, qty, lot_size,
-                 gross_pnl, brokerage, net_pnl, exit_reason,
-                 currency, entry_time, exit_time, order_id, exit_order_id, display_symbol),
-            )
-            c.commit()
+            (now.isoformat(), now.strftime('%Y-%m-%d'), mode, market_type,
+             symbol, underlying, direction, strike_price,
+             entry_prem, exit_prem, qty, lot_size,
+             gross_pnl, brokerage, net_pnl, exit_reason,
+             currency, entry_time, exit_time, order_id, exit_order_id, display_symbol),
+        )
+        c.commit()
 
     return {'gross_pnl': gross_pnl, 'brokerage': brokerage, 'net_pnl': net_pnl}
 
 
 # ── Queries ──────────────────────────────────────────────────────────────────
 
-def today_net_by_mode(market_type: Optional[str] = None) -> dict[str, float]:
+def today_net_by_mode(market_type: str | None = None) -> dict[str, float]:
     date_str = today_ist_str()
     query = 'SELECT mode, SUM(net_pnl) AS net FROM pnl_trades WHERE date = ?'
     params: list = [date_str]
@@ -255,7 +252,7 @@ def today_net_by_mode(market_type: Optional[str] = None) -> dict[str, float]:
     return result
 
 
-def daily_summary(date_str: Optional[str] = None, market_type: Optional[str] = None) -> dict:
+def daily_summary(date_str: str | None = None, market_type: str | None = None) -> dict:
     date_str = date_str or today_ist_str()
     z = lambda: {'trades': 0, 'gross': 0.0, 'brokerage': 0.0, 'net': 0.0}
     try:
@@ -292,7 +289,7 @@ def daily_summary(date_str: Optional[str] = None, market_type: Optional[str] = N
     return result
 
 
-def daily_summary_by_segment(date_str: Optional[str] = None) -> dict:
+def daily_summary_by_segment(date_str: str | None = None) -> dict:
     """Per-tab P&L summary: swing, scalp (both F&O), crypto, poly, forex."""
     date_str = date_str or today_ist_str()
     z = lambda: {'trades': 0, 'gross': 0.0, 'brokerage': 0.0, 'net': 0.0}
@@ -368,8 +365,8 @@ def daily_summary_by_segment(date_str: Optional[str] = None) -> dict:
     return result
 
 
-def recent_trades(limit: int = 50, mode: Optional[str] = None,
-                  market_type: Optional[str] = None) -> list[dict]:
+def recent_trades(limit: int = 50, mode: str | None = None,
+                  market_type: str | None = None) -> list[dict]:
     query = 'SELECT * FROM pnl_trades'
     clauses: list[str] = []
     params: list = []
@@ -397,10 +394,9 @@ def persist_decision(record) -> None:
     object with the same attributes.
     """
     import json
-    with _lock:
-        with _conn() as c:
-            c.execute(
-                '''INSERT OR REPLACE INTO audit_log
+    with _lock, _conn() as c:
+        c.execute(
+            '''INSERT OR REPLACE INTO audit_log
                        (decision_id, timestamp, date, symbol, underlying,
                         direction, trade_mode, confidence, regime, vix,
                         outcome, supervisor_gate, rejection_reason,
@@ -408,36 +404,36 @@ def persist_decision(record) -> None:
                         latency_ms, trade_id, exit_reason, realized_pnl,
                         metadata_json)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                (
-                    record.decision_id,
-                    record.timestamp.isoformat(),
-                    record.timestamp.strftime('%Y-%m-%d'),
-                    record.symbol,
-                    record.underlying,
-                    record.direction,
-                    record.trade_mode,
-                    record.confidence,
-                    record.regime,
-                    record.vix,
-                    record.outcome.value if hasattr(record.outcome, 'value') else record.outcome,
-                    record.supervisor_gate,
-                    record.rejection_reason,
-                    record.risk_qty,
-                    record.stop_loss,
-                    record.target_1,
-                    record.target_2,
-                    record.entry_price,
-                    record.latency_ms,
-                    record.trade_id,
-                    record.exit_reason,
-                    record.realized_pnl,
-                    json.dumps(record.metadata) if record.metadata else '{}',
-                ),
-            )
-            c.commit()
+            (
+                record.decision_id,
+                record.timestamp.isoformat(),
+                record.timestamp.strftime('%Y-%m-%d'),
+                record.symbol,
+                record.underlying,
+                record.direction,
+                record.trade_mode,
+                record.confidence,
+                record.regime,
+                record.vix,
+                record.outcome.value if hasattr(record.outcome, 'value') else record.outcome,
+                record.supervisor_gate,
+                record.rejection_reason,
+                record.risk_qty,
+                record.stop_loss,
+                record.target_1,
+                record.target_2,
+                record.entry_price,
+                record.latency_ms,
+                record.trade_id,
+                record.exit_reason,
+                record.realized_pnl,
+                json.dumps(record.metadata) if record.metadata else '{}',
+            ),
+        )
+        c.commit()
 
 
-def recent_decisions(limit: int = 50, outcome: Optional[str] = None) -> list[dict]:
+def recent_decisions(limit: int = 50, outcome: str | None = None) -> list[dict]:
     """Query recent audit records, optionally filtered by outcome."""
     query = 'SELECT * FROM audit_log'
     params: list = []
@@ -451,7 +447,7 @@ def recent_decisions(limit: int = 50, outcome: Optional[str] = None) -> list[dic
     return [dict(r) for r in rows]
 
 
-def decisions_by_date(date_str: Optional[str] = None) -> dict:
+def decisions_by_date(date_str: str | None = None) -> dict:
     """Summary of decisions for a given date."""
     date_str = date_str or today_ist_str()
     with _conn() as c:
@@ -467,7 +463,7 @@ def decisions_by_date(date_str: Optional[str] = None) -> dict:
     return result
 
 
-def rejection_breakdown(date_str: Optional[str] = None) -> list[dict]:
+def rejection_breakdown(date_str: str | None = None) -> list[dict]:
     """Count rejections by gate for a given date."""
     date_str = date_str or today_ist_str()
     with _conn() as c:
@@ -487,9 +483,8 @@ def save_bot(bot_id: str, name: str, strategy: str, symbols: str,
              config_json: str, enabled: bool = True) -> None:
     """Upsert a crypto bot config."""
     now = today_ist_str()
-    with _lock:
-        with _conn() as c:
-            c.execute('''
+    with _lock, _conn() as c:
+        c.execute('''
                 INSERT INTO crypto_bots (bot_id, name, strategy, symbols, config_json, enabled, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bot_id) DO UPDATE SET
@@ -505,7 +500,7 @@ def list_bots() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_bot(bot_id: str) -> Optional[dict]:
+def get_bot(bot_id: str) -> dict | None:
     """Return a single bot config or None."""
     with _conn() as c:
         row = c.execute('SELECT * FROM crypto_bots WHERE bot_id = ?', (bot_id,)).fetchone()
@@ -514,7 +509,6 @@ def get_bot(bot_id: str) -> Optional[dict]:
 
 def delete_bot(bot_id: str) -> bool:
     """Delete a bot config. Returns True if deleted."""
-    with _lock:
-        with _conn() as c:
-            cur = c.execute('DELETE FROM crypto_bots WHERE bot_id = ?', (bot_id,))
+    with _lock, _conn() as c:
+        cur = c.execute('DELETE FROM crypto_bots WHERE bot_id = ?', (bot_id,))
     return cur.rowcount > 0

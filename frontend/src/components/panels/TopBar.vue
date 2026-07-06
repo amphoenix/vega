@@ -190,7 +190,7 @@ const brokerDisplayName = computed(() => {
 
 const emit = defineEmits(['update:viewMode', 'toggle-theme', 'broker-open', 'select-ticker'])
 
-const { activeTicker, interval, searchSuggestions, chartTicker } = storeToRefs(useMarketStore())
+const { activeTicker, interval, searchSuggestions } = storeToRefs(useMarketStore())
 
 const timeframes = [
   { l: '5M',  v: '5m'  },
@@ -239,8 +239,6 @@ async function _fetchDailyPnl() {
     }
   } catch {}
 }
-
-function round2(v) { return Math.round(v * 100) / 100 }
 
 // ── Live PnL via shared SSE (order events) ────────────────────────────────
 onOrderEvent((d) => {

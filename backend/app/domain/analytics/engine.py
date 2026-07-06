@@ -14,14 +14,10 @@ Pure domain — no I/O, no DB, no HTTP.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from ...shared.time import date, timedelta
-from typing import Sequence
 
 from ..entities.trade import Trade, TradeState
-from ..regime.regime_engine import Regime
-from ..value_objects.market import MarketType
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Data containers

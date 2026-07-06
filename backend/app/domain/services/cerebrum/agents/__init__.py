@@ -1,12 +1,12 @@
-from . import technical, fundamental, macro, sentiment, risk, debate, cio, entity_agent
+from . import cio, debate, entity_agent, fundamental, macro, risk, sentiment, technical
 
 __all__ = [
-    'technical',
+    'cio',
+    'debate',
+    'entity_agent',
     'fundamental',
     'macro',
-    'sentiment',
     'risk',
-    'debate',
-    'cio',
-    'entity_agent',
+    'sentiment',
+    'technical',
 ]

@@ -4,13 +4,13 @@ Supertrend, ADX, ATR, Donchian, EMA, RSI, Bollinger, MACD.
 Ported from tradingview-mcp indicators_calc.py + extended.
 """
 from __future__ import annotations
+
 import math
-from typing import Optional
 
 
 # ── EMA ───────────────────────────────────────────────────────────────────────
-def calc_ema(closes: list[float], period: int) -> list[Optional[float]]:
-    result: list[Optional[float]] = [None] * len(closes)
+def calc_ema(closes: list[float], period: int) -> list[float | None]:
+    result: list[float | None] = [None] * len(closes)
     if len(closes) < period:
         return result
     k = 2 / (period + 1)
@@ -22,16 +22,16 @@ def calc_ema(closes: list[float], period: int) -> list[Optional[float]]:
 
 
 # ── SMA ───────────────────────────────────────────────────────────────────────
-def calc_sma(closes: list[float], period: int) -> list[Optional[float]]:
-    result: list[Optional[float]] = [None] * len(closes)
+def calc_sma(closes: list[float], period: int) -> list[float | None]:
+    result: list[float | None] = [None] * len(closes)
     for i in range(period - 1, len(closes)):
         result[i] = sum(closes[i - period + 1: i + 1]) / period
     return result
 
 
 # ── RSI (Wilder) ──────────────────────────────────────────────────────────────
-def calc_rsi(closes: list[float], period: int = 14) -> list[Optional[float]]:
-    result: list[Optional[float]] = [None] * len(closes)
+def calc_rsi(closes: list[float], period: int = 14) -> list[float | None]:
+    result: list[float | None] = [None] * len(closes)
     if len(closes) < period + 1:
         return result
     gains, losses = [], []
@@ -53,8 +53,8 @@ def calc_rsi(closes: list[float], period: int = 14) -> list[Optional[float]]:
 # ── Bollinger Bands ───────────────────────────────────────────────────────────
 def calc_bollinger(closes: list[float], period: int = 20, std_mult: float = 2.0) -> dict:
     middle = calc_sma(closes, period)
-    upper: list[Optional[float]] = [None] * len(closes)
-    lower: list[Optional[float]] = [None] * len(closes)
+    upper: list[float | None] = [None] * len(closes)
+    lower: list[float | None] = [None] * len(closes)
     for i in range(period - 1, len(closes)):
         window = closes[i - period + 1: i + 1]
         mean = middle[i]
@@ -69,12 +69,12 @@ def calc_macd(closes: list[float], fast: int = 12, slow: int = 26, signal: int =
     ema_fast = calc_ema(closes, fast)
     ema_slow = calc_ema(closes, slow)
     n = len(closes)
-    macd_line: list[Optional[float]] = [None] * n
+    macd_line: list[float | None] = [None] * n
     for i in range(n):
         if ema_fast[i] is not None and ema_slow[i] is not None:
             macd_line[i] = ema_fast[i] - ema_slow[i]
-    signal_line: list[Optional[float]] = [None] * n
-    histogram: list[Optional[float]] = [None] * n
+    signal_line: list[float | None] = [None] * n
+    histogram: list[float | None] = [None] * n
     macd_vals = [(i, v) for i, v in enumerate(macd_line) if v is not None]
     if len(macd_vals) >= signal:
         sig_ema = calc_ema([v for _, v in macd_vals], signal)
@@ -86,9 +86,9 @@ def calc_macd(closes: list[float], fast: int = 12, slow: int = 26, signal: int =
 
 
 # ── ATR ───────────────────────────────────────────────────────────────────────
-def calc_atr(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> list[Optional[float]]:
+def calc_atr(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> list[float | None]:
     n = len(closes)
-    result: list[Optional[float]] = [None] * n
+    result: list[float | None] = [None] * n
     if n < period + 1:
         return result
     trs = [max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
@@ -110,9 +110,9 @@ def calc_supertrend(highs: list[float], lows: list[float], closes: list[float],
     """
     n = len(closes)
     atr = calc_atr(highs, lows, closes, atr_period)
-    direction: list[Optional[int]] = [None] * n
-    upper: list[Optional[float]] = [None] * n
-    lower: list[Optional[float]] = [None] * n
+    direction: list[int | None] = [None] * n
+    upper: list[float | None] = [None] * n
+    lower: list[float | None] = [None] * n
     prev_upper = prev_lower = prev_dir = None
 
     for i in range(1, n):
@@ -146,9 +146,9 @@ def calc_adx(highs: list[float], lows: list[float], closes: list[float], period:
     +DI > -DI = bullish; -DI > +DI = bearish
     """
     n = len(closes)
-    adx_vals: list[Optional[float]] = [None] * n
-    pdi_vals: list[Optional[float]] = [None] * n
-    mdi_vals: list[Optional[float]] = [None] * n
+    adx_vals: list[float | None] = [None] * n
+    pdi_vals: list[float | None] = [None] * n
+    mdi_vals: list[float | None] = [None] * n
 
     if n < period * 2:
         return {"adx": adx_vals, "+di": pdi_vals, "-di": mdi_vals}
@@ -198,9 +198,9 @@ def calc_adx(highs: list[float], lows: list[float], closes: list[float], period:
 # ── Donchian Channel ──────────────────────────────────────────────────────────
 def calc_donchian(highs: list[float], lows: list[float], period: int = 20) -> dict:
     n = len(highs)
-    upper: list[Optional[float]] = [None] * n
-    lower: list[Optional[float]] = [None] * n
-    middle: list[Optional[float]] = [None] * n
+    upper: list[float | None] = [None] * n
+    lower: list[float | None] = [None] * n
+    middle: list[float | None] = [None] * n
     for i in range(period - 1, n):
         u = max(highs[i - period + 1: i + 1])
         l = min(lows[i - period + 1: i + 1])

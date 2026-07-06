@@ -13,11 +13,10 @@ Pure function — no I/O, no framework imports.
 
 from __future__ import annotations
 
-from .time import datetime, date
-from typing import Optional
+from .time import date, datetime
 
 
-def parse_expiry(s) -> Optional[date]:
+def parse_expiry(s) -> date | None:
     """Parse many expiry formats → date or None."""
     if s is None or s == '':
         return None
@@ -64,7 +63,7 @@ def parse_expiry(s) -> Optional[date]:
     return None
 
 
-def parse_expiry_datetime(s) -> Optional[datetime]:
+def parse_expiry_datetime(s) -> datetime | None:
     """Parse IndStocks MM/DD/YYYY HH:MM format → datetime or None."""
     if not s:
         return None

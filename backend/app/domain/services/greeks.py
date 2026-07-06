@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
 
 RISK_FREE_RATE = 0.07
 
@@ -100,7 +99,7 @@ def implied_vol(spot: float, strike: float, dte_days: float,
                 market_price: float, opt_type: str = 'CE',
                 rate: float = RISK_FREE_RATE,
                 lo: float = 0.01, hi: float = 5.0,
-                tol: float = 1e-4, max_iter: int = 80) -> Optional[float]:
+                tol: float = 1e-4, max_iter: int = 80) -> float | None:
     """Solve for sigma via bisection such that BS(sigma) ≈ market_price."""
     if market_price is None or market_price <= 0:
         return None

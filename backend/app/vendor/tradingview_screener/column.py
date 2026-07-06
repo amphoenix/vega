@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-
 if TYPE_CHECKING:
-    from typing import Optional, Iterable
+    from collections.abc import Iterable
+
     from .models import FilterOperationDict
 
 
@@ -157,7 +157,7 @@ class Column:
         }
 
     def between_pct(
-        self, column: Column | str, pct1: float, pct2: Optional[float] = None
+        self, column: Column | str, pct1: float, pct2: float | None = None
     ) -> FilterOperationDict:
         """
         Examples:
@@ -172,7 +172,7 @@ class Column:
         }
 
     def not_between_pct(
-        self, column: Column | str, pct1: float, pct2: Optional[float] = None
+        self, column: Column | str, pct1: float, pct2: float | None = None
     ) -> FilterOperationDict:
         """
         Examples:

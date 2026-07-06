@@ -24,11 +24,11 @@ from typing import Any
 
 from ...shared.logger import get_logger
 from ..safety.kill_switch import KillSwitchEngine
-from ..supervisor.trade_supervisor import TradeSupervisor, Denial
+from ..supervisor.trade_supervisor import Denial, TradeSupervisor
+from .budget_guard import BudgetVerdict, check_budget
 from .exposure_guard import ExposureGuard, ExposureVerdict
-from .regime_guard import check_regime, RegimeVerdict
-from .budget_guard import check_budget, BudgetVerdict
-from .position_sizer import compute_size, SizeResult
+from .position_sizer import SizeResult, compute_size
+from .regime_guard import RegimeVerdict, check_regime
 
 logger = get_logger('risk_chain')
 

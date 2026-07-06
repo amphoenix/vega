@@ -19,14 +19,16 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-
-from ...shared.time import monotonic
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
+from ...shared.time import monotonic
 from .base import (
-    DeliveryResult, Notification, NotificationCategory,
-    NotificationChannel, NotificationPriority,
+    DeliveryResult,
+    Notification,
+    NotificationCategory,
+    NotificationChannel,
+    NotificationPriority,
 )
 
 

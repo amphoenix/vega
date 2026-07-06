@@ -20,10 +20,10 @@ from __future__ import annotations
 import math
 import threading
 from collections import deque
-
-from ..shared.time import monotonic_ns
 from dataclasses import dataclass, field
 from typing import Any
+
+from ..shared.time import monotonic_ns
 
 
 @dataclass(frozen=True, slots=True)

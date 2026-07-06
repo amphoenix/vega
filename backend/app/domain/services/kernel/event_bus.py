@@ -1,6 +1,5 @@
 import queue
 import threading
-from typing import Optional, Set
 
 
 class EventBus:
@@ -14,10 +13,10 @@ class EventBus:
 
     def __init__(self, maxsize: int = 256):
         self._lock    = threading.RLock()
-        self._subs:   Set[queue.Queue] = set()
+        self._subs:   set[queue.Queue] = set()
         self._maxsize = maxsize
 
-    def subscribe(self, maxsize: Optional[int] = None) -> queue.Queue:
+    def subscribe(self, maxsize: int | None = None) -> queue.Queue:
         q = queue.Queue(maxsize=maxsize or self._maxsize)
         with self._lock:
             self._subs.add(q)
@@ -28,7 +27,7 @@ class EventBus:
             self._subs.discard(q)
 
     def publish(self, event: dict) -> None:
-        dead: Set[queue.Queue] = set()
+        dead: set[queue.Queue] = set()
         with self._lock:
             subs = set(self._subs)
 
@@ -48,9 +47,9 @@ class EventBus:
 
 
 def tick_event(ticker: str, price: float, source: str,
-               high: Optional[float] = None, low: Optional[float] = None,
-               volume: Optional[int] = None,
-               change_pct: Optional[float] = None) -> dict:
+               high: float | None = None, low: float | None = None,
+               volume: int | None = None,
+               change_pct: float | None = None) -> dict:
     return {
         'type': 'tick', 'ticker': ticker, 'price': price, 'source': source,
         'high': high, 'low': low, 'volume': volume, 'change_pct': change_pct,

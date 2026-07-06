@@ -15,7 +15,7 @@ Zones (for a long options position where lower premium = worse):
 
 from __future__ import annotations
 
-from ..entities.position import Position, AlertStatus
+from ..entities.position import AlertStatus, Position
 
 
 def classify_alert(pos: Position, premium: float) -> AlertStatus:

@@ -7,10 +7,11 @@ to the appropriate domain services (kill switch, supervisor, etc.).
 
 from __future__ import annotations
 
-from ...shared.logger import get_logger
 from ...domain.events.events import (
-    PositionClosed, PnLUpdated, KillSwitchTriggered, DayRolled, SignalGenerated,
+    DayRolled,
+    PositionClosed,
 )
+from ...shared.logger import get_logger
 
 logger = get_logger('handlers')
 

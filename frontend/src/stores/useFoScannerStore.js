@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed } from 'vue'
 
 export const useFoScannerStore = defineStore('foScanner', () => {
   const scannerRunning = ref(false)

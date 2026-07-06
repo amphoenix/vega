@@ -23,12 +23,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from ..entities.signal import Signal
+from ..regime.regime_engine import Regime
 from ..value_objects.instrument import Instrument
 from ..value_objects.market import MarketType
-from ..regime.regime_engine import Regime
 
 
 class StrategyState(str, Enum):

@@ -17,15 +17,20 @@ Pure domain — no I/O, no threads, no database. Thread-safe via dict copy.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from ...shared.indicators import (
     CandleData,
-    ema, rsi, atr, adx_full, supertrend, macd, vwap,
+    adx_full,
+    atr,
     bollinger_bands,
+    ema,
+    macd,
+    rsi,
+    supertrend,
+    vwap,
 )
 from ...shared.time import now_ist
-
 
 # ── Feature record ───────────────────────────────────────────────────────────
 
@@ -174,7 +179,7 @@ class FeatureStore:
         self._cache[self._key(ticker, timeframe)] = record
         return record
 
-    def get(self, ticker: str, timeframe: str) -> Optional[FeatureRecord]:
+    def get(self, ticker: str, timeframe: str) -> FeatureRecord | None:
         """Read cached features. Returns None if no entry exists."""
         return self._cache.get(self._key(ticker, timeframe))
 
@@ -237,7 +242,7 @@ class FeatureStore:
 
 def _parse_iso(iso_str: str):
     """Parse ISO timestamp back to datetime (IST-aware)."""
-    from ...shared.time import datetime, IST
+    from ...shared.time import IST, datetime
     try:
         dt = datetime.fromisoformat(iso_str)
         if dt.tzinfo is None:

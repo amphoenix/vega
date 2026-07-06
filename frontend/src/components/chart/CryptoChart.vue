@@ -36,7 +36,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import {
   createChart, CandlestickSeries, HistogramSeries,
   LineSeries, CrosshairMode,
@@ -49,27 +49,6 @@ const props = defineProps({
   interval:  { type: String,  default: '1h' },
   livePrice: { type: Number,  default: null },
 })
-
-const _COIN_NAMES = {
-  BTC: 'Bitcoin', ETH: 'Ethereum', SOL: 'Solana', BNB: 'BNB',
-  XRP: 'XRP', ADA: 'Cardano', DOGE: 'Dogecoin', DOT: 'Polkadot',
-  LINK: 'Chainlink', AVAX: 'Avalanche', MATIC: 'Polygon',
-  UNI: 'Uniswap', ATOM: 'Cosmos', LTC: 'Litecoin', SHIB: 'Shiba Inu',
-  TON: 'Toncoin', TRX: 'TRON', OP: 'Optimism', ARB: 'Arbitrum',
-}
-const chartCoinName = computed(() => {
-  const sym = props.pair.replace('/USDT', '').replace('/BUSD', '').replace('USDT', '').replace('BUSD', '').replace('/', '')
-  return _COIN_NAMES[sym] || sym
-})
-
-const INTERVALS = [
-  { v: '1m',  l: '1m'  },
-  { v: '5m',  l: '5m'  },
-  { v: '15m', l: '15m' },
-  { v: '1h',  l: '1h'  },
-  { v: '4h',  l: '4h'  },
-  { v: '1d',  l: '1D'  },
-]
 
 const localInterval = ref(props.interval)
 const loading       = ref(false)
@@ -533,11 +512,6 @@ async function load() {
   } finally {
     loading.value = false
   }
-}
-
-function changeInterval(iv) {
-  localInterval.value = iv
-  load()
 }
 
 // ── Watchers ──────────────────────────────────────────────────────────────────

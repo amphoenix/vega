@@ -1,31 +1,28 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional
-
-from .agent import AgentInput, AgentOutput, registry
-from .agents import technical, fundamental, macro, sentiment, risk, debate, cio, entity_agent
-from .agents.debate import run_debate
-from .agents.cio import run_cio
-from .agents.entity_agent import extract_entities
+from typing import Any
 
 from ..kernel import (
-    blackboard  as _blackboard_singleton,
-    budget      as _budget_singleton,
+    Blackboard,
     event_bus,
     process_store,
-    priority_queue,
-    Blackboard,
 )
-from ..kernel.queue import HIGH, NORMAL
+from ..kernel import (
+    budget as _budget_singleton,
+)
 from ..kernel.event_bus import (
-    agent_submitted_event,
     agent_completed_event,
     agent_failed_event,
+    agent_submitted_event,
     phase_event,
 )
-
+from .agent import AgentInput, registry
+from .agents.cio import run_cio
+from .agents.debate import run_debate
+from .agents.entity_agent import extract_entities
 
 _HIGH_DOMAINS  = {'risk', 'technical'}
 
@@ -43,7 +40,7 @@ class AnalysisRunner:
         ticker: str,
         emit_fn: Callable[[str, dict], None],
         llm_client: Any,
-        market_data_fn: Optional[Callable[[str], dict]] = None,
+        market_data_fn: Callable[[str], dict] | None = None,
     ) -> dict:
         bb = Blackboard()
 
@@ -78,8 +75,8 @@ class AnalysisRunner:
 
         board_snapshot = bb.snapshot()
 
-        high_agents:   List[dict] = []
-        normal_agents: List[dict] = []
+        high_agents:   list[dict] = []
+        normal_agents: list[dict] = []
 
         for entity in entities:
             domain = entity.get('domain', 'fundamental')
@@ -92,7 +89,7 @@ class AnalysisRunner:
             else:
                 normal_agents.append(entry)
 
-        results_with_domain: List[tuple] = []   # (AgentOutput, domain_str)
+        results_with_domain: list[tuple] = []   # (AgentOutput, domain_str)
 
         def _dispatch(entry: dict) -> tuple:
             agent  = entry['agent']

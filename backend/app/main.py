@@ -9,19 +9,21 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import settings
-from .dependencies import get_event_bus, get_scheduler, get_kill_switch, get_supervisor
-from .domain.events.events import PositionClosed, DayRolled
 from .application.handlers.trading_handlers import (
-    make_position_closed_handler, make_day_rolled_handler,
+    make_day_rolled_handler,
+    make_position_closed_handler,
 )
-from .shared.logger import setup_logger, get_logger
+from .config import settings
+from .dependencies import get_event_bus, get_kill_switch, get_scheduler, get_supervisor
+from .domain.events.events import DayRolled, PositionClosed
+from .shared.logger import get_logger, setup_logger
+from .shared.time import monotonic, now_ist
 
 # ── Bootstrap logger before anything else ────────────────────────────────────
 setup_logger()
@@ -93,7 +95,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Auto-start scalp scanner only when enabled (matches Flask __init__.py)
     try:
-        from .engines.scalp_scanner import scalp_enabled as _scalp_enabled, start as _scalp_start
+        from .engines.scalp_scanner import scalp_enabled as _scalp_enabled
+        from .engines.scalp_scanner import start as _scalp_start
         if _scalp_enabled():
             _scalp_start()
             logger.info('Scalp scanner auto-started')
@@ -191,7 +194,6 @@ app.add_middleware(
 
 # ── Pretty request logger ────────────────────────────────────────────────────
 
-import time as _time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as _Req
 from starlette.responses import Response as _Resp
@@ -215,9 +217,9 @@ class _RequestLogger(BaseHTTPMiddleware):
             return await call_next(request)
 
         method = request.method
-        t0 = _time.monotonic()
+        t0 = monotonic()
         response = await call_next(request)
-        ms = (_time.monotonic() - t0) * 1000
+        ms = (monotonic() - t0) * 1000
         status = response.status_code
 
         # Color by status
@@ -240,7 +242,7 @@ class _RequestLogger(BaseHTTPMiddleware):
         # Clean path: strip /api/ prefix for readability
         short = path[4:] if path.startswith('/api') else path
 
-        ts = _time.strftime('%H:%M:%S')
+        ts = now_ist().strftime('%H:%M:%S')
         print(f'  {_DIM}{ts}{_RST}  {sc}{status}{_RST}  {mc}{_B}{method:6s}{_RST}  {short:50s}  {timing}  {_DIM}[{proto}]{_RST}')
         return response
 
@@ -251,11 +253,11 @@ app.add_middleware(_RequestLogger)
 # ── Register API routers ────────────────────────────────────────────────────
 
 from .api.broker import router as broker_router
-from .api.trade import router as trade_router
-from .api.market import router as market_router
 from .api.crypto import router as crypto_router
-from .api.poly import router as poly_router
 from .api.forex import router as forex_router
+from .api.market import router as market_router
+from .api.poly import router as poly_router
+from .api.trade import router as trade_router
 
 app.include_router(broker_router)
 app.include_router(trade_router)

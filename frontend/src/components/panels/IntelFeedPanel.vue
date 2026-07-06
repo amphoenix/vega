@@ -174,7 +174,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { onOrderEvent } from '../../composables/useSSE'
 
 const props = defineProps({
@@ -307,8 +307,6 @@ const systemExitOrderIds = ref(new Set())
 const positionRows = ref([])
 const systemTradesList = ref([])
 const realizedPnl = computed(() => positionRows.value.reduce((s, p) => s + (p.realized_pnl || 0), 0))
-const unrealizedPnl = computed(() => positionRows.value.reduce((s, p) => s + (p.unrealized_pnl || 0), 0))
-const totalPnl = computed(() => realizedPnl.value + unrealizedPnl.value)
 const symbolCount = computed(() => new Set(positionRows.value.map(p => p.symbol)).size)
 const _isPaperTrade = (t) => {
   const oid = (t.order_id || '').toUpperCase()
@@ -401,9 +399,6 @@ const mergedRows = computed(() => {
   rows.sort((a, b) => (b._sortTime || 0) - (a._sortTime || 0))
   return rows
 })
-
-// Keep pnlRows as alias for summary bar count
-const pnlRows = computed(() => mergedRows.value)
 
 async function fetchOrders() {
   const base = import.meta.env.VITE_API_BASE_URL || ''

@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-from ..shared.time import clock
-
 import requests
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
@@ -19,6 +17,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..infrastructure.exchange.public_ws import get_stream_manager
 from ..shared.logger import get_logger
+from ..shared.time import clock
 
 logger = get_logger('api.crypto')
 router = APIRouter(prefix='/api/crypto', tags=['crypto'])
@@ -618,7 +617,7 @@ async def stream_binance_ticker(pair: str, request: Request):
                             'ts':         data.get('E', 0),
                         }),
                     }
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {'event': 'heartbeat', 'data': json.dumps({'symbol': sym})}
         except asyncio.CancelledError:
             pass
@@ -665,7 +664,7 @@ async def stream_bybit_ticker(pair: str, request: Request):
                             'ts':            raw.get('ts', 0),
                         }),
                     }
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {'event': 'heartbeat', 'data': json.dumps({'symbol': sym})}
         except asyncio.CancelledError:
             pass

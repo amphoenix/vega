@@ -26,7 +26,7 @@ The application layer handles persistence and event emission.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 

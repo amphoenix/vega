@@ -2,10 +2,9 @@
 Tests for Secrets Manager — secure access to API keys and credentials.
 """
 
-import pytest
-from unittest.mock import MagicMock
 from app.infrastructure.security.secrets_manager import (
-    SecretsManager, SecretCategory, KNOWN_SECRETS, _mask,
+    SecretsManager,
+    _mask,
 )
 
 

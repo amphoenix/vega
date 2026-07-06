@@ -18,22 +18,21 @@ The scanner runs in its own thread, independent of the CIO pipeline.
 from __future__ import annotations
 
 import json
-import os
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
-from ..shared import time as _mkt
-from ..shared.time import datetime, timedelta, clock, sleep
-from ..shared.logger import get_logger
 from ..dependencies import get_broker
+from ..shared import time as _mkt
+from ..shared.logger import get_logger
+from ..shared.time import clock, datetime, timedelta
 
 logger = get_logger('vega.services.scalp_scanner')
 
 # ── Config — all scalp params read from config.py (single source of truth) ────
 
 from ..config import settings as _settings
+
 
 def scalp_enabled() -> bool:
     return _settings.scalp_enabled
@@ -72,7 +71,7 @@ SCALP_ZEROHERO_FINAL_MIN   = lambda: _settings.scalp_zerohero_final_min
 
 # ── Thread state ──────────────────────────────────────────────────────────────
 
-_scanner_thread: Optional[threading.Thread] = None
+_scanner_thread: threading.Thread | None = None
 _stop_event     = threading.Event()
 _manual_trigger = threading.Event()
 _wake_event     = threading.Event()
@@ -265,7 +264,7 @@ def _restore_scalp_state() -> None:
     today_str = _mkt.now_ist().strftime('%Y-%m-%d')
 
     try:
-        from ..infrastructure.db.pnl_store import last_trade_date, get_trading_state
+        from ..infrastructure.db.pnl_store import get_trading_state, last_trade_date
         last_date = last_trade_date()
         if last_date and last_date < today_str:
             base = _SCALP_LOSS_LIMIT_BASE
@@ -521,7 +520,7 @@ def _on_option_tick(tick: dict, opt_code: str, trading_symbol: str):
     _option_ltp_cache[code_upper] = ltp
     try:
         from ..infrastructure.db import tracked_positions as _tp
-        from .order_executor import try_auto_exit, check_scalp_hold_timeout
+        from .order_executor import check_scalp_hold_timeout, try_auto_exit
         for rec in _tp.list_tracked():
             t = rec.get('ticket') or {}
             if t.get('opt_code', '').strip().upper() != code_upper:
@@ -744,7 +743,7 @@ _vix_cache: tuple[float, float] | None = None  # (value, fetched_epoch)
 _VIX_CACHE_TTL = 900.0                          # 15 min — VIX is session-level, not tick-level
 
 
-def _get_cached_vix() -> Optional[float]:
+def _get_cached_vix() -> float | None:
     """Fetch India VIX at most once per 15 minutes. Returns stale value on API failure."""
     global _vix_cache
     now = clock()
@@ -773,7 +772,7 @@ def scalp_ws_active() -> bool:
     return (clock() - _last_option_tick_ts) < _WS_STALE_SEC
 
 
-def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
+def _detect_momentum(candles: list[dict], ticker: str) -> dict | None:
     """
     4-gate momentum detection for scalp signals.
 
@@ -820,7 +819,7 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
     ema9  = _fast_ema(all_closes, 9)
     ema21 = _fast_ema(all_closes, 21)
     ema50 = _fast_ema(all_closes, 50)
-    ema_direction: Optional[str] = None
+    ema_direction: str | None = None
     if ema9 is not None and ema21 is not None:
         if ema9 > ema21:
             ema_direction = 'BUY'
@@ -864,11 +863,11 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
     # ── Apply GATE 2.5: trend alignment hard filter ────────────────────────
     if direction == 'BUY' and trend_down:
         logger.debug(f"[scalp] {ticker} BUY blocked — EMA21<EMA50, price below EMA50 (downtrend)")
-        _broadcast_status(ticker, 'Trend Block', f'BUY signal but 50m downtrend — skip')
+        _broadcast_status(ticker, 'Trend Block', 'BUY signal but 50m downtrend — skip')
         return None
     if direction == 'SELL' and trend_up:
         logger.debug(f"[scalp] {ticker} SELL blocked — EMA21>EMA50, price above EMA50 (uptrend)")
-        _broadcast_status(ticker, 'Trend Block', f'SELL signal but 50m uptrend — skip')
+        _broadcast_status(ticker, 'Trend Block', 'SELL signal but 50m uptrend — skip')
         return None
 
     # ── Apply GATE 3: VWAP hard filter ───────────────────────────────────────
@@ -944,7 +943,7 @@ def _detect_momentum(candles: list[dict], ticker: str) -> Optional[dict]:
     }
 
 
-def _fast_atr(candles: list[dict], period: int = 14) -> Optional[float]:
+def _fast_atr(candles: list[dict], period: int = 14) -> float | None:
     """Average True Range from candle dicts."""
     if len(candles) < period + 1:
         return None
@@ -960,7 +959,7 @@ def _fast_atr(candles: list[dict], period: int = 14) -> Optional[float]:
 
 
 
-def _fast_ema(values: list[float], period: int) -> Optional[float]:
+def _fast_ema(values: list[float], period: int) -> float | None:
     """Exponential Moving Average of a list of values."""
     if len(values) < period:
         return None
@@ -971,7 +970,7 @@ def _fast_ema(values: list[float], period: int) -> Optional[float]:
     return ema
 
 
-def _fast_vwap(candles: list[dict]) -> Optional[float]:
+def _fast_vwap(candles: list[dict]) -> float | None:
     """VWAP from today's session candles (09:15 IST onwards) only.
     Filters pre-market and previous-day bars so VWAP resets each session.
     Note: index volume (^NSEI/^BSESN) is synthetic constituent aggregate —
@@ -1016,7 +1015,7 @@ def _fetch_1min_candles(ticker: str, bars: int = 120) -> list[dict]:
 
 # ── Scalp ticket builder ─────────────────────────────────────────────────────
 
-def _build_scalp_ticket(signal: dict, ticker: str) -> Optional[dict]:
+def _build_scalp_ticket(signal: dict, ticker: str) -> dict | None:
     """
     Build a scalp trade ticket with fixed-point SL/T1.
     Resolves the nearest ATM option contract and sets levels.
@@ -1031,9 +1030,7 @@ def _build_scalp_ticket(signal: dict, ticker: str) -> Optional[dict]:
         base = _mkt.nse_base(ticker)
 
         # Round spot to nearest strike interval
-        if 'SENSEX' in base.upper() or 'BSESN' in base.upper():
-            strike_interval = 100
-        elif 'BANKNIFTY' in base.upper():
+        if 'SENSEX' in base.upper() or 'BSESN' in base.upper() or 'BANKNIFTY' in base.upper():
             strike_interval = 100
         else:
             strike_interval = 50  # NIFTY
@@ -1216,7 +1213,7 @@ def _check_zerohero_window() -> str:
 def _process_signal(ticker: str, signal: dict, candles: list[dict]):
     """Process a confirmed signal — filters, ticket building, entry. Runs in a thread."""
     global _loss_streak_pause_until
-    
+
     try:
         # Day rollover
         _check_scalp_day_rollover()
@@ -1612,7 +1609,7 @@ def _candle_refresh_loop():
         _stop_event.wait(60)
 
 
-_candle_thread: Optional[threading.Thread] = None
+_candle_thread: threading.Thread | None = None
 _registered_callbacks: dict[str, object] = {}  # ticker → callback fn
 _signal_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='ScalpSignal')
 

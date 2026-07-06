@@ -1,7 +1,8 @@
 """Tests for YAML config loading and ConfigService YAML integration."""
 
 import pytest
-from app.infrastructure.config.config_service import load_yaml, reload_yaml, _YAML_CACHE, ConfigService
+
+from app.infrastructure.config.config_service import _YAML_CACHE, ConfigService, load_yaml, reload_yaml
 
 
 class TestYAMLLoader:

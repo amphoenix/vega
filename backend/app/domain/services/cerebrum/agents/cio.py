@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List
+from typing import Any
 
 from ..agent import AgentOutput
 
@@ -11,7 +11,7 @@ def run_cio(
     ticker: str,
     company: str,
     price: float,
-    agent_results: List[AgentOutput],
+    agent_results: list[AgentOutput],
     debate_result: dict,
     tech_block: str,
 ) -> dict:

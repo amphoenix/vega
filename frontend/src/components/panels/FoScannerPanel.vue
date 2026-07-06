@@ -516,7 +516,7 @@ function _openFoScannerStream() {
       const fresh = {}
       // Populate from latest_by_under first (persists across cycles)
       const lbu = data.latest_by_under || {}
-      for (const [u, sig] of Object.entries(lbu)) {
+      for (const [, sig] of Object.entries(lbu)) {
         if (sig.ticket && sig.ticket.underlying) fresh[sig.ticket.underlying] = sig.ticket
       }
       // Then overlay current-cycle signals (most recent wins)
@@ -572,23 +572,6 @@ function _openFoScannerStream() {
     scannerRunning.value = false
     foAnalysing.value = null
   }
-}
-
-async function startScanner() {
-  try {
-    const base = import.meta.env.VITE_API_BASE_URL || ''
-    await fetch(`${base}/api/trade/fo-scanner/start`, { method: 'POST' })
-    scannerRunning.value = true
-    _openFoScannerStream()
-  } catch (e) { console.error('startScanner', e) }
-}
-
-async function stopScanner() {
-  try {
-    const base = import.meta.env.VITE_API_BASE_URL || ''
-    await fetch(`${base}/api/trade/fo-scanner/stop`, { method: 'POST' })
-    scannerRunning.value = false
-  } catch (e) { console.error('stopScanner', e) }
 }
 
 async function triggerScan() {
