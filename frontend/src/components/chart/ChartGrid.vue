@@ -43,7 +43,7 @@
         :chartTicker="thirdTicker"
         :interval="interval"
         :brokerLivePrice="thirdPrice"
-        :levels="levels"
+        :levels="thirdLevels"
         :lightMode="lightMode"
         currencySymbol="₹"
         :marketOpen="marketOpen"
@@ -88,6 +88,14 @@ const thirdTicker = computed(() => {
 const thirdPrice = computed(() => {
   if (!thirdTicker.value) return null
   return Number(liveSpots.value[thirdTicker.value]) || null
+})
+
+// S/R levels are the UNDERLYING's price levels (~24300). Feeding them to an
+// option chart (premium ~₹120) blows the Y-axis to index scale and squishes the
+// candles. Drop levels for option contracts (…-CE / …-PE).
+const thirdLevels = computed(() => {
+  const t = (thirdTicker.value || '').toUpperCase()
+  return (t.includes('-CE') || t.includes('-PE')) ? [] : props.levels
 })
 
 const displayThird = computed(() => {

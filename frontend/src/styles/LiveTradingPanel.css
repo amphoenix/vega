@@ -413,6 +413,36 @@
   margin-bottom: 6px;
   font-family: monospace;
 }
+.lv-watch-card.lv-watch-exited {
+  border-left-color: #6e7681;
+  background: #0b0d10;
+  opacity: 0.72;
+}
+.lv-watch-badge.lv-watch-exited-badge {
+  background: #30363d;
+  color: #9da5b4;
+}
+.lv-watch-exit-reason {
+  font-size: 10px;
+  color: #8b949e;
+  margin-left: auto;
+}
+.lv-watch-qty {
+  font-size: 10px;
+  font-weight: 700;
+  font-family: monospace;
+  color: #c9d1d9;
+  background: #21262d;
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.lv-watch-empty {
+  padding: 10px 8px;
+  color: #8b949e;
+  font-size: 11px;
+  font-family: monospace;
+  text-align: center;
+}
 .lv-watch-card.lv-watch-near_sl {
   border-left-color: #fbbf24;
   background: #1c1607;

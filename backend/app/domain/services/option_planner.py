@@ -127,14 +127,7 @@ def _live_spot(ticker: str) -> Optional[float]:
             return float(p)
     except Exception:
         pass
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).fast_info
-        p = getattr(info, 'last_price', None) or getattr(info, 'regularMarketPrice', None)
-        if p:
-            return float(p)
-    except Exception:
-        pass
+    # Broker-agnostic: no yfinance fallback — spot comes only from the active broker.
     return None
 
 

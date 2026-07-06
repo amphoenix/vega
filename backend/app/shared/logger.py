@@ -64,8 +64,33 @@ def setup_logger(name: str = _ROOT_NAME, level: int = logging.DEBUG) -> logging.
     root.addHandler(fh)
     root.addHandler(ch)
 
+    _silence_dead_connection_errors()
+
     _initialized = True
     return logging.getLogger(name)
+
+
+def _silence_dead_connection_errors() -> None:
+    """Drop hypercorn's benign 'Error in ASGI Framework' tracebacks that fire
+    when a client disconnects (or the server shuts down) mid-write on an H/2 /
+    SSE connection — the SSL transport is already gone, so hypercorn hits
+    AttributeError: 'NoneType' has no attribute '_write_appdata' (and friends:
+    ConnectionResetError, BrokenPipeError). These are per-dead-connection teardown
+    noise, not app faults. Suppress just those; keep all other hypercorn errors.
+    """
+    _benign = ('_write_appdata', 'ConnectionResetError', 'BrokenPipeError',
+               'StreamClosed', 'connectionreset', 'brokenpipe')
+
+    class _DeadConnFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            exc = record.exc_info[1] if record.exc_info else None
+            blob = f'{record.getMessage()} {exc!r}'
+            if 'Error in ASGI Framework' in record.getMessage() or exc is not None:
+                if any(m.lower() in blob.lower() for m in _benign):
+                    return False
+            return True
+
+    logging.getLogger('hypercorn.error').addFilter(_DeadConnFilter())
 
 
 def get_logger(name: str | None = None) -> logging.Logger:

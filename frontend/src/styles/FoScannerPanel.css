@@ -37,6 +37,19 @@
   box-shadow: 0 3px 8px #f9731666;
 }
 .fo-scan-now:disabled { opacity: 0.55; cursor: not-allowed; }
+.fo-countdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: monospace;
+  letter-spacing: 0.3px;
+  background: #161b22;
+  color: #58a6ff;
+}
 .fo-auto-indicator {
   display: inline-flex;
   align-items: center;

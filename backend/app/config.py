@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     swing_capital_inr: float = 100_000.0
     fo_max_lots_per_trade: int = 2
     fo_max_risk_pct: float = 20.0
-    fo_scan_interval_sec: int = 180
+    fo_scan_interval_sec: int = 60
     fo_universe: str = 'ALL'   # 'ALL' = indices + every F&O stock (from broker master); or CSV like '^NSEI,^BSESN'
     fo_full_universe: bool = False   # True → scan full F&O stock universe; False → indices only (^NSEI, ^BSESN)
     fo_min_dte: int = 0

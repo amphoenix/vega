@@ -354,11 +354,11 @@
       <button v-if="dailyPnlComputed.kill_switch" class="lv-ks-reset-btn" @click="resetSwingKillSwitch" title="Re-enable swing trading (P&L not reset)">Reset</button>
     </div>
 
-    <!-- ═ WATCHING — positions the user manually entered, persists across refreshes -->
-    <div v-if="trackedCards.length" class="lv-watch">
+    <!-- ═ WATCHING — open tracked positions + today's exited fills. Always rendered. -->
+    <div class="lv-watch">
       <div class="lv-watch-head">
         <span class="lv-watch-title"
-          >👁 WATCHING ({{ trackedCards.length }})</span
+          >👁 WATCHING ({{ trackedCards.length }} open<span v-if="exitedCards.length"> · {{ exitedCards.length }} closed</span>)</span
         >
         <span
           :class="[
@@ -409,8 +409,8 @@
           :key="i"
           class="lv-missed-row"
         >
-          <span :class="'lv-missed-tag lv-missed-' + a.status">{{
-            a.status.replace("_", " ").toUpperCase()
+          <span :class="'lv-missed-tag lv-missed-' + (a.status || 'alert')">{{
+            (a.status || "alert").replace("_", " ").toUpperCase()
           }}</span>
           <span class="lv-missed-sym">{{ a.display_symbol || a.trading_symbol }}</span>
           <span class="lv-missed-msg">{{ a.message }}</span>
@@ -427,6 +427,7 @@
       >
         <div class="lv-watch-row">
           <span class="lv-watch-sym">{{ card.display_symbol || card.trading_symbol }}</span>
+          <span class="lv-watch-qty" :title="`${card.qty} qty (${card.lot}/lot)`">{{ card.qty }} qty</span>
           <span :class="['lv-watch-badge', 'lv-watch-' + card.status]">{{
             card.statusLabel
           }}</span>
@@ -511,6 +512,36 @@
         <div v-if="card.alert" class="lv-watch-alert">
           ⚠ {{ card.alert }}
         </div>
+      </div>
+
+      <!-- Exited today — read-only, from the P&L ledger. Shows what was bought/sold. -->
+      <div
+        v-for="card in exitedCards"
+        :key="card.id"
+        class="lv-watch-card lv-watch-exited"
+      >
+        <div class="lv-watch-row">
+          <span class="lv-watch-sym" :title="card.symbol">{{ card.label }}</span>
+          <span class="lv-watch-qty">{{ card.qty }} qty</span>
+          <span class="lv-watch-badge lv-watch-exited-badge">EXITED</span>
+          <span class="lv-watch-exit-reason">{{ card.exit_reason }}</span>
+        </div>
+        <div class="lv-watch-row lv-watch-prices">
+          <span>entry <b>₹{{ card.entry_prem?.toFixed(2) }}</b></span>
+          <span>exit <b>₹{{ card.exit_prem?.toFixed(2) }}</b></span>
+          <span :class="['lv-watch-pnl', card.net_pnl >= 0 ? 'up' : 'dn']">
+            {{ card.net_pnl >= 0 ? "+" : "−" }}₹{{ Math.abs(card.net_pnl || 0).toFixed(0) }}
+            <small>({{ card.pct >= 0 ? "+" : "" }}{{ card.pct.toFixed(1) }}%)</small>
+          </span>
+        </div>
+      </div>
+
+      <!-- Empty state — nothing open and nothing closed today -->
+      <div
+        v-if="!trackedCards.length && !exitedCards.length"
+        class="lv-watch-empty"
+      >
+        No positions today. Auto-scanner adds them here on entry.
       </div>
     </div>
 
@@ -1003,7 +1034,63 @@ const _dailyKillSwitch = ref(false)
 const _dailyLimit = ref(1000)
 const autoTradingEnabled = ref(false)
 
+// Today's exited swing fills — sourced from the P&L ledger so WATCHING keeps
+// showing what was bought/sold even after the live position closes.
+const exitedToday = ref([])
+
+async function _loadExitedToday() {
+  try {
+    const base = import.meta.env.VITE_API_BASE_URL || ''
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+    const r = await fetch(`${base}/api/trade/pnl/trades?mode=swing&limit=30`).then((x) => x.json())
+    // BTST records under mode='swing' too (reason prefixed "BTST:") — it has its
+    // own panel, so keep the swing WATCHING swing-only.
+    exitedToday.value = (r.trades || []).filter(
+      (t) => t.date === today && !String(t.exit_reason || '').startsWith('BTST:'),
+    )
+  } catch (e) {
+    console.warn('_loadExitedToday failed', e)
+  }
+}
+
+// "NIFTY-JUL2026-24300-CE" → "NIFTY 24300 CALL · JUL 2026". The P&L ledger only
+// stores this synthetic symbol (no expiry day), so we can't match the F&O panel's
+// day-level display ("… 09 JUL …") — but this is readable. Falls back to raw.
+function _fmtContract(sym) {
+  if (!sym) return ''
+  const m = String(sym).match(/^([A-Z&]+)-([A-Za-z]{3})(\d{2,4})-(\d+(?:\.\d+)?)-(CE|PE)$/)
+  if (!m) return sym
+  const [, und, mon, yr, strike, type] = m
+  const yy = yr.length === 4 ? yr : '20' + yr
+  return `${und} ${strike} ${type === 'CE' ? 'CALL' : 'PUT'} · ${mon.toUpperCase()} ${yy}`
+}
+
+const exitedCards = computed(() =>
+  (exitedToday.value || []).map((t) => {
+    try {
+      return {
+        id: 'ex-' + (t.id ?? t.timestamp),
+        symbol: t.symbol,
+        // Prefer broker display_symbol persisted at exit (has the expiry day,
+        // e.g. "NIFTY 07 JUL 24350 CALL"); older rows lack it → readable fallback.
+        label: t.display_symbol || _fmtContract(t.symbol),
+        direction: t.direction,
+        entry_prem: t.entry_prem,
+        exit_prem: t.exit_prem,
+        qty: t.qty,
+        net_pnl: t.net_pnl,
+        exit_reason: t.exit_reason || 'exit',
+        pct: t.entry_prem ? ((t.exit_prem - t.entry_prem) / t.entry_prem) * 100 : 0,
+      }
+    } catch (e) {
+      console.warn('exitedCards: skipping bad ledger row', t?.id, e)
+      return null
+    }
+  }).filter(Boolean)
+)
+
 async function _loadDailyPnl() {
+  _loadExitedToday()
   try {
     const base = import.meta.env.VITE_API_BASE_URL || ''
     const r = await fetch(`${base}/api/trade/executor/status`).then((x) => x.json())
@@ -1030,7 +1117,10 @@ async function toggleAutoTrading() {
       body: JSON.stringify({ enabled: next }),
     }).then((x) => x.json())
     if (r.success) {
-      autoTradingEnabled.value = r.auto_trading_enabled
+      // Response shape is {success, data:{auto_trading_enabled}}; r.auto_trading_enabled
+      // was undefined → checkbox snapped back to OFF after every toggle. Read data,
+      // fall back to the value we just requested.
+      autoTradingEnabled.value = r.data?.auto_trading_enabled ?? next
     }
   } catch (e) {
     console.warn('toggleAutoTrading failed', e)
@@ -1204,7 +1294,8 @@ function _maybeAlert(cards) {
 function _loadMissedAlerts() {
   try {
     const raw = localStorage.getItem(_MISSED_KEY)
-    if (raw) missedAlerts.value = JSON.parse(raw).slice(0, 20)
+    // Drop any previously-persisted malformed rows (no status/id → bogus "ALERT")
+    if (raw) missedAlerts.value = JSON.parse(raw).filter((a) => a && a.status && a.id).slice(0, 20)
   } catch {}
 }
 
@@ -1269,6 +1360,9 @@ function _showDesktopNotification(payload) {
 useTrackedAlerts({
   modes: ['swing'],
   onAlert(m) {
+    // Skip malformed / non-alert messages (heartbeats, connection events) —
+    // they have no status/id and would render as a bogus "ALERT" row.
+    if (!m || !m.status || !m.id) return
     // Missed-alerts panel
     const key = `${m.id}|${m.status}`
     const cutoff = Date.now() - 60_000
@@ -1573,7 +1667,14 @@ const trackedCards = computed(() => {
     // Skip scalp and forex positions — they have their own panels
     if (t.trade_mode === 'scalp' || t.scalp_meta) continue
     if (t.trade_mode === 'forex') continue
-    out.push(_classifyPosition(rec))
+    // Fault-isolate: a single malformed position (e.g. repriceTicket throwing on
+    // missing ticket fields) must NOT throw out of this computed — that would
+    // blank the entire WATCHING section. Skip the bad one, keep the rest.
+    try {
+      out.push(_classifyPosition(rec))
+    } catch (e) {
+      console.warn('trackedCards: skipping unclassifiable position', rec?.id, e)
+    }
   }
   return out
 })

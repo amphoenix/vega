@@ -1007,7 +1007,8 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
                              entry_prem, premium, exit_qty,
                              int(ticket.get('lot_size', 1) or 1), exit_type,
                              order_id=_entry_oid,
-                             exit_order_id=_sell_order_id or '')
+                             exit_order_id=_sell_order_id or '',
+                             display_symbol=display)
                 except Exception as _pe:
                     logger.warning(f"[executor] pnl_store scalp record failed: {_pe}")
             elif is_forex:
@@ -1022,7 +1023,8 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
                              int(ticket.get('lot_size', 1) or 1),
                              brokerage, exit_reason=exit_type,
                              order_id=_entry_oid,
-                             exit_order_id=_sell_order_id or '')
+                             exit_order_id=_sell_order_id or '',
+                             display_symbol=display)
                 except Exception as _pe:
                     logger.warning(f"[executor] pnl_store forex record failed: {_pe}")
             else:
@@ -1035,7 +1037,8 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
                              entry_prem, premium, exit_qty,
                              int(ticket.get('lot_size', 1) or 1), exit_type,
                              order_id=_entry_oid,
-                             exit_order_id=_sell_order_id or '')
+                             exit_order_id=_sell_order_id or '',
+                             display_symbol=display)
                 except Exception as _pe:
                     logger.debug(f"[executor] pnl_store swing record failed: {_pe}")
 
@@ -1135,11 +1138,21 @@ def _trail_sl_to_breakeven(rec: dict, exited_qty: int):
     total_qty = int(rec.get('qty', 1) or 1)
     remaining = total_qty - exited_qty
 
+    if remaining <= 0:
+        # 1-lot positions: T1 "half" rounds up to a full lot, so the whole
+        # position is already sold. Nothing left to trail — REMOVE it, else a
+        # phantom qty-0 position lingers in WATCHING and double-counts P&L.
+        with tp._lock:
+            items = [i for i in tp._read() if i.get('id') != track_id]
+            tp._write(items)
+        logger.info(f"[executor] {track_id} T1 exited full position ({exited_qty}qty) — removed from tracking")
+        return
+
     with tp._lock:
         items = tp._read()
         for item in items:
             if item.get('id') == track_id:
-                item['qty'] = max(remaining, 0)
+                item['qty'] = remaining
                 ticket = item.get('ticket', {})
                 entry_prem = float((ticket.get('entry') or {}).get('expected_premium_inr', 0) or 0)
                 if entry_prem > 0:

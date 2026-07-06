@@ -200,11 +200,38 @@ def ohlcv(
 
     _is_intraday = interval in ('1m', '5m', '15m', '30m', '1h', '2h')
 
-    # ── 1) Try Dhan broker first — fastest, real-time data ────────────
+    # ── 1) Try the active broker first — fastest, real-time data ────────────
     try:
         broker = get_broker()
         if broker.is_configured:
-            candles = broker.get_candles(ticker, interval=interval, days=days)
+            # Option symbols (…-CE / …-PE) need a security_id — the bare synthetic
+            # symbol won't resolve. Resolve via the broker adapter (agnostic) so the
+            # 3rd chart pane can plot the contract when an F&O card is clicked.
+            _tu = ticker.upper()
+            _is_option = '-CE' in _tu or '-PE' in _tu
+            _sec_id, _exch = '', ''
+            if _is_option and hasattr(broker, 'resolve_option_contract'):
+                try:
+                    _parts = ticker.split('-')
+                    _under, _otype, _strike = _parts[0], _parts[-1], float(_parts[-2])
+                    _exch = 'BFO' if _under.upper() in ('SENSEX', 'BANKEX') else 'NFO'
+                    _c = broker.resolve_option_contract(_under, _otype, _strike)
+                    if _c:
+                        _sec_id = str(_c.get('security_id') or _c.get('sec_id') or '')
+                except Exception as _re:
+                    logger.debug(f'ohlcv option resolve failed for {ticker}: {_re}')
+            if _sec_id:
+                candles = broker.get_candles(ticker, interval=interval, days=days,
+                                             exchange=_exch, security_id=_sec_id)
+            elif _is_option:
+                # Option with no resolved security_id: DO NOT fall back to bare
+                # get_candles — for an unresolved option symbol it returns the
+                # UNDERLYING INDEX candles (₹24k), which then render as a corrupt
+                # index-scale chart. Return no data instead of wrong data.
+                logger.warning(f'ohlcv: could not resolve option {ticker} — no chart data')
+                candles = None
+            else:
+                candles = broker.get_candles(ticker, interval=interval, days=days)
             if candles:
                 candles_list = [
                     {'date': c.date, 'open': c.open, 'high': c.high,

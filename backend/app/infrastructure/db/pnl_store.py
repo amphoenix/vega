@@ -42,6 +42,7 @@ def record_trade(
     direction: str = '',
     order_id: str = '',
     exit_order_id: str = '',
+    display_symbol: str = '',
 ) -> dict:
     """Wrapper that accepts both old signature (no brokerage arg) and new one.
 
@@ -69,4 +70,5 @@ def record_trade(
         direction=direction,
         order_id=order_id,
         exit_order_id=exit_order_id,
+        display_symbol=display_symbol,
     )

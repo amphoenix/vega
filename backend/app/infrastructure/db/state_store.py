@@ -137,6 +137,7 @@ def _migrate_add_columns(c: sqlite3.Connection) -> None:
         ('exit_time',    "TEXT NOT NULL DEFAULT ''"),
         ('order_id',      "TEXT NOT NULL DEFAULT ''"),
         ('exit_order_id', "TEXT NOT NULL DEFAULT ''"),
+        ('display_symbol', "TEXT NOT NULL DEFAULT ''"),
     ]
     for col, typedef in migrations:
         if col not in existing:
@@ -208,6 +209,7 @@ def record_trade(
     exit_time: str = '',
     order_id: str = '',
     exit_order_id: str = '',
+    display_symbol: str = '',
     gross_pnl_override: float | None = None,
 ) -> dict:
     gross_pnl = round(gross_pnl_override, 2) if gross_pnl_override is not None else round((exit_prem - entry_prem) * qty, 2)
@@ -221,13 +223,13 @@ def record_trade(
                        (timestamp, date, mode, market_type, symbol, underlying,
                         direction, strike_price, entry_prem, exit_prem, qty, lot_size,
                         gross_pnl, brokerage, net_pnl, exit_reason,
-                        currency, entry_time, exit_time, order_id, exit_order_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        currency, entry_time, exit_time, order_id, exit_order_id, display_symbol)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (now.isoformat(), now.strftime('%Y-%m-%d'), mode, market_type,
                  symbol, underlying, direction, strike_price,
                  entry_prem, exit_prem, qty, lot_size,
                  gross_pnl, brokerage, net_pnl, exit_reason,
-                 currency, entry_time, exit_time, order_id, exit_order_id),
+                 currency, entry_time, exit_time, order_id, exit_order_id, display_symbol),
             )
             c.commit()
 

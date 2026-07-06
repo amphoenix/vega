@@ -108,16 +108,20 @@ def _calc_crypto(
     """Crypto spot round-trip brokerage (Binance + Indian tax).
 
     Components:
-      Exchange fee : 0.10% per side (Binance spot, no BNB discount)
-      TDS          : 1% on sell-side notional (Indian crypto TDS)
-      Income tax   : 30% flat on gains only (no offset for losses)
+      Exchange fee : 0.10% per side (Binance spot base rate, no BNB discount)
+      Income tax   : 31.2% on gains only — 115BBH 30% + 4% health & education
+                     cess; no loss offset. Surcharge omitted (income-dependent).
+
+    1% TDS (194S) is intentionally NOT charged here: it is a *creditable* prepaid
+    tax adjusted against the 30% liability at ITR filing (and refundable if it
+    exceeds final tax), not a standalone cost. Adding it on top of income_tax
+    would double-count the same tax.
     """
     entry_notional = entry_premium * qty
     exit_notional  = exit_premium * qty
     exchange_fee = round((entry_notional + exit_notional) * 0.001, 2)
-    tds          = round(exit_notional * 0.01, 2)
-    income_tax   = round(max(0, gross_pnl) * 0.30, 2)
-    return round(exchange_fee + tds + income_tax, 2)
+    income_tax   = round(max(0, gross_pnl) * 0.312, 2)
+    return round(exchange_fee + income_tax, 2)
 
 
 # ── Crypto F&O (Deribit) ─────────────────────────────────────────────────────
@@ -127,13 +131,13 @@ def _calc_crypto_fo_options(notional_usd: float, gross_pnl: float) -> float:
 
     Components:
       Exchange fee : 0.03% of underlying notional × 2 legs
-      TDS          : 1% on sell-side notional
-      Income tax   : 30% flat on gains
+      Income tax   : 31.2% on gains (115BBH 30% + 4% cess), no loss offset
+
+    1% TDS omitted — creditable prepaid tax, not a standalone cost (see _calc_crypto).
     """
     exchange_fee = round(notional_usd * 0.0003 * 2, 2)
-    tds          = round(notional_usd * 0.01, 2)
-    income_tax   = round(max(0, gross_pnl) * 0.30, 2)
-    return round(exchange_fee + tds + income_tax, 2)
+    income_tax   = round(max(0, gross_pnl) * 0.312, 2)
+    return round(exchange_fee + income_tax, 2)
 
 
 def _calc_crypto_fo_perps(
@@ -144,15 +148,15 @@ def _calc_crypto_fo_perps(
 
     Components:
       Exchange fee : 0.05% taker per side
-      TDS          : 1% on sell-side notional
-      Income tax   : 30% flat on gains
+      Income tax   : 31.2% on gains (115BBH 30% + 4% cess), no loss offset
+
+    1% TDS omitted — creditable prepaid tax, not a standalone cost (see _calc_crypto).
     """
     entry_notional = entry_premium * qty
     exit_notional  = exit_premium * qty
     exchange_fee = round((entry_notional + exit_notional) * 0.0005, 2)
-    tds          = round(exit_notional * 0.01, 2)
-    income_tax   = round(max(0, gross_pnl) * 0.30, 2)
-    return round(exchange_fee + tds + income_tax, 2)
+    income_tax   = round(max(0, gross_pnl) * 0.312, 2)
+    return round(exchange_fee + income_tax, 2)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

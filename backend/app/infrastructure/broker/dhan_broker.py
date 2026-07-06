@@ -375,16 +375,19 @@ class DhanBroker(BrokerAdapter):
     def _quote_raw(self, symbol: str, exchange: str, security_id: str) -> dict:
         """Internal: call SDK v2 quote_data and extract the single-security dict."""
         sec_int, segment = self._resolve_sec(symbol, exchange, security_id)
-        resp = self._client.quote_data({segment: [sec_int]})
+        resp = self._quote_data_throttled({segment: [sec_int]})
         return self._extract_market_data(resp)
 
     @staticmethod
     def _extract_market_data(resp: dict) -> dict:
         """Extract first security data from v2 response.
 
-        v2 nests: {"data": {"NSE_EQ": {"11536": {"last_price": 4520}}}}
+        v2 double-nests: {"data": {"data": {"NSE_FNO": {"44651": {"last_price": 97.7}}},
+        "status": "success"}}. Unwrap the inner "data" before scanning segments.
         """
         data = resp.get('data', {})
+        if isinstance(data, dict) and isinstance(data.get('data'), dict):
+            data = data['data']
         if not isinstance(data, dict):
             return {}
         for seg_val in data.values():
@@ -738,6 +741,30 @@ class DhanBroker(BrokerAdapter):
         'BFO': 'BSE_FNO', 'MCX': 'MCX_COMM', 'CUR': 'NSE_CURRENCY',
     }
 
+    # Dhan quote_data API rate-limits to ~1 req/sec. Serialize + space calls,
+    # else the SDK returns status=failure with an empty payload. Separate from
+    # the candle throttle so the two APIs don't share a timestamp.
+    _quote_throttle_lock = threading.Lock()
+    _last_quote_call: float = 0.0
+    _QUOTE_MIN_INTERVAL: float = 1.05
+
+    def _quote_data_throttled(self, seg_groups: dict) -> dict:
+        """Rate-limited quote_data with retry — Dhan drops rapid calls (status=failure)."""
+        resp: dict = {}
+        for _attempt in range(3):
+            with DhanBroker._quote_throttle_lock:
+                elapsed = clock() - DhanBroker._last_quote_call
+                if elapsed < DhanBroker._QUOTE_MIN_INTERVAL:
+                    sleep(DhanBroker._QUOTE_MIN_INTERVAL - elapsed)
+                try:
+                    resp = self._client.quote_data(seg_groups)
+                finally:
+                    DhanBroker._last_quote_call = clock()
+            if isinstance(resp, dict) and resp.get('status') == 'success':
+                return resp
+            sleep(DhanBroker._QUOTE_MIN_INTERVAL)
+        return resp if isinstance(resp, dict) else {}
+
     def get_quotes_batch(self, scrip_codes: list[str]) -> dict[str, dict]:
         """Fetch OI/volume/bid-ask for a list of 'EXCHANGE_SECURITYID' codes."""
         if self._stub_mode or not scrip_codes:
@@ -761,8 +788,11 @@ class DhanBroker(BrokerAdapter):
         out: dict[str, dict] = {}
         try:
             # Dhan SDK accepts: {"NSE_FNO": [id1, id2], "NSE_EQ": [id3]}
-            resp = self._client.quote_data(seg_groups)
+            resp = self._quote_data_throttled(seg_groups)
             data = resp.get('data', {})
+            # v2 double-nests the payload: {"data": {"data": {SEG: {...}}, "status": ...}}
+            if isinstance(data, dict) and isinstance(data.get('data'), dict):
+                data = data['data']
             if not isinstance(data, dict):
                 return out
             for dhan_seg, entries in data.items():

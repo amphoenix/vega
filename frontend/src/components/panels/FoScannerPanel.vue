@@ -44,6 +44,12 @@
                 : "PAUSED · NSE CLOSED"
           }}
         </span>
+        <span
+          v-if="!foAnalysing && foCountdownLabel"
+          class="fo-countdown"
+          :title="`Auto-scan every ${foIntervalLabel}. Next scan in ${foCountdownLabel}.`"
+          >⏱ next {{ foCountdownLabel }}</span
+        >
       </div>
     </div>
     <!-- Currently analysing ticker -->
@@ -91,8 +97,8 @@
               : '')
         "
         @click="
-          (ev.ticker || ev.underlying) &&
-          emit('select-ticker', ev.ticker || ev.underlying)
+          (ev.option_symbol || ev.ticker || ev.underlying) &&
+          emit('select-ticker', ev.option_symbol || ev.ticker || ev.underlying)
         "
       >
         <!-- Badge -->

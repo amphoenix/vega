@@ -219,8 +219,6 @@ def is_running() -> bool:
 # Trade universe: only index options (Dhan-native symbols)
 BTST_UNIVERSE: list[str] = ['NIFTY', 'SENSEX']
 
-# Symbol mapping for yfinance fallback
-_SYM_TO_YF: dict[str, str] = {'NIFTY': '^NSEI', 'SENSEX': '^BSESN'}
 
 
 # ── Stage 1: OHLCV Fetch + Technical Pre-filter ───────────────────────────────
@@ -241,19 +239,11 @@ def _fetch_ohlcv(symbol: str) -> 'pd.DataFrame | None':
             } for c in candles],
             index=pd.to_datetime([str(getattr(c, 'date', i)) for i, c in enumerate(candles)])).sort_index()
             return df
+        _log(f'Broker returned <21 daily candles for {symbol}', 'warn')
     except Exception as e:
-        _log(f'Broker OHLCV failed for {symbol}, trying yfinance: {e}', 'warn')
-
-    try:
-        import yfinance as yf
-        yf_sym = _SYM_TO_YF.get(symbol, symbol)
-        df = yf.Ticker(yf_sym).history(period='35d', interval='1d')
-        if df is None or df.empty or len(df) < 21:
-            return None
-        return df
-    except Exception as e:
-        _log(f'OHLCV fetch failed for {symbol}: {e}', 'warn')
-        return None
+        _log(f'Broker OHLCV failed for {symbol}: {e}', 'warn')
+    # Broker-agnostic: no yfinance fallback. Data comes only from the active broker.
+    return None
 
 
 def _fetch_intraday_5m(symbol: str) -> 'pd.DataFrame | None':
@@ -272,16 +262,8 @@ def _fetch_intraday_5m(symbol: str) -> 'pd.DataFrame | None':
             return df
     except Exception as e:
         _log(f'Broker 5m failed for {symbol}: {e}', 'warn')
-    try:
-        import yfinance as yf
-        yf_sym = _SYM_TO_YF.get(symbol, symbol)
-        df = yf.Ticker(yf_sym).history(period='1d', interval='5m')
-        if df is None or df.empty or len(df) < 6:
-            return None
-        return df
-    except Exception as e:
-        _log(f'5m intraday fetch failed for {symbol}: {e}', 'warn')
-        return None
+    # Broker-agnostic: no yfinance fallback.
+    return None
 
 
 def _stage1_filter(symbol: str, df: 'pd.DataFrame', direction: str) -> bool:
@@ -971,6 +953,11 @@ def _get_current_price(symbol: str) -> float:
             return float(ltp)
     except Exception:
         pass
+    # Option trading symbols (…-CE / …-PE) are NOT on yfinance — the OHLCV
+    # fallback would 404 on Yahoo and spam logs. Only index/equity symbols get it.
+    su = str(symbol).upper()
+    if '-CE' in su or '-PE' in su:
+        return 0.0
     try:
         df = _fetch_ohlcv(symbol)
         if df is not None and not df.empty:
@@ -1120,6 +1107,19 @@ def _load_positions() -> None:
                     if saved_status in ('HOLDING', 'MORNING_EXIT'):
                         _state['status'] = saved_status
                 _log(f'Restored {len(positions)} positions, {len(signals)} signals (state={saved_status})')
+                # Self-heal: if the exit chain was interrupted (crash/restart) any
+                # position left HOLDING keeps status at HOLDING/MORNING_EXIT, which
+                # blocks EVERY future scan (candidates=0). Re-arm morning exit so
+                # they resolve — past the 10:00 hard-exit, _schedule_recheck closes
+                # them immediately. Force status→HOLDING first because
+                # _morning_exit_check early-returns unless status is exactly HOLDING.
+                holding = [p for p in positions if p.get('status') == 'HOLDING']
+                if holding:
+                    with _state_lock:
+                        _state['status'] = 'HOLDING'
+                    _log(f'{len(holding)} position(s) still HOLDING on restore — '
+                         f're-arming morning exit to prevent a stuck scanner')
+                    threading.Timer(15.0, _morning_exit_check).start()
             elif saved_status == 'HOLDING':
                 # Previous-day positions still HOLDING — restore so morning exit can close them
                 positions = [dict(r) for r in conn.execute(
@@ -1334,22 +1334,8 @@ def _fetch_opening_candle(symbol: str) -> 'dict | None':
             }
     except Exception as e:
         _log(f'Broker opening candle failed for {symbol}: {e}', 'warn')
-    try:
-        import yfinance as yf
-        yf_sym = _SYM_TO_YF.get(symbol, symbol)
-        hist = yf.Ticker(yf_sym).history(period='1d', interval='5m')
-        if hist.empty:
-            return None
-        first = hist.iloc[0]
-        return {
-            'open': float(first['Open']),
-            'high': float(first['High']),
-            'low': float(first['Low']),
-            'close': float(first['Close']),
-        }
-    except Exception as e:
-        _log(f'Opening candle fetch failed for {symbol}: {e}', 'warn')
-        return None
+    # Broker-agnostic: no yfinance fallback.
+    return None
 
 
 def _build_exit_prompt(pos: dict, gap_pct: float, candle: 'dict | None') -> str:
@@ -1428,6 +1414,13 @@ def _record_exit(pos: dict, reason: str) -> None:
             s['wins'] += 1
         else:
             s['losses'] += 1
+        # Resolve status once the last position exits — otherwise a position that
+        # closes via an async recheck leaves status frozen at MORNING_EXIT, which
+        # blocks every future scan (candidates=0). Exit path-agnostic.
+        if _state['status'] in ('MORNING_EXIT', 'HOLDING') and all(
+            p.get('status') == 'EXITED' for p in _state['positions']
+        ):
+            _state['status'] = 'IDLE'
 
     # Kill switch: trip if cumulative daily loss exceeds limit
     max_loss = float(_config.get('BTST_MAX_DAILY_LOSS', 0))

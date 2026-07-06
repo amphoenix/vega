@@ -272,6 +272,7 @@ const timerNow = ref(Date.now())    // reactive clock for hold-time bars (update
 
 let scalpSSE = null
 let timerTick = null
+let posPollTick = null
 let _sseReconnectDelay = 3000
 // Registry of SSE tick streams opened by this component
 const _ownStreams = {}
@@ -748,11 +749,17 @@ onMounted(async () => {
 
   // Timer tick for hold-time bars — timerNow drives reactive updates in holdPct/holdTimeStr
   timerTick = setInterval(() => { timerNow.value = Date.now() }, 1000)
+
+  // Position-poll fallback: SSE order events / alerts are the primary refresh,
+  // but if the stream drops or an exit event is missed, positions/exits would
+  // only appear on manual page refresh. Poll as a safety net.
+  posPollTick = setInterval(_loadTrackedPositions, 4000)
 })
 
 onUnmounted(() => {
   if (scalpSSE) { scalpSSE.close(); scalpSSE = null }
   if (timerTick) clearInterval(timerTick)
+  if (posPollTick) clearInterval(posPollTick)
   _closeOwnStreams()
 })
 </script>
