@@ -316,6 +316,7 @@ class BrokerAdapter(ABC):
 _BROKER_REGISTRY: dict[str, tuple[str, str]] = {
     'indmoney': ('app.infrastructure.broker.indmoney_broker', 'INDMoneyBroker'),
     'dhan':     ('app.infrastructure.broker.dhan_broker', 'DhanBroker'),
+    'groww':    ('app.infrastructure.broker.groww_broker', 'GrowwBroker'),
 }
 
 
