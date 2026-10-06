@@ -66,8 +66,8 @@ class Settings(BaseSettings):
     # ══════════════════════════════════════════════════════════════════════════
     fo_mode: Literal['paper', 'live'] = 'paper'
     fo_auto_trade: bool = True
-    swing_capital_inr: float = 100_000.0
-    fo_max_lots_per_trade: int = 2
+    swing_capital_inr: float = 6_500.0
+    fo_max_lots_per_trade: int = 1
     fo_max_risk_pct: float = 20.0
     fo_scan_interval_sec: int = 60
     fo_universe: str = 'ALL'   # 'ALL' = indices + every F&O stock (from broker master); or CSV like '^NSEI,^BSESN'
@@ -77,13 +77,13 @@ class Settings(BaseSettings):
     fo_signal_min_dte: int = 0
     fo_min_confidence: int = 70
     fo_min_agents: int = 3
-    fo_target_delta: float = 0.55
+    fo_target_delta: float = 0.35
     auto_entry_min_confidence: int = 70   # pure-technical (no LLM boost) tops ~75-85; 85 was unreachable
-    fo_max_positions: int = 6             # max concurrent open swing positions (risk + limits UI tick-streams)
+    fo_max_positions: int = 2             # max concurrent open swing positions (risk + limits UI tick-streams)
     sl_max_points_sensex: int = 50
     sl_max_points_nifty: int = 15
-    daily_loss_limit_inr: float = 10_000.0
-    daily_loss_limit_base: float = 10_000.0
+    daily_loss_limit_inr: float = 1_300.0
+    daily_loss_limit_base: float = 1_300.0
     allow_reentry_after_sl: bool = True
     max_reentries_per_day: int = 1
 
@@ -93,8 +93,8 @@ class Settings(BaseSettings):
     scalp_enabled: bool = True
     scalp_mode: Literal['paper', 'live'] = 'paper'
     scalp_auto_trade: bool = True
-    scalp_capital_inr: float = 100_000.0
-    scalp_max_lots_per_trade: int = 2
+    scalp_capital_inr: float = 6_500.0
+    scalp_max_lots_per_trade: int = 1
     scalp_universe: str = '^NSEI,^BSESN'
     scalp_sl_pts: float = 8.0
     scalp_t1_pts: float = 15.0
@@ -104,13 +104,13 @@ class Settings(BaseSettings):
     scalp_t1_pts_nifty: float = 0.0
     scalp_max_hold_min: int = 10
     scalp_max_reentries: int = 10
-    scalp_daily_loss_limit: float = 10_000.0
-    scalp_daily_loss_limit_base: float = 10_000.0
+    scalp_daily_loss_limit: float = 650.0
+    scalp_daily_loss_limit_base: float = 650.0
     scalp_min_confidence: int = 70
     scalp_volume_mult: float = 2.0
     scalp_breakout_bars: int = 3
     scalp_opening_skip_min: int = 5
-    scalp_max_concurrent: int = 2
+    scalp_max_concurrent: int = 1
     scalp_atr_sl_mult: float = 1.5
     scalp_atr_t1_mult: float = 2.0
     scalp_use_atr_sl: bool = True
