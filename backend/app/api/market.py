@@ -208,7 +208,10 @@ def ohlcv(
             _is_option = '-CE' in _tu or '-PE' in _tu
             _exch, _sec_id = resolve_option_security(broker, ticker) if _is_option else ('', '')
             if _sec_id:
-                candles = broker.get_candles(ticker, interval=interval, days=days,
+                # Options are short-lived — cap to 1 day for intraday to avoid
+                # stale data from recycled or reused security IDs.
+                _opt_days = min(days, 1) if _is_option and _is_intraday else days
+                candles = broker.get_candles(ticker, interval=interval, days=_opt_days,
                                              exchange=_exch, security_id=_sec_id)
             elif _is_option:
                 # Option with no resolved security_id: DO NOT fall back to bare
@@ -220,6 +223,15 @@ def ohlcv(
             else:
                 candles = broker.get_candles(ticker, interval=interval, days=days)
             if candles:
+                # Sanity filter for options: brokers may reuse security IDs
+                # across expiries, so older candles can carry a prior instrument's
+                # prices (e.g. ₹24k index vs ₹88 premium). Drop candles whose
+                # close deviates >5× from the latest — wrong instrument data.
+                if _is_option and len(candles) > 1:
+                    ref = candles[-1].close
+                    if ref > 0:
+                        candles = [c for c in candles
+                                   if 0.2 * ref <= c.close <= 5.0 * ref]
                 candles_list = [
                     {'date': c.date, 'open': c.open, 'high': c.high,
                      'low': c.low, 'close': c.close, 'volume': c.volume}
