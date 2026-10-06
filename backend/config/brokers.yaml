@@ -15,7 +15,7 @@
 #   4. Set ZERODHA_API_KEY and ZERODHA_API_SECRET in .env
 #   Done.
 
-active_broker: dhan        # indmoney | dhan
+active_broker: indmoney    # indmoney | dhan | groww
 
 brokers:
   dhan:
@@ -31,3 +31,12 @@ brokers:
     env_keys:
       INDMONEY_ACCESS_TOKEN: access_token
     defaults: {}
+
+  groww:
+    class: app.infrastructure.broker.groww_broker.GrowwBroker
+    env_keys:
+      GROWW_API_KEY: api_key              # key+secret flow: auto-refreshes token (no daily manual step)
+      GROWW_API_SECRET: api_secret
+      GROWW_ACCESS_TOKEN: access_token    # OR set a static daily token instead (like Dhan today)
+    defaults:
+      product_type: MIS           # MIS | CNC | NRML
