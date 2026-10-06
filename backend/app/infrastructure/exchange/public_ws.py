@@ -72,9 +72,22 @@ class PublicStreamManager:
             queues = list(self._subscribers.get(channel, []))
         for q in queues:
             try:
-                loop.call_soon_threadsafe(q.put_nowait, data)
+                loop.call_soon_threadsafe(self._safe_put, q, data)
             except Exception:
                 pass
+
+    @staticmethod
+    def _safe_put(q: asyncio.Queue, data: dict) -> None:
+        """Put data into queue, dropping oldest item if full."""
+        if q.full():
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            q.put_nowait(data)
+        except asyncio.QueueFull:
+            pass  # still full after drain — drop silently
 
     # ── Binance ───────────────────────────────────────────────────────────────
 
