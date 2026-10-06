@@ -2,9 +2,9 @@
 
 **Multi-Market Trading Terminal**
 
-A professional-grade trading terminal combining real-time broker WebSocket data, full-stack technical analysis with pure-Python indicators, a pure-technical (LLM-free) F&O signal scanner, a momentum scalp scanner with let-winners-run trailing exits, browser-side Black-Scholes option pricing (live chain ladder + per-ticket repricing), and a full auto-entry/auto-exit execution engine — all in a single browser-based interface. Broker-agnostic: swap Dhan ⇄ IndMoney (or add another) via `config/brokers.yaml`, zero code changes.
+A professional-grade trading terminal combining real-time broker WebSocket data, full-stack technical analysis with pure-Python indicators, a pure-technical (LLM-free) F&O signal scanner, a momentum scalp scanner with let-winners-run trailing exits, browser-side Black-Scholes option pricing (live chain ladder + per-ticket repricing), and a full auto-entry/auto-exit execution engine — all in a single browser-based interface. Broker-agnostic: swap Dhan ⇄ IndMoney ⇄ Groww (or add another) via `config/brokers.yaml`, zero code changes.
 
-**Broker-agnostic** — switch between INDmoney, Dhan, or any future broker by changing one line in `config/brokers.yaml`. Zero code changes.
+**Broker-agnostic** — switch between INDmoney, Dhan, Groww, or any future broker by changing one line in `config/brokers.yaml`. Zero code changes.
 
 **Two operating modes:**
 - **Auto mode** — scanner signals trigger paper or live orders automatically via `order_executor`, with strict SL enforcement, trailing stops, and daily loss kill-switch
@@ -640,6 +640,11 @@ INDMONEY_ACCESS_TOKEN=your_token   # INDstocks.com → API section
 # Dhan (alternative)
 DHAN_CLIENT_ID=your_client_id
 DHAN_ACCESS_TOKEN=your_token
+
+# Groww (alternative) — dashboard → account settings → Trading APIs → Generate API keys
+GROWW_API_KEY=your_api_key         # + secret: auto-refreshes token, no daily manual step
+GROWW_API_SECRET=your_api_secret
+GROWW_ACCESS_TOKEN=your_token      # OR a static daily token instead of key+secret
 ```
 
 **Trading execution:**
