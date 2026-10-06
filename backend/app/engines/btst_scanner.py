@@ -578,6 +578,14 @@ def _technical_fallback_score(
     if adx >= 25:
         parts.append(f'ADX={adx:.0f}')
 
+    # ── CRASH GUARD: block bull on extreme drops, block bear on extreme rallies ──
+    if direction == 'bull' and nifty_chg < -1.5:
+        score -= 30
+        parts.append(f'CRASH GUARD: Nifty {nifty_chg:+.1f}% — CE too risky')
+    elif direction == 'bear' and nifty_chg > 1.5:
+        score -= 30
+        parts.append(f'RALLY GUARD: Nifty {nifty_chg:+.1f}% — PE too risky')
+
     # ── BULL (CE) logic: mean-reversion after sell-off ──────────────
     if direction == 'bull':
         # Oversold RSI is GOOD for bull BTST
@@ -1441,7 +1449,7 @@ def _record_exit(pos: dict, reason: str) -> None:
     try:
         from ..infrastructure.db.pnl_store import record_trade as _pnl_record
         _pnl_record(
-            mode='swing', symbol=pos['symbol'], underlying=pos['symbol'],
+            mode='btst', symbol=pos['symbol'], underlying=pos['symbol'],
             entry_prem=_ep, exit_prem=_xp, qty=_q,
             lot_size=1,
             brokerage_or_exit_reason=brokerage,
