@@ -43,6 +43,11 @@ _BASE_URL     = 'https://api.indstocks.com'
 _WS_PRICE_URL = 'wss://ws-prices.indstocks.com/api/v1/ws/prices'
 _WS_ORDER_URL = 'wss://ws-order-updates.indstocks.com/api/v1/ws/trades'
 
+# Max age (seconds) a WS tick-cache entry is trusted before falling back to
+# REST — IndStocks WS can silently stop pushing for a given instrument
+# (observed on index codes) while reporting the socket as still "connected".
+_TICK_TTL_SEC = 5.0
+
 # ── Interval mapping ─────────────────────────────────────────────────────────
 _IV_MAP = {
     '1m': '1minute', '3m': '3minute', '5m': '5minute',
@@ -378,12 +383,13 @@ class INDMoneyBroker(BrokerAdapter):
         if self._stub:
             return None
 
-        # Check tick cache first
+        # Check tick cache first — only trust it while fresh; IndStocks WS can
+        # go quiet for a given instrument without the socket itself dropping.
         code = self._scrip_code(symbol)
         if code:
             with self._tick_lock:
                 cached = self._tick_cache.get(code)
-            if cached:
+            if cached and clock() - cached.get('ts', 0) < _TICK_TTL_SEC:
                 p = cached.get('ltp') or cached.get('last_price')
                 if p:
                     return float(p)
@@ -436,7 +442,7 @@ class INDMoneyBroker(BrokerAdapter):
         code = self._fo_scrip_code(inst)
         with self._tick_lock:
             cached = self._tick_cache.get(code)
-        if cached:
+        if cached and clock() - cached.get('ts', 0) < _TICK_TTL_SEC:
             p = cached.get('ltp') or cached.get('last_price') or cached.get('live_price')
             if p:
                 return float(p)
@@ -1023,6 +1029,7 @@ class INDMoneyBroker(BrokerAdapter):
                     'volume': d.get('volume') or d.get('v'),
                     'change': d.get('net_change') or d.get('change'),
                     'change_pct': d.get('change_percent'),
+                    'ts':     clock(),
                 }
 
                 with self._tick_lock:
@@ -1087,7 +1094,10 @@ class INDMoneyBroker(BrokerAdapter):
             return
         ws_codes = [self._to_ws_format(c) for c in codes]
         try:
-            ws.send(json.dumps({'action': 'subscribe', 'scrip_codes': ws_codes}))
+            # Official shape (api-docs.indstocks.com/Websockets/): action +
+            # mode + instruments. Previously sent 'scrip_codes' with no
+            # 'mode' — wrong key, so the server had nothing valid to act on.
+            ws.send(json.dumps({'action': 'subscribe', 'mode': 'ltp', 'instruments': ws_codes}))
             with self._sub_lock:
                 for c in codes:
                     self._subscribers.setdefault(c, set())
@@ -1101,7 +1111,7 @@ class INDMoneyBroker(BrokerAdapter):
             return
         ws_codes = [self._to_ws_format(c) for c in codes]
         try:
-            ws.send(json.dumps({'action': 'unsubscribe', 'scrip_codes': ws_codes}))
+            ws.send(json.dumps({'action': 'unsubscribe', 'mode': 'ltp', 'instruments': ws_codes}))
             with self._sub_lock:
                 for c in codes:
                     self._subscribers.pop(c, None)
