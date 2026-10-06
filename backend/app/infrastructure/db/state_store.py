@@ -245,7 +245,7 @@ def today_net_by_mode(market_type: str | None = None) -> dict[str, float]:
     query += ' GROUP BY mode'
     with _conn() as c:
         rows = c.execute(query, params).fetchall()
-    result = {'swing': 0.0, 'scalp': 0.0, 'forex': 0.0}
+    result = {'swing': 0.0, 'scalp': 0.0, 'forex': 0.0, 'btst': 0.0}
     for r in rows:
         if r['mode'] in result:
             result[r['mode']] = round(r['net'] or 0.0, 2)
