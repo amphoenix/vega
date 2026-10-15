@@ -158,7 +158,7 @@ class INDMoneyBroker(BrokerAdapter):
         """Resolve F&O trading symbol → instrument master row (nearest expiry)."""
         self._build_fno_index()
         sym = symbol.upper()
-        now = now_ist()
+        now = now_ist().replace(tzinfo=None)  # expiry strings are naive IST
         matches = self._fno_sym_index.get(sym)
         if not matches:
             return None
@@ -220,6 +220,13 @@ class INDMoneyBroker(BrokerAdapter):
         with self._scrip_lock:
             if key in self._scrip_cache:
                 return self._scrip_cache[key]
+
+        # Synthetic option symbol (…-CE/-PE): resolve to NFO_/BFO_<id> for the
+        # nearest live expiry. The generic master scan below would return the
+        # first row with EXCH=NSE → 'NSE_<id>', which no quote/WS endpoint accepts.
+        if ticker.upper().endswith(('-CE', '-PE')):
+            inst = self._resolve_fo_instrument(ticker)
+            return self._fo_scrip_code(inst) if inst else None
 
         # Check hardcoded index codes first
         idx_code = self._INDEX_CODES.get(ticker.upper())
@@ -911,17 +918,22 @@ class INDMoneyBroker(BrokerAdapter):
 
     def remove_tick_queue(self, code: str, q: _queue.Queue) -> None:
         """Detach an SSE queue.  Unsubscribe WS if no queues/callbacks left."""
+        drop = False
         with self._sub_lock:
             qs = self._subscribers.get(code)
             if qs:
                 qs.discard(q)
                 if not qs:
                     del self._subscribers[code]
-                    # Only unsubscribe WS if no callbacks either
-                    with self._callback_lock:
-                        has_cb = bool(self._tick_callbacks.get(code))
-                    if not has_cb:
-                        self._ws_unsubscribe([code])
+                    drop = True
+        if drop:
+            # Only unsubscribe WS if no callbacks either. Must run OUTSIDE
+            # _sub_lock: _ws_unsubscribe re-takes it (non-reentrant) and the WS
+            # thread needs it per tick — holding it here deadlocked the feed.
+            with self._callback_lock:
+                has_cb = bool(self._tick_callbacks.get(code))
+            if not has_cb:
+                self._ws_unsubscribe([code])
 
     def _ensure_ws(self) -> None:
         """Start WS thread if not already running."""
@@ -961,9 +973,11 @@ class INDMoneyBroker(BrokerAdapter):
     def _ws_on_open(self, ws) -> None:
         logger.info('INDmoney WebSocket connected')
         with self._sub_lock:
-            codes = list(self._subscribers.keys())
+            codes = set(self._subscribers.keys())
+        with self._callback_lock:
+            codes |= set(self._tick_callbacks.keys())
         if codes:
-            self._ws_subscribe(codes)
+            self._ws_subscribe(sorted(codes))
 
     def _ws_on_message(self, ws, message: str) -> None:
         try:
@@ -1088,6 +1102,11 @@ class INDMoneyBroker(BrokerAdapter):
         return f'{seg}:{sid}'
 
     def _ws_subscribe(self, codes: list[str]) -> None:
+        # Record intent first: if the socket isn't open yet, _ws_on_open replays
+        # these. Previously a subscribe racing the connect was silently lost.
+        with self._sub_lock:
+            for c in codes:
+                self._subscribers.setdefault(c, set())
         with self._ws_lock:
             ws = self._ws_instance
         if not ws:
@@ -1098,9 +1117,6 @@ class INDMoneyBroker(BrokerAdapter):
             # mode + instruments. Previously sent 'scrip_codes' with no
             # 'mode' — wrong key, so the server had nothing valid to act on.
             ws.send(json.dumps({'action': 'subscribe', 'mode': 'ltp', 'instruments': ws_codes}))
-            with self._sub_lock:
-                for c in codes:
-                    self._subscribers.setdefault(c, set())
         except Exception as e:
             logger.warning(f'WS subscribe failed: {e}')
 
@@ -1169,3 +1185,4 @@ class INDMoneyBroker(BrokerAdapter):
             underlying=(inst.get('SYMBOL_NAME') or '').strip(),
             name=(inst.get('CUSTOM_SYMBOL') or inst.get('TRADING_SYMBOL') or '').strip(),
         )
+        
