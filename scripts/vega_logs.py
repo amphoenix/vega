@@ -10,7 +10,7 @@ URL and key default to the environment (VEGA_SERVER_URL, VEGA_API_KEY) and then 
 Use --insecure only while the server still has a self-signed certificate.
 """
 
-from _future_ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 
 # Use the project's own time helpers (standard-library only), found relative to this script.
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(_file_)), '..', 'backend'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend'))
 try:
     from app.shared.time import sleep
 except ImportError:  # pragma: no cover - only when the script is copied out of a Vega checkout
@@ -43,7 +43,7 @@ def env_value(name: str, env_path: str = '.env') -> str:
 
 
 def client_secret(raw: str) -> str:
-    """<name>:secret,<name>:secret (a server's .env) → the first secret; a plain secret is returned as is."""
+    """`<name>:secret,<name>:secret` (a server's .env) → the first secret; a plain secret is returned as is."""
     first = raw.split(',')[0].strip()
     head, sep, tail = first.partition(':')
     return tail.strip() if sep and head.replace('-', '').replace('_', '').isalnum() and head.islower() else first
@@ -101,6 +101,5 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
 
-if _name_ == '_main_':
+if __name__ == '__main__':
     sys.exit(main())
-    

@@ -702,6 +702,7 @@ class INDMoneyBroker(BrokerAdapter):
                 'expiry': exp, 'expiry_s': (inst.get('EXPIRY_DATE') or '').strip(),
                 'strike': inst_strike,
                 'display': (inst.get('CUSTOM_SYMBOL') or '').strip(),
+                'lot_size': int(float(inst.get('LOT_UNITS') or inst.get('LOT_SIZE') or 0)),
             })
         if not candidates:
             return None
@@ -714,6 +715,7 @@ class INDMoneyBroker(BrokerAdapter):
             'security_id': best['sec_id'],
             'expiry_date': best['expiry_s'],
             'strike': best['strike'],
+            'lot_size': best['lot_size'],
             'ltp': ltp,
         }
 
@@ -836,7 +838,8 @@ class INDMoneyBroker(BrokerAdapter):
         ind_interval = _IV_MAP.get(interval, interval)
 
         try:
-            r = _requests.get(
+            r = http_get_with_retry(
+                _requests.get,
                 f'{_BASE_URL}/market/historical/{ind_interval}',
                 headers=self._headers(),
                 params={
@@ -851,6 +854,10 @@ class INDMoneyBroker(BrokerAdapter):
                     with self._candles_404_lock:
                         self._candles_404[f'{code}|{interval}'] = clock() + 3600
                 else:
+                    if r.status_code == 429:
+                        # still throttled after retries: stop hammering for a bit
+                        with self._candles_404_lock:
+                            self._candles_404[f'{code}|{interval}'] = clock() + 20
                     logger.warning(f'Candles {symbol} {interval}: {r.status_code}')
                 return []
 
@@ -882,6 +889,11 @@ class INDMoneyBroker(BrokerAdapter):
                 else:
                     continue
                 dt_str = fmt_candle_date(datetime.fromtimestamp(ts_s), intraday=True)
+                # A bar whose close sits outside its own high/low is corrupt (seen on the
+                # still-forming index bar: o=h=l=23010, c=23090.9). Drop it so neither the
+                # chart nor the index price derived from the last candle uses it.
+                if h and l and not (l <= cl <= h):
+                    continue
                 candles.append(CandleData(date=dt_str, open=o, high=h, low=l,
                                           close=cl, volume=vol))
 

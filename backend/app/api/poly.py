@@ -21,8 +21,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-from ..domain.value_objects.instrument import Instrument
-from ..domain.value_objects.market import MarketType
+from ..domain.value_objects.instrument import Instrument, polymarket_instrument
 from ..shared.logger import get_logger
 
 logger = get_logger('api.poly')
@@ -40,7 +39,7 @@ async def _adapter():
 
 
 def _instr(market_id: str) -> Instrument:
-    return Instrument(symbol=market_id, condition_id=market_id, market_type=MarketType.POLYMARKET)
+    return polymarket_instrument(condition_id=market_id, question='')
 
 
 def _gamma_market(m: dict) -> dict:

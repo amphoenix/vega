@@ -588,7 +588,7 @@ def _technical_fallback_score(
         'rejected':       rejected,
         'rationale':      rationale,
         'target_pct':     2.0,
-        'risk_note':      'Technical-only score — no LLM confirmation',
+        'risk_note':      '',
         'strike':         best_quote.get('strike'),
         'expiry':         str(best_quote.get('expiry', '')),
         'entry_premium':  entry_prem or None,
@@ -1474,5 +1474,8 @@ def _init_scheduler() -> None:
 
 # ── Module Init ───────────────────────────────────────────────────────────────
 
-_load_positions()
-_init_scheduler()
+# Importing this module must not touch the real book when tests import it: restoring positions
+# re-arms exit timers that would close them and write trades into the real pnl.db.
+if not os.environ.get('VEGA_TESTING'):
+    _load_positions()
+    _init_scheduler()

@@ -28,6 +28,16 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    # ── Access control and role ──────────────────────────────────────────────
+    vega_api_key: str = ''                       # shared key every API call must carry (comma-separated for rotation)
+    vega_role: Literal['server', 'consumer'] = 'server'   # server runs the engines; consumer only displays
+    vega_auth_disabled: bool = False             # explicit opt-out of key protection (local development ONLY)
+    vega_rate_limit_per_min: int = 1200          # requests per person per minute (0 = unlimited)
+    vega_auth_max_failures: int = 5              # wrong keys from one address before it is locked out
+    vega_auth_lockout_sec: int = 900             # how long that lockout lasts
+    vega_audit_retention_days: int = 90          # audit files older than this are deleted at startup
+    vega_server_url: str = ''                    # consumer: where the server lives, e.g. https://my-server:53847
+
     # ── LLM Provider ─────────────────────────────────────────────────────────
     llm_provider: Literal['openai', 'gemini', 'bedrock', 'ollama'] = 'gemini'
     llm_api_key: str = ''

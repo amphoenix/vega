@@ -41,11 +41,11 @@ def setup_logger(name: str = _ROOT_NAME, level: int = logging.DEBUG) -> logging.
         return logging.getLogger(name)
 
     detailed = logging.Formatter(
-        '[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s',
+        '[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s%(trace)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
     simple = logging.Formatter(
-        '[%(asctime)s] %(levelname)s: %(message)s',
+        '[%(asctime)s] %(levelname)s: %(message)s%(trace)s',
         datefmt='%H:%M:%S',
     )
 
@@ -59,6 +59,11 @@ def setup_logger(name: str = _ROOT_NAME, level: int = logging.DEBUG) -> logging.
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.INFO)
     ch.setFormatter(simple)
+
+    # Lines written while serving an API request get ' rid=<id> by=<person>' appended (see auth/context.py).
+    from ..auth.context import TraceFilter
+    for handler in (fh, ch):
+        handler.addFilter(TraceFilter())
 
     root.addHandler(fh)
     root.addHandler(ch)

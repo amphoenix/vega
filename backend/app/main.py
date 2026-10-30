@@ -15,6 +15,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .auth import audit
+from .auth.api_key import ApiKeyMiddleware, log_status
 from .config import settings
 from .dependencies import get_event_bus, get_scheduler
 from .domain.events.events import DayRolled
@@ -50,6 +52,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 settings.live_trading_enabled,
                 settings.auto_trading_enabled,
                 settings.scalp_auto_trade)
+
+    log_status()
+    audit.purge_old(settings.vega_audit_retention_days)
+    audit.write('server_start', role=settings.vega_role)
+    if settings.vega_role == 'consumer':
+        # Only ONE system may run the scanners/executor, or two machines would trade the same account.
+        logger.warning('VEGA_ROLE=consumer — engines, scheduler and broker streams are NOT started on this system')
+        yield
+        return
 
     # Validate LLM config
     llm_errors = settings.validate_llm()
@@ -169,16 +180,22 @@ app = FastAPI(
 )
 
 # CORS origins injected by start.sh via CORS_ORIGINS env — no hardcoded ports
+# Only listed origins may call the API from a browser. No wildcard: an empty list means same-origin only.
+# start.sh sets CORS_ORIGINS for the local UI; VEGA_CORS_EXTRA adds more (comma-separated).
 _cors_origins = [
-    o.strip() for o in os.environ.get('CORS_ORIGINS', '').split(',') if o.strip()
-] or ['*']
+    o.strip()
+    for o in (os.environ.get('CORS_ORIGINS', '') + ',' + os.environ.get('VEGA_CORS_EXTRA', '')).split(',')
+    if o.strip() and o.strip() != '*'
+]
 
+app.add_middleware(ApiKeyMiddleware)     # added before CORS so CORS headers also appear on 401 responses
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=['*'],
-    allow_headers=['*'],
+    allow_credentials=False,                 # auth is a header, never a cookie
+    allow_methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allow_headers=['X-Vega-Key', 'Content-Type', 'Accept', 'X-Request-ID'],
+    expose_headers=['X-Request-ID', 'Retry-After'],
 )
 
 
@@ -245,6 +262,7 @@ app.add_middleware(_RequestLogger)
 from .api.broker import router as broker_router
 from .api.crypto import router as crypto_router
 from .api.forex import router as forex_router
+from .api.logs import router as logs_router
 from .api.market import router as market_router
 from .api.poly import router as poly_router
 from .api.state import router as state_router
@@ -257,18 +275,15 @@ app.include_router(crypto_router)
 app.include_router(poly_router)
 app.include_router(forex_router)
 app.include_router(state_router)
+app.include_router(logs_router)
 
 
 # ── Health check ─────────────────────────────────────────────────────────────
 
 @app.get('/health')
 def health():
-    return {
-        'status': 'ok',
-        'version': 'v2',
-        'live_trading': settings.live_trading_enabled,
-        'auto_trading': settings.auto_trading_enabled,
-    }
+    # Open to anyone (liveness probes) — so it must reveal nothing about the system.
+    return {'status': 'ok'}
 
 
 # ── Paper trading status ──────────────────────────────────────────────────────

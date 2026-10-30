@@ -649,6 +649,14 @@ GROWW_API_SECRET=your_api_secret
 GROWW_ACCESS_TOKEN=your_token      # OR a static daily token instead of key+secret
 ```
 
+**Access control and role** — see [Security & operations](#security--operations) below.
+
+```env
+VEGA_API_KEY=<name>:<secret>,<name>:<secret>   # one entry per person; secrets are 32+ characters
+VEGA_ROLE=server                                # server = runs scanners/executor/API; consumer = UI only, never trades
+VEGA_SERVER_URL=                                # consumer only: https://your-server:53847
+```
+
 **Trading execution** (defaults are in `backend/app/config.py`; override via `.env`):
 
 ```env
@@ -776,6 +784,9 @@ Each row also displays **cost per lot** (`premium × lot_size`) and **breakeven 
 | Backend reloads constantly on file save | A `--reload` flag was passed to Hypercorn | Don't use `--reload` with SSE — the streams are killed on every reload |
 | Scalp SL doesn't fire | WS option tick subscription failed at entry | Check logs for `Option WS subscribed:` — if missing, `opt_code` resolution failed; REST fallback is off by design |
 | `ModuleNotFoundError: No module named 'app'` | Running python directly instead of via uv | Run from `backend/` with `uv run hypercorn app.main:app` or activate the venv first |
+| `429 too_many_attempts` | 5 wrong keys from this address — locked out for 15 min | Wait, then use the correct key (nothing from a locked address is evaluated) |
+| `503 server_has_no_api_key_configured` | The server has no strong key (32+ chars) | Run `python3 backend/app/auth/keygen.py ensure` and restart |
+| Everything returns `401 unauthorized` / UI shows no data | The server has `VEGA_API_KEY` set and this client isn't sending it | Put the same key in this machine's `.env` and restart `start.sh`, or run `localStorage.setItem('vega_api_key','…')` in the browser console |
 | `Instrument master fno: HTTP 403` / WS handshake 513 | Broker token missing or expired (IndMoney tokens expire daily) | Refresh the token in `.env` and restart |
 
 ---
@@ -789,6 +800,38 @@ git config core.hooksPath .githooks    # enable the pre-push gate (tests + lint)
 ```
 
 The pre-push hook (`.githooks/pre-push`) runs both checks and blocks the push if either fails. Bypass once with `git push --no-verify`.
+
+---
+
+## Security & operations
+
+### How access works
+- **Every route except `/health` needs a key** — header `X-Vega-Key`, or `?key=` on live streams (browsers can't set headers there). `/health` answers a bare `{"status":"ok"}` and reveals nothing else.
+- **One key per person**, written as `name:secret` in `VEGA_API_KEY`. The name appears in the audit trail and in server log lines (`rid=… by=alice`); clients send only the secret. Revoke someone by deleting their entry — it takes effect **without a restart**.
+- **Weak keys are refused.** A secret must be 32+ characters with real variety. If no strong key exists the server answers `503` to everything (fail closed). `start.sh` creates a strong key named `owner` automatically; add people with `python3 backend/app/auth/keygen.py add <name>` (it prints the secret to give them — once).
+- **Brute force is blocked.** 5 wrong keys from one address lock that address out for 15 minutes (`429`), and during the lockout nothing from it is evaluated, so the key cannot be probed. Each person is also limited to 1200 requests/minute. Behind a local tunnel the real client address is read from `CF-Connecting-IP` / `X-Forwarded-For`, but only when the connection itself comes from this machine, so it can't be spoofed from outside.
+- **Hardening headers** on every response (`nosniff`, `no-store`, `no-referrer`, HSTS over HTTPS); CORS has **no wildcard** (`VEGA_CORS_EXTRA` adds origins); credentials are never cookies.
+
+### Tracing
+- Every request gets an id, returned as `X-Request-ID` (send your own for end-to-end tracing). Server log lines written while serving a request end with `rid=<id> by=<person>`.
+- `logs/audit-YYYY-MM-DD.log` is a separate JSON-lines audit trail: logins that failed, lockouts, rate limits, every state-changing call, every log read, and the first call of each person per hour. It never contains a key, a query string or a header. Files older than 90 days are deleted at startup.
+
+### Reading the server's logs from another machine
+```bash
+python3 scripts/vega_logs.py --url https://your-server:53847 --key <your secret> --lines 100
+python3 scripts/vega_logs.py --follow --level WARNING        # live tail
+python3 scripts/vega_logs.py --file audit --q auth_failed    # who tried to get in
+```
+Needs only Python 3 and a checkout of this repo (no packages). Add `--insecure` only while the certificate is self-signed. Credentials, tokens and cookies are blanked in every line before it leaves the server, and every read is recorded in the audit trail. The same data is available at `GET /api/logs` (`file`, `date`, `lines`, `level`, `q`, `offset`) and `GET /api/logs/files`.
+
+### What running this over the internet still needs
+Code can't supply these — they're setup you must do:
+1. **A reachable address.** A home laptop usually isn't reachable from outside. Use a tunnel (Tailscale / Cloudflare Tunnel) or host the server on a small VPS.
+2. **A real TLS certificate** for a domain you control (the generated one is self-signed: every device shows a warning).
+3. **A static IP registered with your broker** before live orders (SEBI rule since April 2026).
+4. **Keep it running:** run `./start.sh` under a supervisor that restarts it (launchd / systemd / Docker `restart: unless-stopped`) and stop the machine sleeping.
+5. **Back up `backend/data/`** (positions, P&L ledger, watchlist, signal history).
+6. **Rotate a key** by adding a new entry, moving the person over, then deleting the old entry.
 
 ---
 

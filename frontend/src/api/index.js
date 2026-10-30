@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { apiKey } from '../utils/apiAuth'
 
 // Create axios instance
 const service = axios.create({
@@ -12,6 +13,8 @@ const service = axios.create({
 // Request interceptor
 service.interceptors.request.use(
   config => {
+    const key = apiKey()
+    if (key) config.headers['X-Vega-Key'] = key
     return config
   },
   error => {

@@ -301,7 +301,7 @@ class BrokerAdapter(ABC):
     ) -> dict | None:
         """Find the nearest matching option contract for an underlying.
         Returns {trading_symbol, display_symbol, security_id, expiry_date,
-        strike, ltp} or None. Override per broker."""
+        strike, lot_size, ltp} or None. Override per broker."""
         return None
 
     def underlying_lot_size(self, underlying: str) -> int | None:

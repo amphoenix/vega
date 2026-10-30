@@ -26,6 +26,26 @@ case "$1" in
     ;;
 esac
 
+# ── Role: which system runs the engines ──────────────────────────────────────
+# VEGA_ROLE=server   (default) runs the scanners/executor/API — exactly ONE system should be the server.
+# VEGA_ROLE=consumer runs only the web UI, pointed at VEGA_SERVER_URL; it starts no engines and never trades.
+# Read from the environment or .env (the full .env is sourced further down).
+_env_value() { grep -E "^$1=" "$ROOT_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"; }
+VEGA_ROLE="${VEGA_ROLE:-$(_env_value VEGA_ROLE)}"; VEGA_ROLE="${VEGA_ROLE:-server}"
+VEGA_SERVER_URL="${VEGA_SERVER_URL:-$(_env_value VEGA_SERVER_URL)}"
+case "$VEGA_ROLE" in
+  server) ;;
+  consumer)
+    if [[ -z "$VEGA_SERVER_URL" ]]; then
+      error "VEGA_ROLE=consumer needs VEGA_SERVER_URL (e.g. https://my-server:53847) in .env"
+      exit 1
+    fi
+    MODE="frontend"
+    ;;
+  *) error "VEGA_ROLE must be 'server' or 'consumer' (got '$VEGA_ROLE')"; exit 1 ;;
+esac
+info "Role: $VEGA_ROLE"
+
 # ── Hardcoded obscure ports ──────────────────────────────────────────────────
 # Picked at random from 41000-59999 — outside all common dev ports
 # (3000/5000/5173/8000/8080) and below macOS ephemeral range. Bookmark these.
@@ -62,6 +82,27 @@ set -a
 # shellcheck source=/dev/null
 source "$ROOT_DIR/.env"
 set +a
+
+# ── API key ───────────────────────────────────────────────────────────────────
+# A server needs at least one STRONG key (32+ characters) or it refuses every request. If .env has none,
+# create one named "owner" (the secret goes into .env, mode 600, and is never printed).
+# Keys look like  VEGA_API_KEY=<name>:<secret>,<name>:<secret>  — the name labels who is calling in the audit
+# log; clients send only the secret. Add people with:  python3 backend/app/auth/keygen.py add <name>
+_keygen="$ROOT_DIR/backend/app/auth/keygen.py"
+if [[ "$VEGA_ROLE" == "server" && "${VEGA_AUTH_DISABLED:-false}" != "true" ]]; then
+  if command -v python3 &>/dev/null; then
+    _msg="$(python3 "$_keygen" ensure)"
+    if [[ -n "$_msg" ]]; then warn "$_msg"; fi
+  else
+    warn "python3 not found — cannot check/create the API key; the server will refuse requests until one is set"
+  fi
+fi
+# The secret THIS machine sends to the server (consumer: the key from its .env; server: its own first key).
+_client_key=""
+command -v python3 &>/dev/null && _client_key="$(python3 "$_keygen" client-key)"
+if [[ -z "$_client_key" && "${VEGA_AUTH_DISABLED:-false}" != "true" ]]; then
+  warn "No strong VEGA_API_KEY found in .env — the UI will not be able to call the server"
+fi
 
 # Warn if LLM_API_KEY is still a placeholder or empty
 _api_key=$(grep -E '^LLM_API_KEY=' "$ROOT_DIR/.env" 2>/dev/null | cut -d= -f2-)
@@ -177,7 +218,12 @@ sleep 0.5
 # Browser talks directly to Hypercorn over HTTPS + HTTP/2 + HTTP/3.
 # No nginx proxy layer — Hypercorn handles TLS, H2 multiplexing, and QUIC.
 if [[ "$MODE" != "backend" ]]; then
-  echo "VITE_API_BASE_URL=https://localhost:${PUBLIC_PORT}" > "$ROOT_DIR/frontend/.env.local"
+  _api_url="https://localhost:${PUBLIC_PORT}"
+  [[ "$VEGA_ROLE" == "consumer" ]] && _api_url="${VEGA_SERVER_URL%/}"
+  {
+    echo "VITE_API_BASE_URL=${_api_url}"
+    [[ -n "${_client_key:-}" ]] && echo "VITE_API_KEY=${_client_key}"
+  } > "$ROOT_DIR/frontend/.env.local"
 fi
 
 if [[ "$MODE" != "frontend" ]]; then
@@ -209,7 +255,7 @@ if [[ "$MODE" != "frontend" ]]; then
 fi
 
 if [[ "$MODE" != "backend" ]]; then
-  info "Starting Frontend →  http://localhost:${FE_PORT}  (API → :${BE_PORT})"
+  info "Starting Frontend →  http://localhost:${FE_PORT}  (API → ${_api_url:-:${BE_PORT}})"
   cd "$ROOT_DIR/frontend" && npm run dev -- --port "$FE_PORT" --strictPort &
   FE_PID=$!
 fi

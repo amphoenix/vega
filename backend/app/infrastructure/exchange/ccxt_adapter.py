@@ -23,6 +23,7 @@ Dependencies:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -111,6 +112,7 @@ class CCXTAdapter(ExchangeAdapter):
         self._exchange: Any = None   # ccxt.async_support.<exchange> instance
         self._connected = False
         self._markets_loaded = False
+        self._connect_lock = asyncio.Lock()
         self._exchange_id = _EXCHANGE_MAP.get(config.exchange_name, ExchangeId.BINANCE)
         self._paper_mode = config.paper_mode
         self._paper_capital = config.paper_capital
@@ -146,7 +148,17 @@ class CCXTAdapter(ExchangeAdapter):
     # ── Connection lifecycle ──────────────────────────────────────────
 
     async def connect(self) -> None:
-        """Create async ccxt exchange, load markets, configure derivatives."""
+        """Create async ccxt exchange, load markets, configure derivatives.
+
+        Concurrent callers share one connection: the first builds it, the rest
+        wait on the lock and return once it is up.
+        """
+        async with self._connect_lock:
+            if self._connected:
+                return
+            await self._connect_locked()
+
+    async def _connect_locked(self) -> None:
         ccxt_async = _get_ccxt_async()
         if ccxt_async is None:
             logger.warning('ccxt not installed — running in stub mode (%s)', self._config.exchange_name)
@@ -171,18 +183,25 @@ class CCXTAdapter(ExchangeAdapter):
         if self._config.password:
             params['password'] = self._config.password
 
-        self._exchange = exchange_class(params)
-
+        exchange = exchange_class(params)
         if self._config.sandbox:
-            self._exchange.set_sandbox_mode(True)
+            exchange.set_sandbox_mode(True)
 
-        # ccxt async — await load_markets()
-        await self._exchange.load_markets()
+        # ccxt async — await load_markets(); close the session if it fails
+        try:
+            await exchange.load_markets()
+        except BaseException:
+            await exchange.close()
+            raise
+
+        stale, self._exchange = self._exchange, exchange
+        if stale is not None:
+            await stale.close()
         self._markets_loaded = True
         self._connected = True
         logger.info('CCXT connected: %s (sandbox=%s, defaultType=%s, markets=%d)',
                      self._config.exchange_name, self._config.sandbox,
-                     self._config.default_type, len(self._exchange.markets))
+                     self._config.default_type, len(exchange.markets or {}))
 
     async def disconnect(self) -> None:
         if self._exchange:
