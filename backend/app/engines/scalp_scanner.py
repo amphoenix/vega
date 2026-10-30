@@ -26,6 +26,7 @@ from ..dependencies import get_broker
 from ..shared import time as _mkt
 from ..shared.logger import get_logger
 from ..shared.time import clock, datetime, timedelta
+from ..state import signals as _signal_log
 
 logger = get_logger('vega.services.scalp_scanner')
 
@@ -604,6 +605,15 @@ def _on_option_tick(tick: dict, opt_code: str, trading_symbol: str):
         logger.debug(f"[scalp] option tick check error: {e}")
 
 
+def _resolve_contract(ticker: str, opt_type: str, strike: float) -> dict | None:
+    """Find the option contract through the active broker.
+
+    Brokers key contracts by the exchange base name (NIFTY, SENSEX), not the Yahoo-style
+    index ticker (^NSEI, ^BSESN) — passing the ticker made every SENSEX lookup fail.
+    """
+    return get_broker().resolve_option_contract(_mkt.nse_base(ticker), opt_type, strike)
+
+
 def _make_atm_tick_cb(sym: str):
     def _cb(tick: dict):
         ltp = float(tick.get('ltp') or tick.get('last_price') or tick.get('live_price') or 0)
@@ -637,7 +647,7 @@ def _subscribe_atm_options(ticker: str, spot: float) -> None:
 
         entry: dict = {'strike': atm_strike}
         for opt_type in ('CE', 'PE'):
-            contract = get_broker().resolve_option_contract(ticker, opt_type, atm_strike)
+            contract = _resolve_contract(ticker, opt_type, atm_strike)
             if not contract:
                 continue
             sym = contract['trading_symbol']
@@ -1043,7 +1053,7 @@ def _build_scalp_ticket(signal: dict, ticker: str) -> dict | None:
             strike = atm_strike + strike_interval if opt_type == 'CE' else atm_strike - strike_interval
             logger.info(f"[scalp] Zero-hero OTM strike for {ticker} {opt_type}: {strike} (ATM {atm_strike})")
 
-        contract = _broker.resolve_option_contract(ticker, opt_type, strike)
+        contract = _resolve_contract(ticker, opt_type, strike)
         if not contract:
             logger.debug(f"[scalp] No contract found for {ticker} {opt_type} {atm_strike}")
             return None
@@ -1289,6 +1299,7 @@ def _process_signal(ticker: str, signal: dict, candles: list[dict]):
             _state['latest_by_under'][base] = signal
 
         _broadcast({'type': 'scalp_signal', **signal})
+        _signal_log.record('scalp', signal)
         logger.info(f"[scalp] SIGNAL: {ticker} {signal['direction']} "
                     f"{signal['instrument_type']} conf={signal['confidence']}% "
                     f"vol_ratio={signal.get('vol_ratio', 0)}")

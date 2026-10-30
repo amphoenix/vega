@@ -16,6 +16,7 @@ import io
 import json
 import os
 import queue as _queue
+import re
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -34,6 +35,7 @@ from .base import (
     OrderResult,
     PositionInfo,
     QuoteResult,
+    http_get_with_retry,
 )
 
 logger = get_logger('indmoney_broker')
@@ -47,6 +49,8 @@ _WS_ORDER_URL = 'wss://ws-order-updates.indstocks.com/api/v1/ws/trades'
 # REST — IndStocks WS can silently stop pushing for a given instrument
 # (observed on index codes) while reporting the socket as still "connected".
 _TICK_TTL_SEC = 5.0
+# Option contract names: …74500CE (compact) or …-74500-CE (IndStocks master). Not stock names like RELIANCE.
+_OPTION_SYMBOL_RE = re.compile(r'(\d|-)(CE|PE)$')
 
 # ── Interval mapping ─────────────────────────────────────────────────────────
 _IV_MAP = {
@@ -80,6 +84,7 @@ class INDMoneyBroker(BrokerAdapter):
         # Instrument master cache (populated lazily)
         self._inst_master: dict[str, list[dict]] = {}
         self._inst_lock = threading.Lock()
+        self._inst_dl_lock = threading.Lock()   # one download at a time
         self._fno_sym_index: dict[str, list[dict]] = {}
 
         # Tick cache + WebSocket state
@@ -125,22 +130,28 @@ class INDMoneyBroker(BrokerAdapter):
         with self._inst_lock:
             if source in self._inst_master:
                 return self._inst_master[source]
-        try:
-            r = _requests.get(f'{_BASE_URL}/market/instruments',
-                              headers=self._headers(),
-                              params={'source': source}, timeout=15)
-            if not r.ok:
-                logger.warning(f'Instrument master {source}: HTTP {r.status_code}')
-                return []
-            reader = csv.DictReader(io.StringIO(r.text))
-            rows = list(reader)
+        # Callers that arrive while a download is running wait for it and reuse the
+        # result — otherwise each starts its own ~84k-row download and gets rate-limited.
+        with self._inst_dl_lock:
             with self._inst_lock:
-                self._inst_master[source] = rows
-            logger.info(f'Loaded {len(rows)} instruments (source={source})')
-            return rows
-        except Exception as e:
-            logger.warning(f'Instrument master load error ({source}): {e}')
-            return []
+                if source in self._inst_master:
+                    return self._inst_master[source]
+            try:
+                r = http_get_with_retry(_requests.get, f'{_BASE_URL}/market/instruments',
+                                        headers=self._headers(),
+                                        params={'source': source}, timeout=15)
+                if not r.ok:
+                    logger.warning(f'Instrument master {source}: HTTP {r.status_code}')
+                    return []
+                reader = csv.DictReader(io.StringIO(r.text))
+                rows = list(reader)
+                with self._inst_lock:
+                    self._inst_master[source] = rows
+                logger.info(f'Loaded {len(rows)} instruments (source={source})')
+                return rows
+            except Exception as e:
+                logger.warning(f'Instrument master load error ({source}): {e}')
+                return []
 
     def _build_fno_index(self) -> None:
         """Build O(1) lookup by TRADING_SYMBOL and CUSTOM_SYMBOL."""
@@ -198,21 +209,38 @@ class INDMoneyBroker(BrokerAdapter):
     def _exchange_for(self, ticker: str) -> str:
         return 'BSE' if ticker.upper().endswith('.BO') else 'NSE'
 
-    # Hardcoded index scrip codes (not in equity instrument master)
-    _INDEX_CODES: dict[str, str] = {
-        '^NSEI':      'NSE_40000001',   # NIFTY 50
-        '^NSEBANK':   'NSE_40000002',   # BANK NIFTY
-        '^CNXFIN':    'NSE_40000003',   # FIN NIFTY
-        '^NSEMDCP50': 'NSE_40000005',   # MIDCAP NIFTY
-        '^BSESN':     'BSE_40000006',   # SENSEX
-        'NIFTY':      'NSE_40000001',
-        'BANKNIFTY':  'NSE_40000002',
-        'FINNIFTY':   'NSE_40000003',
-        'MIDCPNIFTY': 'NSE_40000005',
-        'SENSEX':     'BSE_40000006',
-        '^INDIAVIX':  'NSE_40000007',   # INDIA VIX
-        'INDIAVIX':   'NSE_40000007',
+    # IndStocks lists every index in its own index master under a name (SEGMENT column).
+    # Codes are resolved from that master at runtime — guessed numeric codes pointed at the wrong
+    # indices (e.g. ^NSEBANK → NIFTY 100). Keys are neutral tickers, values are IndStocks' names.
+    _INDEX_NAMES: dict[str, str] = {
+        '^NSEI':      'NIFTY 50',         'NIFTY':      'NIFTY 50',
+        '^NSEBANK':   'BANK NIFTY',       'BANKNIFTY':  'BANK NIFTY',
+        '^NSEMDCP50': 'Nifty Midcap 50',  'MIDCPNIFTY': 'Nifty Midcap Sel',
+        '^BSESN':     'SENSEX',           'SENSEX':     'SENSEX',
+        '^INDIAVIX':  'India VIX',        'INDIAVIX':   'India VIX',
     }
+    # Not mapped on purpose: Nifty Financial Services (^CNXFIN / FINNIFTY) — IndStocks' index master has no
+    # such index (its "Nifty Financial" is a different index, 6.6% off), so it falls through to the data fallback.
+    # Only used if the index master cannot be loaded (verified against the master).
+    _INDEX_CODES_FALLBACK: dict[str, str] = {
+        '^NSEI': 'NSE_40000001', 'NIFTY': 'NSE_40000001',
+        '^BSESN': 'BSE_40000006', 'SENSEX': 'BSE_40000006',
+    }
+
+    def _index_code(self, ticker: str) -> str | None:
+        """IndStocks scrip code for an index ticker, looked up by name in its index master."""
+        key = ticker.upper()
+        name = self._INDEX_NAMES.get(key)
+        if not name:
+            return None
+        rows = self._load_instruments('index')
+        for row in rows:
+            if (row.get('SEGMENT') or '').strip().upper() == name.upper():
+                exch = (row.get('EXCH') or '').strip().upper()
+                sec_id = (row.get('SECURITY_ID') or '').strip()
+                if exch and sec_id:
+                    return f'{exch}_{sec_id}'
+        return self._INDEX_CODES_FALLBACK.get(key)
 
     def _scrip_code(self, ticker: str, source: str = 'equity') -> str | None:
         """Convert Yahoo-style ticker → IndStocks scrip code (NSE_3045)."""
@@ -228,8 +256,8 @@ class INDMoneyBroker(BrokerAdapter):
             inst = self._resolve_fo_instrument(ticker)
             return self._fo_scrip_code(inst) if inst else None
 
-        # Check hardcoded index codes first
-        idx_code = self._INDEX_CODES.get(ticker.upper())
+        # Indices are resolved by name from IndStocks' own index master
+        idx_code = self._index_code(ticker)
         if idx_code:
             with self._scrip_lock:
                 self._scrip_cache[key] = idx_code
@@ -427,9 +455,23 @@ class INDMoneyBroker(BrokerAdapter):
         except Exception:
             pass
 
+        # Indices have no REST price: use IndStocks' own latest 1-minute candle (at most a minute
+        # old) rather than another provider, so prices and candles always agree.
+        if symbol.upper() in self._INDEX_NAMES:
+            try:
+                candles = self.get_candles(symbol, interval='1m', days=1)
+                if candles and candles[-1].close > 0:
+                    return float(candles[-1].close)
+            except Exception:
+                pass
+
         # yfinance last-resort fallback — covers symbols IndStocks lists but
         # can't quote (notably ^BSESN / SENSEX which 400s on /market/quotes/ltp
         # despite appearing in index master).  15-min delayed but better than null.
+        # Option contracts (…74500CE / …-74500-CE) are never on Yahoo — skip, or each
+        # miss costs ~5s and logs "possibly delisted".
+        if _OPTION_SYMBOL_RE.search(symbol.upper()):
+            return None
         try:
             import yfinance as _yf
             info = _yf.Ticker(symbol).fast_info

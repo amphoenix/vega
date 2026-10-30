@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     fo_min_agents: int = 3
     fo_target_delta: float = 0.35
     auto_entry_min_confidence: int = 70   # pure-technical (no LLM boost) tops ~75-85; 85 was unreachable
+    fo_max_ticket_drift_pct: float = 10.0  # reject an entry if live premium differs from the ticket by more than this %
+    fo_reentry_cooldown_sec: int = 900    # after ANY swing exit, no new entry on the same index + direction for this long
+    fo_ticket_ttl_sec: int = 300          # a scanner ticket is reused for at most this long
     fo_max_positions: int = 2             # max concurrent open swing positions (risk + limits UI tick-streams)
     sl_max_points_sensex: int = 50
     sl_max_points_nifty: int = 15
@@ -104,8 +107,8 @@ class Settings(BaseSettings):
     scalp_t1_pts_nifty: float = 0.0
     scalp_max_hold_min: int = 10
     scalp_max_reentries: int = 10
-    scalp_daily_loss_limit: float = 650.0
-    scalp_daily_loss_limit_base: float = 650.0
+    scalp_daily_loss_limit: float = 1500.0
+    scalp_daily_loss_limit_base: float = 1500.0
     scalp_min_confidence: int = 70
     scalp_volume_mult: float = 2.0
     scalp_breakout_bars: int = 3

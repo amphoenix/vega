@@ -1,9 +1,9 @@
 FROM python:3.12-slim
 
-# Install Node.js 20, nginx, and openssl
+# Install Node.js 20 and openssl
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-     curl ca-certificates nginx openssl \
+     curl ca-certificates openssl \
   && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
   && apt-get install -y --no-install-recommends nodejs \
   && rm -rf /var/lib/apt/lists/*
@@ -29,5 +29,5 @@ RUN cd frontend && npm run build
 
 EXPOSE 47291
 
-# Start via start.sh which handles nginx + uvicorn + certs
+# Start via start.sh which handles Hypercorn (HTTPS + HTTP/2) + certs
 CMD ["bash", "start.sh", "--backend"]

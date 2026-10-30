@@ -2,13 +2,12 @@
 Tests for monitoring/latency_tracker.py — LatencyTracker.
 """
 
-import time
-
 from app.monitoring.latency_tracker import (
     LatencyStats,
     LatencyTrace,
     LatencyTracker,
 )
+from app.shared.time import sleep
 
 
 class TestLatencyTrace:
@@ -32,7 +31,7 @@ class TestLatencyTrace:
 
     def test_total_ms(self):
         trace = LatencyTrace(trace_id='t1')
-        time.sleep(0.005)
+        sleep(0.005)
         trace.finish()
         assert trace.total_ms >= 4  # at least 4ms (allowing clock jitter)
 

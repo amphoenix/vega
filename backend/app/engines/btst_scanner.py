@@ -6,10 +6,14 @@ import pathlib
 import queue
 import sqlite3
 import threading
+import traceback
 from typing import Any
 
 from app.shared.logger import get_logger
 from app.shared.time import now_ist as _now_ist
+from app.shared.time import sleep
+from app.state import settings as _server_settings
+from app.state import signals as _signal_log
 
 # ── Config Schema ─────────────────────────────────────────────────────────────
 
@@ -34,6 +38,23 @@ BTST_CONFIG_SCHEMA: dict[str, dict] = {
 
 _config: dict[str, Any] = {k: v['default'] for k, v in BTST_CONFIG_SCHEMA.items()}
 _config_lock = threading.Lock()
+
+
+def _load_saved_config() -> None:
+    """Re-apply config changed at runtime before the last restart (persisted overrides only)."""
+    try:
+        saved = _server_settings.get('btst_config', {}) or {}
+    except Exception:
+        return
+    for k, v in saved.items():
+        if k in BTST_CONFIG_SCHEMA:
+            try:
+                _config[k] = BTST_CONFIG_SCHEMA[k]['type'](v)
+            except (TypeError, ValueError):
+                pass
+
+
+_load_saved_config()
 
 _state: dict[str, Any] = {
     'status': 'IDLE',
@@ -187,6 +208,9 @@ def update_config(updates: dict) -> dict:
     with _config_lock:
         for k, v in valid.items():
             _config[k] = BTST_CONFIG_SCHEMA[k]['type'](v)
+        overrides = _server_settings.get('btst_config', {}) or {}
+        overrides.update({k: _config[k] for k in valid})
+        _server_settings.set('btst_config', overrides)   # survives restarts
     return get_all_config()
 
 
@@ -601,8 +625,6 @@ def _run_stage2(
     bull_candidates: list[str],
     bear_instruments: list[str],
 ) -> list[dict]:
-    from time import sleep as _sleep
-
     # Pre-fetch: broker OHLCV (fast, Dhan-native) + market data for technicals
     prefetched: dict[str, dict] = {}
     nifty_chg, sensex_chg = 0.0, 0.0
@@ -634,7 +656,7 @@ def _run_stage2(
                 from ..shared.indicators import rsi as _rsi_fn
                 closes = [float(x) for x in df_d['Close']]
                 candles = [CandleData(open=float(o), high=float(h), low=float(l), close=float(c), volume=float(v))
-                           for o, h, l, c, v in zip(df_d['Open'], df_d['High'], df_d['Low'], df_d['Close'], df_d['Volume'])]
+                           for o, h, l, c, v in zip(df_d['Open'], df_d['High'], df_d['Low'], df_d['Close'], df_d['Volume'], strict=True)]
                 technicals['rsi'] = _rsi_fn(closes, 14)
                 adx_result = adx_full(candles, 14)
                 technicals['adx'] = adx_result.get('adx', 0) if adx_result else 0
@@ -690,13 +712,14 @@ def _run_stage2(
                 _all_scored.setdefault(sym, []).append(result)
         except Exception as e:
             _log(f'Scoring task failed for {sym}/{direction}: {e}', 'warn')
-        _sleep(1)
+        sleep(1)
 
     # Per symbol, pick the direction with the highest score
     for sym, scored_list in _all_scored.items():
         best = max(scored_list, key=lambda x: x['score'])
         results.append(best)
         _broadcast({'type': 'signal', **best})
+        _signal_log.record('btst', best)
         if len(scored_list) > 1:
             other = [s for s in scored_list if s is not best][0]
             _log(f'{sym}: picked {best["direction"]} (score={best["score"]}) over {other["direction"]} (score={other["score"]})')
@@ -1140,7 +1163,7 @@ def _scan_cycle(force: bool = False) -> None:
 
     except Exception as e:
         _log(f'Scan cycle error: {e}', 'error')
-        import traceback; _log(traceback.format_exc(), 'error')
+        _log(traceback.format_exc(), 'error')
         with _state_lock:
             _state['status'] = 'IDLE'
 

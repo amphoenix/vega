@@ -27,6 +27,7 @@ Vega gives you a complete research-to-decision workflow for F&O intraday trading
 9. **Trail stops** — tracked_monitor dynamically trails SL upward after 20%+ premium gain, caps unrealistic targets by DTE
 10. **Backtest** with vectorbt multi-strategy (RSI, EMA cross, Bollinger, MACD)
 11. **Stream** live prices via broker WebSocket — tick cache → REST quote → yfinance fallback chain
+12. **Other segments** — BTST (overnight index options, scanned at 15:20), plus Crypto, Polymarket and Forex tabs (`backend/app/engines/`, `backend/app/api/`)
 
 ---
 
@@ -92,7 +93,7 @@ Background service that cycles through the F&O universe and emits trade signals 
 4. Signal broadcast to the UI via SSE — `scan_signal` carries the full ticket (verdict, confidence, strike, expiry, SL, T1, T2, Greeks)
 
 **Strike selection — `option_planner.plan_option_trade()`:**
-- Default `target_delta = 0.50` (ATM) — best gamma:theta tradeoff (overridable via `FO_TARGET_DELTA`)
+- Scanner default `target_delta = 0.35` (`FO_TARGET_DELTA`); the planner's own fallback is 0.50 (ATM, best gamma:theta tradeoff)
 - DTE bumped automatically when `dte < 4` to avoid OTM theta-cliff
 - Premium SL/T1/T2 are **back-derived from spot targets via Black-Scholes** at the planner
 - Full Greeks attached to every ticket: Δ, Γ, θ/day, vega, IV
@@ -126,10 +127,11 @@ Fast momentum-based scalp trading on 1-minute candles — **no LLM, pure technic
 **Risk controls:**
 | Control | Detail |
 |---|---|
-| **Daily loss kill-switch** | Blocks all scalp entries when daily P&L ≤ `-SCALP_DAILY_LOSS_LIMIT` (default ₹500) |
+| **Daily loss kill-switch** | Blocks all scalp entries when daily P&L ≤ `-SCALP_DAILY_LOSS_LIMIT` (default ₹1500) |
 | **Max re-entries** | `SCALP_MAX_REENTRIES` per symbol per day (default 10) |
 | **Max hold timer** | Auto-exit after `SCALP_MAX_HOLD_MIN` minutes (default 10) |
-| **Fixed SL/T1** | Points-based: `SCALP_SL_PTS` (8pt) / `SCALP_T1_PTS` (15pt) — no percentage, no drift |
+| **ATR-based SL/T1** | `SCALP_USE_ATR_SL` (default on): SL = ATR × 1.5, T1 = ATR × 2.0; SL clamped to 3–20 pts (NIFTY) / 3–30 pts (SENSEX). With it off, fixed points are used: `SCALP_SL_PTS` / `SCALP_T1_PTS` (8 / 15; SENSEX 15 / 25) |
+| **Budget fit** | Each lot's risk (SL pts × lot size + ₹70 costs) must fit in the remaining daily-loss headroom, otherwise the entry is skipped and logged as `SCALP BUDGET BLOCK` |
 | **30s grace period** | Adverse-move and thesis-flip exits skip first 30s — prevents stale-price instant exits on new entries |
 
 **UI (Scalp Mode tab):**
@@ -160,14 +162,17 @@ Positions are tracked server-side at `/api/trade/tracked` — created either man
 
 ### Order Executor (`order_executor.py`)
 
+All risk controls live here, **identical for paper and live** (only the capital source and the final order send differ): daily-loss kill switch, max open positions, margin and daily-loss budget per lot, stale-ticket check, re-entry cooldown, per-direction stop-loss limit, and a shared claim so Swing and Scalp never buy the same contract.
+
 Full auto-entry and auto-exit engine, gated by the **Auto/Monitor toggle** in the UI:
 
 | Feature | Detail |
 |---|---|
-| **Auto-entry** | Places BUY when scanner confidence ≥ `AUTO_ENTRY_MIN_CONFIDENCE` (default 85%) |
+| **Auto-entry** | Places BUY when scanner confidence ≥ `AUTO_ENTRY_MIN_CONFIDENCE` (default 70%) |
 | **Auto-exit** | Fires SELL on SL hit, T1, T2, time exit, or user force-exit |
-| **Paper mode** | `LIVE_TRADING_ENABLED=false` — simulated orders, no real money |
-| **Live mode** | `LIVE_TRADING_ENABLED=true` — real orders via IndStocks broker API |
+| **Paper mode** | `LIVE_TRADING_ENABLED=false` — no real money, but orders behave like real market orders: they only fill while the market is open, BUY fills at the live ask and SELL at the live bid, and a ticket more than `FO_MAX_TICKET_DRIFT_PCT` (10%) off the live premium is rejected as stale |
+| **Re-entry cooldown** | After any swing exit, no new entry on the same index + direction for `FO_REENTRY_COOLDOWN_SEC` (default 900 s) — stops buying straight back in at a fresh high |
+| **Live mode** | `LIVE_TRADING_ENABLED=true` — real orders via the active broker (`config/brokers.yaml`) |
 | **Monitor mode** | `AUTO_TRADING_ENABLED=false` — scanner runs, signals display, zero orders |
 | **Scalp daily loss limit** | Kill-switch at `-SCALP_DAILY_LOSS_LIMIT` — blocks all scalp entries when breached |
 | **Re-entry control** | Configurable re-entry after SL exit (`ALLOW_REENTRY`, `MAX_REENTRIES`) |
@@ -183,44 +188,46 @@ Full auto-entry and auto-exit engine, gated by the **Auto/Monitor toggle** in th
 ```
 frontend/                         Vue 3 + Vite (port 53847)
   src/
-    views/Home.vue                main terminal — right sidebar, F&O signal scanner, LIVE panel
-                                  with ticket cards + option chain ladder, chart zoom
-    api/market.js                 barrel export — all API calls + SSE stream factories
-    api/market/broker.js          broker-agnostic API (status, tick, quote, positions, orders)
+    views/Home.vue                main terminal shell
+    api/                          axios client (index.js) + per-segment API modules in api/market/
+                                  (broker, scanner, scalp, btst, crypto, forex, poly, pnl, options, ...)
     components/
-      panels/ScalpPanel.vue       scalp scanner UI — 3-chart grid, signal cards, position cards
-      panels/LiveTradingPanel.vue auto/paper trade controls, daily P&L, option chain
-      panels/FoScannerPanel.vue   F&O scanner controls, live SSE signal feed
-      ui/SnackBar.vue             toast notification component for order updates + alerts
+      chart/                      HomeChart, ChartGrid (NIFTY / SENSEX / 3rd pane), Crypto/Forex/Poly charts
+      panels/                     FoScannerPanel, ScalpPanel, BtstPanel, LiveTradingPanel, CryptoPanel,
+                                  ForexPanel, PolyPanel, IntelFeedPanel, ...
+      layout/AppLayout.vue
+      ui/SnackBar.vue            toast notifications for order updates + alerts
+    stores/                       Pinia: useMarketStore, useFoScannerStore, useLiveTradingStore,
+                                  useCryptoStore, usePolyStore
+    composables/                  useSSE, useTrackedAlerts
     utils/blackScholes.js         pure-JS Black-Scholes engine — premium + Greeks (Δ Γ Θ vega)
                                   + IV solver. Reprices option chain & ticket cards on every
                                   spot tick without round-tripping to backend.
-    utils/snack.js                snackbar event bus — global toast notifications
-    utils/notifSound.js           desktop notification + sound alerts for SL/T1/T2 events
+    utils/                        snack.js (toast bus), notifSound.js (desktop alerts), formatters.js
 
-backend/                          FastAPI + uvicorn (port 47293, internal)
+backend/                          FastAPI on Hypercorn (HTTPS + HTTP/2 + HTTP/3, port 47291)
   app/
-    api/
-      broker.py                   broker-agnostic API — status, tick, quote, positions, holdings,
-                                  orders, SSE tick stream. Uses BrokerAdapter ABC interface.
-      market.py                   OHLCV, signals, AI predict, invest-analysis SSE, world indices
-      trade.py                    indicators, levels, backtest, position tracker, executor controls,
-                                  F&O scanner endpoints, scalp scanner endpoints
-    infrastructure/
-      broker/
-        base.py                   BrokerAdapter ABC + BrokerFactory (YAML-driven, zero if/else)
-        indmoney_broker.py        INDmoney/INDstocks adapter — WebSocket + REST + orders
-        dhan_broker.py            Dhan adapter
-      llm/client.py               LLM client — OpenAI key-pool round-robin + Bedrock + Ollama
-      db/state_store.py           SQLite P&L ledger, trading state persistence
+    api/                          broker, market, trade (F&O, scalp, BTST, tracked, executor), crypto, forex, poly
+    engines/                      fo_scanner (swing), scalp_scanner, btst_scanner, order_executor,
+                                  forex_scanner, crypto_fo_scanner, monitor/ (tracked_monitor, position_monitor)
     domain/
-      safety/kill_switch.py       Kill switch engine — daily loss, drawdown, streak thresholds
-      supervisor/                 Trade supervisor — pre-trade checks, position limits
-    dependencies.py               FastAPI DI — get_broker(), get_kill_switch(), get_supervisor()
+      services/                   option_planner, greeks, brokerage_calc, pnl_manager, ...
+      strategies/, analytics/, regime/, audit/, ...
+    application/                  event bus
+    infrastructure/
+      broker/                     base.py (BrokerAdapter ABC + BrokerFactory, YAML-driven, zero if/else),
+                                  indmoney_broker, dhan_broker, groww_broker
+      db/                         state_store (SQLite P&L ledger), pnl_store, tracked_positions
+      exchange/, market_data/, notifications/
+      llm/client.py               optional LLM client — used only by the Polymarket tab
+    monitoring/                   health_monitor, latency_tracker
+    shared/                       time.py (IST helpers, market hours, holidays), indicators, ta_utils, logger
+    dependencies.py               FastAPI DI — get_broker(), get_event_bus(), get_scheduler()
     config.py                     Pydantic Settings (.env driven)
-  config/
-    brokers.yaml                  Broker config — active_broker, env_keys, defaults
-    strategies.yaml               Strategy configs
+  config/                         brokers.yaml (active_broker, env_keys, defaults), strategies.yaml,
+                                  exchanges.yaml
+  tests/                          pytest suite (`cd backend && uv run pytest`)
+.githooks/pre-push                runs backend tests + frontend lint before every push
 ```
 
 ### Key Patterns
@@ -229,16 +236,14 @@ backend/                          FastAPI + uvicorn (port 47293, internal)
 |---|---|
 | **Broker-first price chain** | All price lookups: WS tick cache → REST quote → yfinance — zero 15-min delay |
 | **5-min broker candles** | Scanner + analysis: 75 bars = full intraday day, not daily bars |
-| **SSE streaming** | Scanner events, position alerts, daily P&L, order updates, invest-analysis |
+| **SSE streaming** | Scanner events, position alerts, daily P&L, order updates |
 | **Broker-agnostic adapter** | `BrokerAdapter` ABC + `BrokerFactory` — switch brokers via YAML, zero code changes |
 | **Scrip-code keyed WS cache** | `_option_ltp_cache` keyed by opt_code not trading_symbol — different expiry contracts never share a cache slot |
 | **Tick-driven scalp SL** | `_on_option_tick` fires instantly on WS tick — no REST polling latency in SL path |
 | **WS subscription lifecycle** | Subscribe on scalp entry (opt_code), unregister on exit — dead contract ticks stop immediately |
 | **Pure-Python TA** | Supertrend + ADX + patterns — zero talib/pandas-ta deps |
-| **Pre-computed patterns** | detect_patterns() runs on last 5 bars → labeled strings in analysis prompt |
+| **Pre-computed patterns** | detect_patterns() runs on last 5 bars → labeled strings with an F&O action hint |
 | **Index handling** | `^NSEI`/`^NSEBANK` skip all yfinance fundamentals — pure technical analysis |
-| **Panic recovery** | Every agent wrapped in try/except → graceful degradation instead of pipeline crash |
-| **JSON mode** | All LLM calls return structured JSON — no markdown parsing |
 | **Auto/Monitor toggle** | Runtime switch via API + UI toggle — no restart needed |
 | **Trailing SL** | Ratchets upward after 20%+ premium gain, never ratchets down |
 | **DTE-scaled caps** | Target prices capped by days-to-expiry — prevents absurd T1/T2 on 1DTE |
@@ -254,7 +259,7 @@ FOScanner thread (every cycle)
             ├─ Broker 5-min candles (last 7 days, 75+ bars)  ← PRIMARY
             ├─ Broker daily candles (200 days fallback)
             └─ yfinance fundamentals (stocks only, indices skipped)
-       └─ compute_all(candles)
+       └─ compute indicators (shared/indicators.py, shared/ta_utils.py)
             └─ Supertrend + ADX + RSI + EMA + MACD + BB + patterns → technicals dict
        └─ Technical prefilter → confidence score + direction
        └─ option_planner.plan_option_trade()  ← BS-derived SL/T1/T2 + Greeks
@@ -301,24 +306,20 @@ User clicks "I entered" on a LIVE ticket card
                 └───────┬──────────────────────┬───────────────┘
                         │                      │
               static assets                  /api/* (SSE + XHR)
-              (HMR, Vue, JS, CSS)            HTTPS · HTTP/2 · TLS 1.3
+              (HMR, Vue, JS, CSS)            HTTPS · HTTP/2 (HTTP/3 capable)
                         │                      │
                         ▼                      ▼
-       ┌────────────────────────┐  ┌───────────────────────────────┐
-       │  Vite dev server       │  │  nginx                         │
-       │  :53847 (HTTP/1.1)     │  │  :47291 (TLS, HTTP/2, h2 ALPN)│
-       │  ─ HMR / asset reload  │  │  ─ ssl_certificate cert.pem    │
-       │  ─ no proxy            │  │  ─ proxy_buffering off (SSE)   │
-       └────────────────────────┘  │  ─ proxy_read_timeout 24h      │
-                                   └───────────┬───────────────────┘
-                                               │
-                                          HTTP/1.1 keep-alive
-                                          (loopback, sub-µs)
-                                               │
-                                               ▼
+       ┌────────────────────────┐  ┌───────────────────────────────────┐
+       │  Vite dev server       │  │  Hypercorn                        │
+       │  :53847 (HTTP/1.1)     │  │  :47291 (TLS, HTTP/2 + HTTP/3)    │
+       │  ─ HMR / asset reload  │  │  ─ certs/cert.pem + key.pem       │
+       │  ─ no proxy            │  │  ─ keep-alive 600s for SSE        │
+       └────────────────────────┘  │  ─ serves the FastAPI app (ASGI)  │
+                                   └───────────────┬───────────────────┘
+                                                   │
+                                                   ▼
                                  ┌─────────────────────────────────┐
-                                 │  FastAPI + uvicorn (ASGI)       │
-                                 │  127.0.0.1:47293 (internal)     │
+                                 │  FastAPI app                    │
                                  │  ─ async routes + SSE streams   │
                                  │  ─ BrokerFactory → active broker│
                                  │  ─ domain-driven architecture   │
@@ -327,9 +328,8 @@ User clicks "I entered" on a LIVE ticket card
                                           ▼
                        ┌──────────────────────────────────┐
                        │  Background services             │
+                       │  ─ Scanners (swing, scalp, BTST) │
                        │  ─ Scheduler (daily resets)      │
-                       │  ─ KillSwitchEngine              │
-                       │  ─ TradeSupervisor               │
                        │  ─ EventBus (pub/sub)            │
                        └──────┬───────────────────────────┘
                               │
@@ -338,34 +338,31 @@ User clicks "I entered" on a LIVE ticket card
               │  External services           │
               │  ─ Broker WS+REST (via       │
               │    BrokerAdapter)             │
-              │  ─ AWS Bedrock / OpenAI      │
-              │  ─ News APIs (MC RSS, ET)    │
+              │  ─ yfinance (fallback)       │
+              │  ─ News feeds (MC RSS, ET)   │
               └──────────────────────────────┘
 ```
 
-### Why nginx in front
+### Why Hypercorn (HTTP/2) directly
 
 The browser caps **6 simultaneous connections per origin** over HTTP/1.1. Vega keeps ~7 long-lived SSE streams open (scanner feed, position monitor, live-feed, alerts, plus per-underlying tick streams). Without HTTP/2 the 6-cap exhausts every available socket, leaving zero capacity for normal XHRs (`/api/market/ohlcv`, `/api/market/search`, `POST /api/trade/tracked`) — they queue indefinitely and the UI appears frozen.
 
-nginx terminates **TLS + HTTP/2** on `:47291` and multiplexes every stream over a single TCP connection, removing the 6-cap entirely. Backend runs FastAPI on uvicorn (ASGI) behind nginx.
+Hypercorn terminates **TLS + HTTP/2 (and HTTP/3 over QUIC)** on `:47291` and multiplexes every stream over a single connection, removing the 6-cap entirely. There is no nginx or other proxy in front — the FastAPI app runs on Hypercorn itself (`backend/hypercorn.toml`).
 
 ### Process layout under `start.sh`
 
 ```
-start.sh (parent shell, traps SIGINT)
-├── nginx                               ←  $NGINX_PID
-│   └── -p $ROOT_DIR -c nginx.conf
-├── uvicorn app.main:app                ←  $BE_PID
+start.sh (parent shell, traps SIGINT; records its PID in .vega.pid)
+├── caffeinate -dis                     ←  keeps the Mac awake while running
+├── hypercorn app.main:app              ←  $BE_PID  (TLS + HTTP/2 + HTTP/3 on :47291)
 │   ├── Scheduler (daily resets)
-│   ├── KillSwitchEngine
-│   ├── TradeSupervisor
 │   ├── EventBus (pub/sub)
 │   └── BrokerAdapter (via BrokerFactory)
 └── npm run dev (Vite)                  ←  $FE_PID
     └── esbuild + HMR worker
 ```
 
-`Ctrl-C` → trap fires → all three children + their descendants killed.
+`Ctrl-C` → trap fires → all children + their descendants killed. Starting `start.sh` again first stops any previous run recorded in `.vega.pid`, then frees ports 47291 / 53847.
 
 ### Frontend SSE management
 
@@ -380,7 +377,7 @@ start.sh (parent shell, traps SIGINT)
 
 ## Math Reference
 
-All formulas used by Vega for option pricing, Greeks, P&L, position sizing, and signal scoring. Mirrors `backend/app/services/greeks.py` (Python) and `frontend/src/utils/blackScholes.js` (JS) — both implementations are unit-verified to match SciPy ground truth within rounding tolerance (< ₹0.01 on premium, < 1e-5 on Greeks).
+All formulas used by Vega for option pricing, Greeks, P&L, position sizing, and signal scoring. Mirrors `backend/app/domain/services/greeks.py` (Python) and `frontend/src/utils/blackScholes.js` (JS) — both implementations are unit-verified to match SciPy ground truth within rounding tolerance (< ₹0.01 on premium, < 1e-5 on Greeks).
 
 ### Black-Scholes option pricing
 
@@ -402,7 +399,7 @@ For a European option on a non-dividend-paying underlying:
 | `S` | Spot price of underlying | Live broker LTP via SSE |
 | `K` | Strike price | Contract spec |
 | `T` | Time to expiry, **in years** | `days_to_expiry / 365` (calendar days, not trading) |
-| `σ` | Implied volatility, decimal | Solved via bisection on market price; default 18% if no market data |
+| `σ` | Implied volatility, decimal | Solved via bisection on market price; default 14% (indices) / 30% (stocks) if no market data |
 | `r` | Risk-free rate, decimal | `0.07` (RBI repo proxy) — overridable via `RISK_FREE_RATE` env |
 | `N(x)` | Standard normal CDF | Abramowitz & Stegun 26.2.17 approximation, max error 7.5e-8 |
 
@@ -436,7 +433,7 @@ Convergence to ±1e-4 in ≤ 80 iterations, < 1ms per call. Returns `None` if `m
 
 ### Strike selection by target delta (F&O scanner)
 
-The scanner picks an ATM-ish strike with delta close to the configured target (default 0.50, the "ATM gamma sweet spot"):
+The scanner picks a strike with delta close to the configured target (`FO_TARGET_DELTA`, default 0.35; 0.50 is ATM, the "gamma sweet spot"):
 
 ```
   best_strike = argmin |Δ(S, K_i, T, σ, type)  −  target_delta|
@@ -447,7 +444,7 @@ Why 0.50: best gamma:theta ratio. Δ=0.50 means the option moves ~₹0.50 per �
 
 ### Premium SL/T1/T2 back-derivation
 
-CIO outputs spot-level targets (e.g., `target_1 = 24,200`). The planner converts those to **premium-level** targets so the position monitor can fire on actual P&L, not on underlying levels:
+The scanner supplies spot-level targets (e.g., `target_1 = 24,200`). The planner converts those to **premium-level** targets so the position monitor can fire on actual P&L, not on underlying levels:
 
 ```
   premium_at_spot(S_target)  =  bs_price(S_target, K, T_remaining, r, σ, type)
@@ -459,15 +456,18 @@ CIO outputs spot-level targets (e.g., `target_1 = 24,200`). The planner converts
 
 `T_remaining` accounts for theta decay during the expected hold period (rough estimate: 1-3 days). This is why a 2x spot move doesn't always = 2x premium.
 
-### Hard premium-stop-loss override
+### Premium stop-loss bounds
 
-Even if spot doesn't hit the SL level, exit if premium itself drops 50%:
+The planner clamps the premium SL so it is never set absurdly deep or absurdly tight:
 
 ```
-  if (premium_now / entry_premium) ≤ 0.50  →  EXIT
+  sl_premium = max( entry × floor ,  min( sl_from_spot_stop ,  entry × (1 − min_loss) ) )
+
+     DTE > 2 :  floor = 0.50 (SL never below 50% of entry),  min_loss = 15%
+     DTE ≤ 2 :  floor = 0.30,                                min_loss = 10%
 ```
 
-Caps max-loss-per-lot at half the entered premium regardless of underlying behaviour. Catches IV-crush scenarios (e.g., post-event volatility collapse) that the spot-based SL would miss.
+On top of that, `order_executor.enforce_strict_sl()` clamps the SL to at most `SL_MAX_POINTS_NIFTY` (15) / `SL_MAX_POINTS_SENSEX` (50) premium points below entry. Together they cap max loss per lot regardless of underlying behaviour.
 
 ### P&L formulas
 
@@ -477,7 +477,9 @@ For a buy-side option position (long CE or long PE):
   unrealised_pnl  =  (premium_now − entry_premium) × qty × lot_size
   realised_pnl    =  (exit_premium  − entry_premium) × qty × lot_size  −  fees
 
-  fees per round trip ≈ 0.05% of (premium × qty × lot_size) × 2  +  STT + brokerage flat
+  fees per round trip ≈ exchange 0.03553% + SEBI + stamp 0.003% (buy) + GST 18%, plus
+                        STT 0.15% of premium on the sell side (from 1 Apr 2026) + broker flat fee
+  (see domain/services/brokerage_calc.py)
 ```
 
 At expiry (intrinsic value only):
@@ -496,15 +498,17 @@ Spot level at which P&L = 0 at expiry, ignoring time decay before then:
   PE:  S_breakeven  =  K − entry_premium
 ```
 
-### Position sizing (`POSITION_SIZE_PCT`)
+### Position sizing (`order_executor.try_auto_entry`)
+
+Lots are the **minimum of three limits** — and the entry is skipped if even one lot does not fit:
 
 ```
-  capital_at_risk     =  cash × position_size_pct           (default 8%)
-  cost_per_lot        =  premium × lot_size
-  qty_lots            =  floor(capital_at_risk / cost_per_lot)
+  lots_by_margin  =  floor(available_cash / (premium × lot_size))
+  lots_by_budget  =  floor(headroom / (SL_pts × lot_size + 70))     headroom = daily_loss_limit + today's P&L
+  num_lots        =  min(FO_MAX_LOTS_PER_TRADE (default 1), lots_by_margin, lots_by_budget)
 ```
 
-Falls back to `qty=1` if even one lot exceeds the capital-at-risk cap (provided cash ≥ cost_per_lot).
+`SL_pts` is `SL_MAX_POINTS_NIFTY` / `SL_MAX_POINTS_SENSEX`; the `+70` is a flat cost estimate. Scalp uses the same idea with `SCALP_DAILY_LOSS_LIMIT` as the budget.
 
 ### IST trading-hours math (used for scan-loop gating)
 
@@ -525,7 +529,7 @@ Quick sanity check against SciPy (which both `greeks.py` and `blackScholes.js` t
 ```bash
 cd backend
 .venv/bin/python -c "
-from app.services.greeks import greeks
+from app.domain.services.greeks import greeks
 from scipy.stats import norm; import math
 
 S, K, dte, iv = 24093, 24100, 6, 0.16
@@ -544,8 +548,8 @@ print('SciPy ref:  premium=%.4f  delta=%.4f' % (truth, norm.cdf(d1)))
 Expected output:
 
 ```
-Our impl : {'premium_bs': 207.62, 'delta': 0.5208, 'gamma': 0.000806,
-            'theta_per_day': -18.78, 'vega_per_volpt': 12.31, 'iv_used': 0.16}
+Our impl : GreeksResult(premium_bs=207.62, delta=0.5208, gamma=0.000806,
+            theta_per_day=-18.7755, vega_per_volpt=12.3066, iv_used=0.16, ...)
 SciPy ref:  premium=207.6170  delta=0.5208
 ```
 
@@ -560,9 +564,8 @@ If those numbers drift by more than ₹0.05 on premium or 0.001 on delta, the ma
 | Tool | Version | Notes |
 |------|---------|-------|
 | Node.js | 18+ | |
-| Python | 3.11 – 3.12 | |
+| Python | 3.12+ | |
 | uv | latest | Python package manager |
-| nginx | 1.25+ | `brew install nginx` (HTTP/2 reverse proxy) |
 | openssl | any | For self-signed cert (already on macOS/Linux) |
 
 ### Setup & Start
@@ -571,8 +574,8 @@ If those numbers drift by more than ₹0.05 on premium or 0.001 on delta, the ma
 
 ```bash
 cp .env.example .env
-# Edit .env — choose LLM_PROVIDER and fill in credentials (see below)
-# For live prices: set INDMONEY_ACCESS_TOKEN
+# Edit .env — set your broker token (e.g. INDMONEY_ACCESS_TOKEN) for live prices.
+# LLM keys are optional (only the Polymarket tab uses an LLM).
 ```
 
 **Step 2 — Start**
@@ -581,29 +584,28 @@ cp .env.example .env
 ./start.sh
 ```
 
-`start.sh` auto-installs Python+JS deps on first run and brings up three processes:
+`start.sh` auto-installs Python+JS deps on first run, generates the self-signed cert if missing, and brings up two servers:
 - **Frontend (Vite)** → http://localhost:53847
-- **nginx (HTTPS+HTTP/2)** → https://localhost:47291  *(public API endpoint)*
-- **Backend (FastAPI)** → http://127.0.0.1:47293  *(internal, only nginx talks to it)*
+- **Backend (FastAPI on Hypercorn, HTTPS + HTTP/2 + HTTP/3)** → https://localhost:47291  *(API endpoint)*
 
 **Step 3 — Trust the self-signed cert (one-time)**
 
 Open `https://localhost:47291/api/market/world-indices` in your browser → click **Advanced → Proceed to localhost (unsafe)**. Browser remembers the exception indefinitely. The cert lives at `certs/cert.pem`, signed for `localhost` and `127.0.0.1` only.
 
 ```bash
-./start.sh             # all three (default)
-./start.sh --backend   # nginx + FastAPI only (no Vite)
+./start.sh             # both (default)
+./start.sh --backend   # Hypercorn + FastAPI only (no Vite)
 ./start.sh --frontend  # Vite only
 ```
 
 ### Environment Variables
 
-Two LLM modes — pick one:
+**LLM (optional).** The Swing, Scalp and BTST scanners are pure technical and never call an LLM; only the Polymarket tab does. Defaults live in `backend/app/config.py` (`LLM_PROVIDER` defaults to `gemini`). Two modes — pick one:
 
-**Option A — OpenAI-compatible API** (`LLM_PROVIDER=openai`, default)
+**Option A — OpenAI-compatible API** (`LLM_PROVIDER=openai` or `gemini`)
 
 ```env
-LLM_PROVIDER=openai
+LLM_PROVIDER=openai          # or gemini (default), ollama
 LLM_API_KEY=your_api_key
 LLM_BASE_URL=https://api.anthropic.com/v1
 LLM_MODEL_NAME=claude-sonnet-4-6
@@ -647,14 +649,14 @@ GROWW_API_SECRET=your_api_secret
 GROWW_ACCESS_TOKEN=your_token      # OR a static daily token instead of key+secret
 ```
 
-**Trading execution:**
+**Trading execution** (defaults are in `backend/app/config.py`; override via `.env`):
 
 ```env
 AUTO_TRADING_ENABLED=true          # true = auto-entry on signals; false = monitor-only
 LIVE_TRADING_ENABLED=false         # false = paper trading; true = real orders
-PAPER_CAPITAL_INR=10000            # Paper mode starting capital
-DAILY_LOSS_LIMIT_INR=1000          # Kill-switch: block entries after ₹X daily loss
-AUTO_ENTRY_MIN_CONFIDENCE=85       # Minimum scanner confidence to trigger auto-entry
+SWING_CAPITAL_INR=6500             # Swing capital (SCALP_CAPITAL_INR for scalp)
+DAILY_LOSS_LIMIT_INR=1300          # Swing kill-switch: block entries after ₹X daily loss
+AUTO_ENTRY_MIN_CONFIDENCE=70       # Minimum scanner confidence to trigger auto-entry
 FO_MAX_RISK_PCT=20                 # Max % of capital risked per trade
 ```
 
@@ -665,7 +667,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Exposes port `47291` (nginx HTTPS+HTTP/2). FastAPI runs on internal `47293` and is not exposed.
+Exposes port `47291` (Hypercorn, HTTPS + HTTP/2).
 
 ---
 
@@ -675,16 +677,14 @@ Exposes port `47291` (nginx HTTPS+HTTP/2). FastAPI runs on internal `47293` and 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/ohlcv` | Standalone OHLCV — IndStocks candles first, yfinance fallback |
+| GET | `/ohlcv` | Standalone OHLCV — active broker's candles first, yfinance fallback |
 | GET | `/world-indices` | All world index prices (parallel fetch, TTL 10s) |
 | GET | `/universe` | Asset universe metadata |
 | GET | `/scan` | Smart scanner — ranked BUY/SELL signals |
 | GET | `/signals/<ticker>` | Multi-source news + Reddit + FOMO |
 | GET | `/search` | Ticker symbol/name search |
-| GET | `/ai-predict/<ticker>` | AI prediction via LLM |
+| GET | `/ai-predict/<ticker>` | Placeholder — returns `neutral` with 0 confidence |
 | GET | `/fundamentals/<ticker>` | yfinance fundamentals (stocks only) |
-| GET | `/invest-analysis/<ticker>` | Full LLM investment analysis — 20 parallel agent personas + CIO synthesis |
-| GET | `/invest-analysis-stream/<ticker>` | SSE — streams each agent result live |
 | GET | `/mc-news` | Moneycontrol RSS news feed |
 
 ### Trade (`/api/trade`)
@@ -725,8 +725,11 @@ Exposes port `47291` (nginx HTTPS+HTTP/2). FastAPI runs on internal `47293` and 
 | POST | `/executor/reset-daily` | Reset swing daily P&L counter |
 | GET | `/pnl/summary` | Daily P&L summary (swing + scalp) |
 | GET | `/pnl/trades` | Individual trade P&L records |
-| GET | `/option-plan` | Build a single executable option ticket — delta-targeted strike, Greeks, BS premium SL/T1/T2 |
+| GET/POST | `/option-plan` | Build a single executable option ticket — delta-targeted strike, Greeks, BS premium SL/T1/T2 |
 | GET | `/option-chain` | ATM ± N strikes with broker contract metadata for browser BS-repricing |
+| GET | `/btst-scanner/status`, `/btst-scanner/stats` | BTST scanner state and stats (also `/config`, `/start`, … — see `backend/app/api/trade.py`) |
+
+Other routers: `/api/broker` (status, quote, positions, orders), `/api/crypto`, `/api/forex`, `/api/poly` — see `backend/app/api/*.py`.
 
 ---
 
@@ -739,9 +742,9 @@ Exposes port `47291` (nginx HTTPS+HTTP/2). FastAPI runs on internal `47293` and 
 | Theta danger zone | 13:00 (expiry day) | tracked_monitor fires `theta_zone` alert on pinned CE/PE positions on their expiry date |
 | Time-exit alert | 15:00 | tracked_monitor fires `time_exit` alert — 20 min before broker auto-square-off |
 | Market close | 15:30 | NSE close |
-| Broker auto-square-off | 15:20 | Zerodha MIS auto-square-off — exit by 15:00 to avoid this |
+| Broker auto-square-off | ~15:20 | MIS auto-square-off (time varies by broker) — exit by 15:00 to avoid this |
 
-**Tuesday rule:** No buying CE/PE on Tuesday morning — weekly NIFTY expiry, theta destroys premium by afternoon.
+**Weekly expiries** come from the broker's instrument master (currently NIFTY on Tuesday, SENSEX on Thursday). Pinned positions get a theta-zone alert on their expiry day at 13:00; there is no automatic block on buying near expiry.
 
 ---
 
@@ -766,13 +769,26 @@ Each row also displays **cost per lot** (`premium × lot_size`) and **breakeven 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `ERR_CERT_AUTHORITY_INVALID` on `/api/*` requests | Self-signed cert not yet trusted by this browser | Visit `https://localhost:47291/api/market/world-indices` once → Advanced → Proceed |
-| All `/api/*` requests stuck `(pending)` | nginx not running or listening on wrong port | `lsof -nP -iTCP:47291` should show nginx LISTEN; if not, restart `./start.sh` |
-| `nginx: [emerg] bind() to 0.0.0.0:47291 failed (98: Address already in use)` | Previous nginx not killed cleanly | `pkill -f nginx` then re-run |
+| All `/api/*` requests stuck `(pending)` or spinners never finish | Backend not running, or the self-signed cert isn't trusted in this browser | `lsof -nP -iTCP:47291` should show Python LISTEN; if not, restart `./start.sh`. Then open `https://localhost:47291/health` once and accept the cert |
+| `Address already in use` on 47291 or 53847 | A previous run is still alive | Re-run `./start.sh` — it stops the previous run (via `.vega.pid`) and frees both ports |
 | Multiple SSE rows pinging the same URL in DevTools | HMR orphaned old streams | Hard-refresh (`Cmd+Shift+R`); window-pinned cleanup will close stale ones automatically next save |
 | Watch button click does nothing | Vite saved a file mid-click and HMR aborted the in-flight POST | Don't edit code while clicking; the click handler shows an alert if the symbol is already tracked / in-flight |
-| uvicorn reloads constantly on file save | `--reload` flag was passed | Remove `--reload` from start.sh for production — SSE generators will be killed every reload |
+| Backend reloads constantly on file save | A `--reload` flag was passed to Hypercorn | Don't use `--reload` with SSE — the streams are killed on every reload |
 | Scalp SL doesn't fire | WS option tick subscription failed at entry | Check logs for `Option WS subscribed:` — if missing, `opt_code` resolution failed; REST fallback is off by design |
-| `ModuleNotFoundError: No module named 'app'` | Running python directly instead of via uv | Use `uv run uvicorn app.main:app` or activate the venv first |
+| `ModuleNotFoundError: No module named 'app'` | Running python directly instead of via uv | Run from `backend/` with `uv run hypercorn app.main:app` or activate the venv first |
+| `Instrument master fno: HTTP 403` / WS handshake 513 | Broker token missing or expired (IndMoney tokens expire daily) | Refresh the token in `.env` and restart |
+
+---
+
+## Development
+
+```bash
+cd backend && uv run pytest            # backend tests
+cd frontend && npm run lint            # frontend lint
+git config core.hooksPath .githooks    # enable the pre-push gate (tests + lint) in this clone
+```
+
+The pre-push hook (`.githooks/pre-push`) runs both checks and blocks the push if either fails. Bypass once with `git push --no-verify`.
 
 ---
 

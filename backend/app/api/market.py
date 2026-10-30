@@ -169,6 +169,12 @@ def _normalize_ticker(raw: str) -> str:
 
 # ── OHLCV ────────────────────────────────────────────────────────────────────
 
+def _cell(row, col: str) -> float:
+    """One value of a yfinance row as a float (yfinance may wrap it in a 1-element Series)."""
+    v = row[col]
+    return float(v.iloc[0]) if hasattr(v, 'iloc') else float(v)
+
+
 @router.get('/ohlcv')
 def ohlcv(
     ticker: str = Query(...),
@@ -255,14 +261,11 @@ def ohlcv(
         if df is not None and not df.empty:
             candles_list = []
             for idx, row in df.iterrows():
-                def _v(col):
-                    v = row[col]
-                    return float(v.iloc[0]) if hasattr(v, 'iloc') else float(v)
                 candles_list.append({
                     'date': fmt_candle_date(str(idx), _is_intraday),
-                    'open': _v('Open'), 'high': _v('High'),
-                    'low': _v('Low'),   'close': _v('Close'),
-                    'volume': int(_v('Volume')),
+                    'open': _cell(row, 'Open'), 'high': _cell(row, 'High'),
+                    'low': _cell(row, 'Low'),   'close': _cell(row, 'Close'),
+                    'volume': int(_cell(row, 'Volume')),
                 })
             result = {'success': True, 'data': {'ticker': ticker, 'ohlcv': candles_list}}
             _cache_set(cache_key, result)
@@ -615,7 +618,7 @@ def scan_universe(market: str = 'india', limit: int = 50):
                 except Exception:
                     return default
 
-            def _row(row, action):
+            def _row(row, action, mkt=mkt, country=country, currency=currency):
                 price    = _sf(row.get('close'), 0)
                 rsi      = round(_sf(row.get('RSI'), 50), 1)
                 atr      = _sf(row.get('ATR'), price * 0.015)

@@ -135,10 +135,13 @@ def _atm_iv_estimate(base: str, spot: float, expiry_d: date, opt_type: str = 'CE
     atm  = int(round(spot / step) * step)
     dte  = max(1, (expiry_d - today_ist()).days)
     try:
-        broker = _get_broker()
-        expiry_token = expiry_d.strftime('%y%b').upper()
-        sym = f"{base}{expiry_token}{atm}{opt_type.upper()}"
-        ltp = broker.get_ltp(sym, exchange='NFO')
+        # Broker-agnostic: take the contract name from the broker's own instrument list
+        # (names differ per broker), never build it by hand.
+        meta = _resolve_strike(base, atm, expiry_d, opt_type)
+        if not meta:
+            return gk.default_iv(base)
+        ltp = _get_broker().get_ltp(meta['trading_symbol'], exchange=meta['exchange'],
+                                    security_id=meta.get('security_id', ''))
         if ltp and ltp > 0:
             iv = gk.implied_vol(spot, atm, dte, float(ltp), opt_type)
             if iv and 0.05 <= iv <= 2.0:
@@ -185,8 +188,8 @@ def _compute_fees(side: str, opt_type: str, premium: float, lot: int) -> dict:
     """Simplified fee model for F&O options."""
     turnover = premium * lot
     brokerage = 20.0
-    stt = turnover * 0.000625 if side == 'SELL' else 0.0
-    txn_charge = turnover * 0.00053
+    stt = turnover * 0.0015 if side == 'SELL' else 0.0   # 0.15% of premium, sell side (from 1 Apr 2026)
+    txn_charge = turnover * 0.0003553                    # NSE options 0.03553% of premium
     gst = (brokerage + txn_charge) * 0.18
     stamp = turnover * 0.00003 if side == 'BUY' else 0.0
     sebi = turnover * 0.000001

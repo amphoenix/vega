@@ -25,8 +25,28 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...shared.logger import get_logger
+from ...shared.time import sleep
 
 logger = get_logger('broker')
+
+# Seconds to wait before each retry of a rate-limited / overloaded request.
+RETRY_DELAYS: tuple[float, ...] = (0.5, 1.5, 3.0)
+RETRY_STATUSES: frozenset[int] = frozenset({429, 502, 503, 504})
+
+
+def http_get_with_retry(get: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Call ``get`` (e.g. requests.get); retry with backoff on HTTP 429/502/503/504.
+
+    Returns the last response, so callers keep their own ``.ok`` handling. Other
+    statuses (403, 404, ...) are returned immediately — retrying cannot fix them.
+    """
+    resp = get(*args, **kwargs)
+    for delay in RETRY_DELAYS:
+        if resp.status_code not in RETRY_STATUSES:
+            break
+        sleep(delay)
+        resp = get(*args, **kwargs)
+    return resp
 
 
 # ── Data Transfer Objects ────────────────────────────────────────────────────

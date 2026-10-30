@@ -4,7 +4,7 @@ Brokerage calculator — segment-based, broker-agnostic fee model.
 Pure domain service — no I/O, no framework imports.
 
 Segments (each with its own exchange-mandated fee structure):
-  swing / scalp  — NSE F&O (options): STT 0.1%, exchange 0.035%
+  swing / scalp  — NSE F&O (options): STT 0.15%, exchange 0.03553%
   forex          — NSE CDS (currency futures): CTT 0.01%, exchange 0.0035%
   crypto         — Binance spot: 0.1%/side + 1% TDS + 30% income tax on gains
   crypto_fo      — Deribit options/perps: 0.03–0.05%/side + 1% TDS + 30% tax
@@ -42,8 +42,8 @@ class FeeProfile:
 FO = FeeProfile(
     name='NSE F&O',
     flat_per_order=20.0,
-    exchange_txn_pct=0.0003503,  # ₹35.03/lakh
-    stt_pct=0.001,               # STT 0.1% on sell side (Budget 2024)
+    exchange_txn_pct=0.0003553,  # NSE options 0.03553% of premium (Zerodha charges page)
+    stt_pct=0.0015,              # STT 0.15% of premium, sell side (Budget 2026, from 1 Apr 2026)
     sebi_pct=0.000001,           # ₹10/crore
     stamp_pct=0.00003,           # 0.003% on buy side
     gst_pct=0.18,

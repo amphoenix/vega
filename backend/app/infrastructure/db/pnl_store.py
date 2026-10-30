@@ -11,9 +11,13 @@ from __future__ import annotations
 from ...domain.services.brokerage_calc import segment_brokerage as _seg_brokerage
 from .state_store import (
     _conn,
-    get_state as get_trading_state,
-    set_state as set_trading_state,
     today_net_by_mode,
+)
+from .state_store import (
+    get_state as get_trading_state,
+)
+from .state_store import (
+    set_state as set_trading_state,
 )
 
 

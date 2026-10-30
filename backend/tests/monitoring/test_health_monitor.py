@@ -2,13 +2,12 @@
 Tests for monitoring/health_monitor.py — HealthMonitor.
 """
 
-import time
-
 from app.monitoring.health_monitor import (
     ComponentHealth,
     HealthMonitor,
     HealthStatus,
 )
+from app.shared.time import monotonic, sleep
 
 
 class TestComponentHealth:
@@ -18,17 +17,17 @@ class TestComponentHealth:
 
     def test_healthy_after_heartbeat(self):
         c = ComponentHealth(name='broker', heartbeat_interval=10.0)
-        c.last_heartbeat = time.monotonic()
+        c.last_heartbeat = monotonic()
         assert c.compute_status() == HealthStatus.HEALTHY
 
     def test_degraded_after_2x_interval(self):
         c = ComponentHealth(name='broker', heartbeat_interval=0.01)
-        c.last_heartbeat = time.monotonic() - 0.03  # 3x interval
+        c.last_heartbeat = monotonic() - 0.03  # 3x interval
         assert c.compute_status() == HealthStatus.DEGRADED
 
     def test_down_after_5x_interval(self):
         c = ComponentHealth(name='broker', heartbeat_interval=0.01)
-        c.last_heartbeat = time.monotonic() - 0.06  # 6x interval
+        c.last_heartbeat = monotonic() - 0.06  # 6x interval
         assert c.compute_status() == HealthStatus.DOWN
 
     def test_to_dict(self):
@@ -89,7 +88,7 @@ class TestHealthMonitor:
         m.register('b', interval=10.0)
         m.heartbeat('a')  # will become DOWN quickly
         m.heartbeat('b')
-        time.sleep(0.01)  # let a expire
+        sleep(0.01)  # let a expire
         h = m.system_health()
         assert h.status in (HealthStatus.DOWN, HealthStatus.DEGRADED)
 
@@ -119,7 +118,7 @@ class TestHealthMonitor:
 
     def test_uptime(self):
         m = HealthMonitor()
-        time.sleep(0.01)
+        sleep(0.01)
         h = m.system_health()
         assert h.uptime_seconds >= 0.01
 

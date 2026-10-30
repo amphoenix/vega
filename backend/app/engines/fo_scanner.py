@@ -25,7 +25,8 @@ from datetime import timedelta
 from ..dependencies import get_broker
 from ..shared import time as _mkt
 from ..shared.logger import get_logger
-from ..shared.time import now_ist
+from ..shared.time import monotonic, now_ist
+from ..state import signals as _signal_log
 
 logger = get_logger('vega.fo_scanner')
 
@@ -156,6 +157,24 @@ STOCK_BATCH_PER_CYCLE = 60
 # ── Ticket cache: lock entry price to first signal per underlying per day ──
 # Prevents re-pricing when auto-entry retries on subsequent scan cycles.
 _ticket_cache: dict = {}   # underlying → ticket (cleared on daily reset)
+_ticket_cached_at: dict[str, float] = {}   # cache key → monotonic time the ticket was stored
+
+
+def _cached_ticket(key: str) -> dict | None:
+    """The cached ticket for `key`, unless it is older than FO_TICKET_TTL_SEC (then it is dropped)."""
+    ticket = _ticket_cache.get(key)
+    if ticket is None:
+        return None
+    if monotonic() - _ticket_cached_at.get(key, 0.0) > _fo_cfg().fo_ticket_ttl_sec:
+        _ticket_cache.pop(key, None)
+        _ticket_cached_at.pop(key, None)
+        return None
+    return ticket
+
+
+def _cache_ticket(key: str, ticket: dict) -> None:
+    _ticket_cache[key] = ticket
+    _ticket_cached_at[key] = monotonic()
 
 # ── Cross-index correlation: latest Supertrend direction per ticker ─────────
 # SENSEX won't trade opposite to NIFTY — prevents confusing PE-vs-CE divergence.
@@ -245,7 +264,7 @@ def _nse_base(ticker: str) -> str:
 
 
 def _resolve_option_contract(ticker: str, option_type: str, strike: float) -> dict | None:
-    return get_broker().resolve_option_contract(ticker, option_type, strike)
+    return get_broker().resolve_option_contract(_mkt.nse_base(ticker), option_type, strike)
 
 
 # ── Stage 1: pure technical pre-filter (no LLM) ──────────────────────────────
@@ -587,7 +606,7 @@ def _run_scan_cycle():
             bias = 'BULL' if itype == 'CE' else 'BEAR'
             _fnum = lambda v: float(v) if v not in (None, '', 0) else None
             atr = _fnum(cio.get('_atr')) or _fnum(cio.get('atr'))
-            cached = _ticket_cache.get(_cache_key)
+            cached = _cached_ticket(_cache_key)
             if cached:
                 ticket = cached
                 logger.debug(f"Scanner: reusing cached ticket for {_cache_key} "
@@ -607,7 +626,7 @@ def _run_scan_cycle():
                         atr            = atr,
                     )
                     if ticket:
-                        _ticket_cache[_cache_key] = ticket
+                        _cache_ticket(_cache_key, ticket)
                         logger.info(f"Scanner: cached ticket for {_cache_key} "
                                     f"@ ₹{ticket['entry']['expected_premium_inr']:.2f}")
                 except Exception as e:
@@ -834,6 +853,7 @@ def _run_scan_cycle():
             ]
         _bcast_signal.pop('cio', None)  # cio is internal, don't send to frontend
         _broadcast({'type': 'scan_signal', **_bcast_signal})
+        _signal_log.record('swing', _bcast_signal)
         logger.info(f"Scanner [{source}] {ticker} {verdict} conf={conf}% "
                     f"instrument={cio.get('instrument_type')} action={cio.get('short_term_action')}")
 
@@ -1002,7 +1022,6 @@ def _fast_reversal_check():
 def _on_fo_tick(ticker: str, ltp: float):
     """Live index tick → wake the scan loop the instant price moves meaningfully.
     Runs on the broker WS thread — MUST stay fast, no REST/heavy work here."""
-    from time import monotonic
     global _last_tick_wake_ts
     if _stop_event.is_set() or not ltp or ltp <= 0:
         return

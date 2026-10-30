@@ -11,7 +11,7 @@ Thumbs.db
 .env.production
 
 # Python
-__pycache__/
+_pycache_/
 *.py[cod]
 *$py.class
 *.so
@@ -75,3 +75,6 @@ backend_old/
 
 # Unused static assets
 static/
+
+# start.sh run state
+.vega.pid

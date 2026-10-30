@@ -37,6 +37,7 @@ from ..dependencies import get_broker
 from ..shared import time as _mkt
 from ..shared.logger import get_logger
 from ..shared.time import clock, datetime, now_ist, sleep, timedelta, timezone
+from ..state import settings as _server_settings
 
 logger = get_logger('vega.services.order_executor')
 
@@ -81,8 +82,8 @@ def auto_trading_enabled() -> bool:
 
 
 def scalp_auto_trading_enabled() -> bool:
-    """Separate toggle for scalp auto-entry."""
-    return _settings.scalp_auto_trade
+    """Separate toggle for scalp auto-entry (persisted — survives restarts)."""
+    return _server_settings.get_bool('scalp_auto_trade', _settings.scalp_auto_trade)
 
 
 def min_confidence() -> int:
@@ -203,6 +204,22 @@ _inflight: set[str] = set()
 # In-flight scalp BUY symbols: same guard for scalp entries (tick-driven,
 # so multiple tick callbacks can fire in parallel for the same ticker).
 _scalp_inflight: set[str] = set()
+
+# Swing and Scalp must never buy the same contract. The tracked-position check only sees an
+# entry once the order has returned, so each BUY first claims the contract for a few seconds.
+_symbol_claims: dict[str, float] = {}
+_CLAIM_TTL_SEC = 15.0
+
+
+def _claim_symbol(sym: str) -> bool:
+    """Claim `sym` for an entry in progress. False if either engine already holds it. Call with _lock held."""
+    now = clock()
+    for key in [k for k, t in _symbol_claims.items() if now - t >= _CLAIM_TTL_SEC]:
+        del _symbol_claims[key]
+    if sym in _symbol_claims or sym in _inflight or sym in _scalp_inflight:
+        return False
+    _symbol_claims[sym] = now
+    return True
 
 # Exit retry tracking: {track_id: (fail_count, next_retry_time)}
 _exit_retries: dict[str, tuple[int, float]] = {}
@@ -469,6 +486,107 @@ def enforce_strict_sl(ticket: dict) -> dict:
 
 # ── Auto-entry ────────────────────────────────────────────────────────────────
 
+# ── Paper trading realism ─────────────────────────────────────────────────────
+# A paper order behaves like a market order: it only fills while the market is open,
+# a BUY fills at the ask and a SELL at the bid (from the broker's live quote).
+
+_last_exit_at: dict[str, float] = {}   # "mode:underlying:CE" → clock() of the last exit
+
+
+def _paper_fill_price(txn_type: str, trading_symbol: str, exchange: str, security_id: str = '') -> float | None:
+    """Price a market order would fill at right now: ask for BUY, bid for SELL.
+
+    Falls back to the last traded price when the quote has no usable bid/ask (one-sided or
+    crossed quotes more than 5% from last price are ignored). None if no price at all.
+    """
+    try:
+        quote = get_broker().get_quote(trading_symbol, exchange=exchange, security_id=security_id)
+    except Exception:
+        return None
+    if quote is None:
+        return None
+    last = float(getattr(quote, 'ltp', 0) or 0)
+    side = float(getattr(quote, 'ask' if txn_type == 'BUY' else 'bid', 0) or 0)
+    if side > 0 and (last <= 0 or abs(side - last) / last <= 0.05):
+        return side
+    return last if last > 0 else None
+
+
+def _paper_avg_price(order_result: dict | None) -> float | None:
+    """The simulated fill price carried by a paper order response, if any."""
+    data = (order_result or {}).get('data') or {}
+    if str(data.get('order_id', '')).upper() != 'PAPER':
+        return None
+    price = float(data.get('avg_price') or 0)
+    return price if price > 0 else None
+
+
+def _exit_key(ticket: dict, trade_mode: str) -> str:
+    return f"{trade_mode}:{(ticket.get('underlying') or '').strip()}:{(ticket.get('option_type') or '').strip().upper()}"
+
+
+def _mark_exit(ticket: dict, trade_mode: str) -> None:
+    _last_exit_at[_exit_key(ticket, trade_mode)] = clock()
+
+
+def _reentry_cooldown_left(ticket: dict, trade_mode: str = 'swing') -> float:
+    """Seconds until a new entry on this index + direction is allowed again (0 = allowed)."""
+    last = _last_exit_at.get(_exit_key(ticket, trade_mode))
+    if last is None:
+        return 0.0
+    return max(0.0, float(_settings.fo_reentry_cooldown_sec) - (clock() - last))
+
+
+def ticket_price_drift_pct(ticket_premium: float, live_premium: float) -> float:
+    """How far (in %) the live premium has moved away from the ticket's price."""
+    if ticket_premium <= 0:
+        return 0.0
+    return abs(live_premium - ticket_premium) / ticket_premium * 100
+
+
+def rebase_ticket_to_price(ticket: dict, price: float) -> None:
+    """Re-anchor entry, SL, T1 and T2 on `price` (an actual fill or the live premium)."""
+    entry = ticket['entry']
+    exit_ = ticket['exit']
+    old_entry = float(entry.get('expected_premium_inr') or 0)
+    entry['expected_premium_inr'] = price
+    max_pts = sl_max_points(ticket.get('underlying', ''))
+    exit_['stop_loss_inr'] = round(max(price - max_pts, 0.05), 2)
+    if old_entry > 0:
+        ratio = price / old_entry
+        for key in ('target_1_inr', 'target_2_inr'):
+            if exit_.get(key):
+                exit_[key] = round(exit_[key] * ratio, 2)
+
+
+def _live_premium(ticket: dict, sym: str) -> float | None:
+    """Current market premium of the ticket's contract, or None if the broker can't give one."""
+    try:
+        price = get_broker().get_ltp(sym, exchange=_detect_fo_exchange(sym),
+                                     security_id=str(ticket.get('security_id') or ''))
+        return float(price) if price and float(price) > 0 else None
+    except Exception:
+        return None
+
+
+def _scalp_available_cash() -> float:
+    """Cash a scalp entry may use: the broker's margin when live, the configured scalp capital in paper."""
+    live = (_settings.trading_mode == 'live' and _settings.live_trading_enabled
+            and _settings.scalp_mode == 'live')
+    if not live:
+        return float(_settings.scalp_capital_inr)
+    try:
+        return float(get_broker().get_available_cash() or 0)
+    except Exception:
+        return 0.0
+
+
+def _is_paper_entry() -> bool:
+    """True when a swing entry would be simulated (any master/segment switch is paper)."""
+    return (_settings.trading_mode == 'paper' or not _settings.live_trading_enabled
+            or _settings.fo_mode == 'paper')
+
+
 def try_auto_entry(signal: dict) -> dict | None:
     """
     Called by fo_scanner after a signal passes all gates.
@@ -554,6 +672,11 @@ def try_auto_entry(signal: dict) -> dict | None:
         if _dir_sl_count >= _MAX_SL_PER_DIRECTION:
             logger.warning(f"[executor] BLOCKED {sym} — {_dir_key} already hit SL "
                            f"{_dir_sl_count}x today. No more {_opt_type} entries for {_underlying}.")
+            return None
+        _cooldown = _reentry_cooldown_left(ticket)
+        if _cooldown > 0:
+            logger.info(f"[executor] Skip {sym} — cooling down after the last {_dir_key} exit "
+                        f"({_cooldown / 60:.0f} min left)")
             return None
 
     # Check not already tracking
@@ -650,10 +773,42 @@ def try_auto_entry(signal: dict) -> dict | None:
                 pass
             return None
 
+    # ── Fresh-price gate: never trade on a stale ticket price ─────────────────
+    # The scanner reuses a cached ticket; its premium can be old. Check it against
+    # the live market, and fill (paper or live) from the live price, not the ticket's.
+    _ticket_prem = float((ticket.get('entry') or {}).get('expected_premium_inr') or 0)
+    _live_prem = _live_premium(ticket, sym)
+    if _live_prem and _ticket_prem > 0:
+        _drift = ticket_price_drift_pct(_ticket_prem, _live_prem)
+        _max_drift = float(_settings.fo_max_ticket_drift_pct)
+        if _drift > _max_drift:
+            logger.warning(f"[executor] STALE TICKET {sym} — ticket ₹{_ticket_prem:.2f} vs live "
+                           f"₹{_live_prem:.2f} ({_drift:.1f}% > {_max_drift:.0f}%). Entry skipped.")
+            _order_broadcast({
+                'type': 'order_update', 'severity': 'warning',
+                'title': f"Skipped: {ticket.get('display_symbol', sym)}",
+                'status': 'STALE_TICKET', 'symbol': sym, 'txn_type': 'BUY',
+                'message': f"Ticket price ₹{_ticket_prem:.2f} is {_drift:.0f}% off live ₹{_live_prem:.2f}.",
+                'timestamp': _mkt.now_ist().isoformat(),
+            })
+            try:
+                from .fo_scanner import _ticket_cache
+                for k in list(_ticket_cache.keys()):
+                    if sym in str(_ticket_cache[k].get('trading_symbol', '')).upper():
+                        del _ticket_cache[k]
+            except Exception:
+                pass
+            return None
+        rebase_ticket_to_price(ticket, _live_prem)
+        ticket['ltp'] = _live_prem
+    elif not _live_prem and _is_paper_entry():
+        logger.warning(f"[executor] Skip {sym} — no live price to fill the paper entry at")
+        return None
+
     # ── Atomic: inflight guard + lot-sizing inside lock (no race conditions) ──
     with _lock:
-        if sym in _inflight:
-            logger.info(f"[executor] Skip {sym} — BUY already in-flight")
+        if sym in _inflight or not _claim_symbol(sym):
+            logger.info(f"[executor] Skip {sym} — BUY already in-flight (swing or scalp)")
             return None
         _inflight.add(sym)
 
@@ -738,14 +893,17 @@ def try_auto_entry(signal: dict) -> dict | None:
                     pass
             if _fill_prem and _fill_prem > 0:
                 old_entry = ticket['entry']['expected_premium_inr']
-                ticket['entry']['expected_premium_inr'] = _fill_prem
-                max_pts = sl_max_points(ticket.get('underlying', ''))
-                ticket['exit']['stop_loss_inr'] = round(max(_fill_prem - max_pts, 0.05), 2)
-                if old_entry > 0:
-                    ratio = _fill_prem / old_entry
-                    ticket['exit']['target_1_inr'] = round(ticket['exit']['target_1_inr'] * ratio, 2)
-                    ticket['exit']['target_2_inr'] = round(ticket['exit']['target_2_inr'] * ratio, 2)
+                rebase_ticket_to_price(ticket, _fill_prem)
                 logger.info(f"[executor] Live fill: entry ₹{old_entry:.2f} → ₹{_fill_prem:.2f}, "
+                            f"SL=₹{ticket['exit']['stop_loss_inr']:.2f}")
+
+        elif _order_id:
+            # Paper: the simulated fill (live ask) plays the role of the broker's fill price
+            _paper_fill = _paper_avg_price(order_result)
+            if _paper_fill:
+                _old_entry = ticket['entry']['expected_premium_inr']
+                rebase_ticket_to_price(ticket, _paper_fill)
+                logger.info(f"[executor] Paper fill: entry ₹{_old_entry:.2f} → ₹{_paper_fill:.2f}, "
                             f"SL=₹{ticket['exit']['stop_loss_inr']:.2f}")
 
         # Store the entry order_id for later fill price lookup on exit
@@ -909,6 +1067,13 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
                     premium = _actual_exit
             except Exception as _e:
                 logger.debug(f"[executor] Could not fetch exit fill price: {_e}")
+        elif _sell_order_id:
+            # Paper: fill at the live bid, like a real market sell
+            _paper_exit = _paper_avg_price(order_result)
+            if _paper_exit:
+                logger.info(f"[executor] Paper exit fill: "
+                            f"₹{premium if premium is not None else 0:.2f} → ₹{_paper_exit:.2f} (bid)")
+                premium = _paper_exit
 
         # Fetch actual ENTRY fill from broker using stored order_id (overrides expected_premium_inr)
         _entry_oid = ticket.get('entry_order_id', '')
@@ -1074,6 +1239,7 @@ def try_auto_exit(track_id: str, status: str, rec: dict,
             from ..infrastructure.db import tracked_positions as tp
             tp.remove_tracked(track_id, exit_premium=premium, exit_reason=exit_type)
             logger.info(f"[executor] {display} removed from tracked (exit={exit_type})")
+            _mark_exit(ticket, trade_mode)
             # Clear ticket cache so re-entry gets a fresh price
             try:
                 from .fo_scanner import _ticket_cache
@@ -1236,34 +1402,26 @@ def try_scalp_entry(signal: dict) -> dict | None:
     _max_cfg_lots = _scalp_mod.SCALP_LOTS_PER_TRADE()   # config upper cap
 
     with _lock:
-        if sym in _scalp_inflight:
-            logger.info(f"[executor] Skip scalp {sym} — BUY already in-flight")
+        if sym in _scalp_inflight or not _claim_symbol(sym):
+            logger.info(f"[executor] Skip scalp {sym} — BUY already in-flight (swing or scalp)")
             return None
         _scalp_inflight.add(sym)
 
-        # 1. Margin constraint: how many lots can broker cash afford?
-        from ..config import settings as _scfg
-        _scalp_is_live = (_scfg.trading_mode == 'live') and _scfg.live_trading_enabled and (_scfg.scalp_mode == 'live')
-        if _scalp_is_live:
-            try:
-                _avail_cash = get_broker().get_available_cash() or 0
-            except Exception:
-                _avail_cash = 0
-            if _avail_cash <= 0:
+        # 1. Margin constraint: how many lots can the available cash afford? (same rule paper and live)
+        _avail_cash = _scalp_available_cash()
+        if _avail_cash <= 0:
+            _scalp_inflight.discard(sym)
+            logger.warning(f"[executor] SCALP MARGIN BLOCK {sym} — no available margin")
+            return None
+        _opt_ltp = float(ticket.get('ltp') or ticket.get('entry_price') or 0)
+        if _opt_ltp > 0:
+            _cost_per_lot_margin = _opt_ltp * lot_size
+            if _cost_per_lot_margin > _avail_cash:
                 _scalp_inflight.discard(sym)
-                logger.warning(f"[executor] SCALP MARGIN BLOCK {sym} — no available margin from broker")
+                logger.warning(f"[executor] SCALP MARGIN BLOCK {sym} — need ₹{_cost_per_lot_margin:.0f}/lot "
+                               f"but only ₹{_avail_cash:.0f} available")
                 return None
-            _opt_ltp = float(ticket.get('ltp') or ticket.get('entry_price') or 0)
-            if _opt_ltp > 0:
-                _cost_per_lot_margin = _opt_ltp * lot_size
-                if _cost_per_lot_margin > _avail_cash:
-                    _scalp_inflight.discard(sym)
-                    logger.warning(f"[executor] SCALP MARGIN BLOCK {sym} — need ₹{_cost_per_lot_margin:.0f}/lot "
-                                   f"but only ₹{_avail_cash:.0f} available")
-                    return None
-                _lots_by_margin = max(1, int(_avail_cash / _cost_per_lot_margin))
-            else:
-                _lots_by_margin = _max_cfg_lots
+            _lots_by_margin = max(1, int(_avail_cash / _cost_per_lot_margin))
         else:
             _lots_by_margin = _max_cfg_lots
 
@@ -1344,6 +1502,17 @@ def try_scalp_entry(signal: dict) -> dict | None:
                     logger.info(f"[executor] Scalp actual fill: ₹{_old:.2f} → ₹{_actual_entry:.2f}")
             except Exception:
                 pass
+        elif _order_id:
+            # Paper: re-anchor on the simulated fill, same as a real fill above
+            _paper_fill = _paper_avg_price(order_result)
+            if _paper_fill:
+                _old = float(ticket.get('entry', {}).get('expected_premium_inr', 0) or 0)
+                ticket['entry']['expected_premium_inr'] = _paper_fill
+                _sl_pts = float(ticket.get('scalp_meta', {}).get('sl_pts', 8) or 8)
+                _t1_pts = float(ticket.get('scalp_meta', {}).get('t1_pts', 15) or 15)
+                ticket['exit']['stop_loss_inr'] = round(max(_paper_fill - _sl_pts, 0.05), 2)
+                ticket['exit']['target_1_inr'] = round(_paper_fill + _t1_pts, 2)
+                logger.info(f"[executor] Scalp paper fill: ₹{_old:.2f} → ₹{_paper_fill:.2f}")
 
         # Store entry order_id for later fill price lookup on exit
         if _order_id:
@@ -1456,17 +1625,30 @@ def _place_fo_order(txn_type: str, trading_symbol: str, qty: int,
             _reason = ('master:trading_mode=paper' if _settings.trading_mode == 'paper'
                        else 'master:live_trading_enabled=False' if not _settings.live_trading_enabled
                        else f'{trade_mode}_mode=paper')
-            logger.info(f"[executor] PAPER {txn_type}: {trading_symbol} qty={qty} exch={exchange} "
+            # Like a real market order: no fills while the exchange is closed...
+            if exchange in ('NFO', 'BFO') and not _mkt.is_market_hours():
+                logger.warning(f"[executor] PAPER {txn_type} REJECTED: {trading_symbol} — market closed")
+                return {'success': False, 'error': 'Market closed', 'data': {'status': 'REJECTED'}}
+            # ...and fills at the live ask (BUY) / bid (SELL), not at some earlier price.
+            _fill = _paper_fill_price(txn_type, trading_symbol, exchange, security_id)
+            if _fill is None and txn_type == 'BUY':
+                logger.warning(f"[executor] PAPER BUY REJECTED: {trading_symbol} — no live price")
+                return {'success': False, 'error': 'No live price', 'data': {'status': 'REJECTED'}}
+            _fill_txt = f" fill=₹{_fill:.2f}" if _fill else ''
+            logger.info(f"[executor] PAPER {txn_type}: {trading_symbol} qty={qty} exch={exchange}{_fill_txt} "
                         f"(reason: {_reason})")
             _order_broadcast({
                 'type': 'order_update', 'severity': 'warning',
                 'title': f"Paper {txn_type}: {trading_symbol}",
                 'status': 'SIMULATED', 'symbol': trading_symbol,
                 'txn_type': txn_type, 'qty': qty,
-                'message': 'Paper mode — order not sent to broker',
+                'message': 'Paper mode — order not sent to broker' + (f" (filled ₹{_fill:.2f})" if _fill else ''),
                 'timestamp': _mkt.now_ist().isoformat(),
             })
-            return {'success': True, 'data': {'order_id': 'PAPER', 'status': 'SIMULATED'}}
+            data = {'order_id': 'PAPER', 'status': 'SIMULATED'}
+            if _fill:
+                data['avg_price'] = _fill
+            return {'success': True, 'data': data}
 
         # All F&O and CUR → MARGIN (Normal/NRML)
         _product = 'MARGIN'

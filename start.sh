@@ -109,12 +109,42 @@ if [ ! -f "$CERTS_DIR/cert.pem" ] || [ ! -f "$CERTS_DIR/key.pem" ]; then
   info "Cert written to $CERTS_DIR/{cert,key}.pem (valid 825 days)"
 fi
 
+# ── Stop any previous run first ──────────────────────────────────────────────
+# Each run records its PID (+ caffeinate PID) in $PIDFILE. A new run kills that
+# whole process tree before starting, so restarts never leave stale launchers,
+# orphaned caffeinate, or half-dead servers behind.
+PIDFILE="$ROOT_DIR/.vega.pid"
+
+kill_tree() {  # kill_tree <pid> <signal>
+  local pid="$1" sig="$2" child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do kill_tree "$child" "$sig"; done
+  kill "-$sig" "$pid" 2>/dev/null
+}
+
+if [ -f "$PIDFILE" ]; then
+  _old_pid=$(sed -n 1p "$PIDFILE"); _old_caf=$(sed -n 2p "$PIDFILE")
+  if [ -n "$_old_pid" ] && [ "$_old_pid" != "$$" ] \
+     && ps -p "$_old_pid" -o command= 2>/dev/null | grep -q "start.sh"; then
+    warn "Stopping previous Vega run (pid $_old_pid)..."
+    kill_tree "$_old_pid" TERM
+    sleep 1
+    kill_tree "$_old_pid" KILL
+  fi
+  if [ -n "$_old_caf" ] && ps -p "$_old_caf" -o command= 2>/dev/null | grep -q "caffeinate"; then
+    kill "$_old_caf" 2>/dev/null
+  fi
+  rm -f "$PIDFILE"
+  unset _old_pid _old_caf
+fi
+
 # ── Prevent sleep / screen-off while running ─────────────────────────────────
 if command -v caffeinate &>/dev/null; then
   caffeinate -dis &
   CAFFEINE_PID=$!
   info "Sleep inhibited (caffeinate pid $CAFFEINE_PID)"
 fi
+
+printf '%s\n%s\n' "$$" "${CAFFEINE_PID:-}" > "$PIDFILE"
 
 # ── Start ─────────────────────────────────────────────────────────────────────
 
@@ -127,6 +157,7 @@ cleanup() {
   [ -n "$BE_PID" ] && kill -9 "$BE_PID" 2>/dev/null; pkill -9 -P "$BE_PID" 2>/dev/null
   [ -n "$FE_PID" ] && kill -9 "$FE_PID" 2>/dev/null; pkill -9 -P "$FE_PID" 2>/dev/null
   [ -n "$CAFFEINE_PID" ] && kill "$CAFFEINE_PID" 2>/dev/null
+  rm -f "$PIDFILE"
   lsof -ti :${PUBLIC_PORT} | xargs kill -9 2>/dev/null
   lsof -ti :${FE_PORT}     | xargs kill -9 2>/dev/null
   wait $BE_PID $FE_PID 2>/dev/null

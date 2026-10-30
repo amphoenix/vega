@@ -15,13 +15,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .application.handlers.trading_handlers import (
-    make_day_rolled_handler,
-    make_position_closed_handler,
-)
 from .config import settings
-from .dependencies import get_event_bus, get_kill_switch, get_scheduler, get_supervisor
-from .domain.events.events import DayRolled, PositionClosed
+from .dependencies import get_event_bus, get_scheduler
+from .domain.events.events import DayRolled
 from .shared.logger import get_logger, setup_logger
 from .shared.time import monotonic, now_ist
 
@@ -60,12 +56,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if llm_errors:
         for err in llm_errors:
             logger.warning('LLM config: %s', err)
-
-    # Wire event handlers
-    ks = get_kill_switch()
-    sv = get_supervisor()
-    bus.subscribe(PositionClosed, make_position_closed_handler(ks, sv))
-    bus.subscribe(DayRolled, make_day_rolled_handler(ks, sv))
 
     # Schedule midnight reset via DayRolled event
     from .shared.time import today_ist_str
@@ -257,6 +247,7 @@ from .api.crypto import router as crypto_router
 from .api.forex import router as forex_router
 from .api.market import router as market_router
 from .api.poly import router as poly_router
+from .api.state import router as state_router
 from .api.trade import router as trade_router
 
 app.include_router(broker_router)
@@ -265,6 +256,7 @@ app.include_router(market_router)
 app.include_router(crypto_router)
 app.include_router(poly_router)
 app.include_router(forex_router)
+app.include_router(state_router)
 
 
 # ── Health check ─────────────────────────────────────────────────────────────

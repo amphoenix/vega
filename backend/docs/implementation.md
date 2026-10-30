@@ -1,3 +1,5 @@
+> **Outdated section notice:** the `TradeSupervisor` / `KillSwitchEngine` / `RiskChain` / `ReentryGuard` / `ExposureGuard` / `PaperTradingValidator` layer described below was **removed** (the live engines never used it). Risk controls now live only in `backend/app/engines/order_executor.py` and apply identically to paper and live — see the README "Order Executor" section. Rules below are kept as design history.
+
 # Vega — Final Implementation Plan
 
 > DDD Lite + Event-Driven + FastAPI.

@@ -95,33 +95,6 @@ class TestOverrides:
         assert svc.overrides == {'debug': True}
 
 
-class TestDomainConfigBuilders:
-    def test_build_supervisor_config(self):
-        svc = ConfigService(_mock_settings())
-        sc = svc.build_supervisor_config()
-        assert sc.daily_loss_limit == 2500.0
-        assert sc.max_trades_per_day == 10
-        assert sc.max_consecutive_losses == 3
-
-    def test_supervisor_config_respects_overrides(self):
-        svc = ConfigService(_mock_settings())
-        svc.override('daily_loss_limit_inr', 1000.0)
-        sc = svc.build_supervisor_config()
-        assert sc.daily_loss_limit == 1000.0
-
-    def test_build_kill_switch_config(self):
-        svc = ConfigService(_mock_settings())
-        kc = svc.build_kill_switch_config()
-        assert kc.daily_loss_soft == 2000.0
-        assert kc.daily_loss_hard == 4000.0
-
-    def test_kill_switch_config_with_override(self):
-        svc = ConfigService(_mock_settings())
-        svc.override('ks_daily_loss_soft', 500.0)
-        kc = svc.build_kill_switch_config()
-        assert kc.daily_loss_soft == 500.0
-
-
 class TestValidation:
     def test_valid_config(self):
         svc = ConfigService(_mock_settings())

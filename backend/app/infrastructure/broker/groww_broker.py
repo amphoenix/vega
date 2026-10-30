@@ -22,14 +22,13 @@ from __future__ import annotations
 import hashlib
 import os
 import threading
-import time as _time
 from typing import Any
 
 import requests as _requests
 
 from ...shared.logger import get_logger
 from ...shared.parse_expiry import parse_expiry
-from ...shared.time import now_ist, today_ist
+from ...shared.time import clock, now_ist, today_ist
 from .base import (
     BrokerAdapter,
     CandleData,
@@ -38,6 +37,7 @@ from .base import (
     OrderResult,
     PositionInfo,
     QuoteResult,
+    http_get_with_retry,
 )
 
 logger = get_logger('groww_broker')
@@ -70,6 +70,7 @@ class GrowwBroker(BrokerAdapter):
 
         self._inst_master: list[dict] = []
         self._inst_lock = threading.Lock()
+        self._inst_dl_lock = threading.Lock()   # one download at a time
         self._fno_sym_index: dict[str, list[dict]] = {}
 
         self._order_segment: dict[str, str] = {}
@@ -84,7 +85,7 @@ class GrowwBroker(BrokerAdapter):
 
     def _generate_token(self) -> str:
         """Checksum flow: SHA256(api_secret + epoch_seconds) → access token."""
-        timestamp = str(int(_time.time()))
+        timestamp = str(int(clock()))
         checksum = hashlib.sha256(f'{self._api_secret}{timestamp}'.encode()).hexdigest()
         try:
             r = _requests.post(
@@ -327,7 +328,7 @@ class GrowwBroker(BrokerAdapter):
     def get_available_cash(self) -> float:
         if self._stub:
             return 0.0
-        now = _time.time()
+        now = clock()
         with self._cash_lock:
             if self._cash_cache and now - self._cash_cache[0] < 60:
                 return self._cash_cache[1]
@@ -413,20 +414,25 @@ class GrowwBroker(BrokerAdapter):
         with self._inst_lock:
             if self._inst_master:
                 return self._inst_master
-        try:
-            import csv
-            import io
-            r = _requests.get(_INSTRUMENTS_CSV_URL, timeout=20)
-            if not r.ok:
-                return []
-            rows = list(csv.DictReader(io.StringIO(r.text)))
+        # Callers arriving mid-download wait for it instead of each starting their own.
+        with self._inst_dl_lock:
             with self._inst_lock:
-                self._inst_master = rows
-            logger.info('Loaded %d Groww instruments', len(rows))
-            return rows
-        except Exception as e:
-            logger.warning('Groww instrument master load error: %s', e)
-            return []
+                if self._inst_master:
+                    return self._inst_master
+            try:
+                import csv
+                import io
+                r = http_get_with_retry(_requests.get, _INSTRUMENTS_CSV_URL, timeout=20)
+                if not r.ok:
+                    return []
+                rows = list(csv.DictReader(io.StringIO(r.text)))
+                with self._inst_lock:
+                    self._inst_master = rows
+                logger.info('Loaded %d Groww instruments', len(rows))
+                return rows
+            except Exception as e:
+                logger.warning('Groww instrument master load error: %s', e)
+                return []
 
     def _build_fno_index(self) -> None:
         if self._fno_sym_index:

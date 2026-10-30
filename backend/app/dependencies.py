@@ -13,8 +13,6 @@ from typing import TYPE_CHECKING
 
 from .application.event_bus import EventBus
 from .config import Settings, settings
-from .domain.safety.kill_switch import KillSwitchConfig, KillSwitchEngine
-from .domain.supervisor.trade_supervisor import SupervisorConfig, TradeSupervisor
 from .shared.scheduler import Scheduler
 
 if TYPE_CHECKING:
@@ -33,24 +31,6 @@ def get_event_bus() -> EventBus:
 @lru_cache(maxsize=1)
 def get_scheduler() -> Scheduler:
     return Scheduler()
-
-
-@lru_cache(maxsize=1)
-def get_kill_switch() -> KillSwitchEngine:
-    limit = settings.daily_loss_limit_inr
-    return KillSwitchEngine(KillSwitchConfig(
-        daily_loss_soft=limit,
-        daily_loss_hard=limit * 2,
-    ))
-
-
-@lru_cache(maxsize=1)
-def get_supervisor() -> TradeSupervisor:
-    ks = get_kill_switch()
-    return TradeSupervisor(
-        config=SupervisorConfig(daily_loss_limit=settings.daily_loss_limit_inr),
-        kill_switch=ks,
-    )
 
 
 def get_settings() -> Settings:

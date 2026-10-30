@@ -21,6 +21,7 @@ from ..dependencies import get_broker
 from ..infrastructure.db import state_store
 from ..shared.logger import get_logger
 from ..shared.time import clock, date, datetime, now_ist, timedelta, today_ist
+from ..state import settings as server_settings
 
 logger = get_logger('api.trade')
 router = APIRouter(prefix='/api/trade', tags=['trade'])
@@ -341,6 +342,7 @@ async def toggle_scalp_auto(request: Request):
     body = await request.json()
     enabled = body.get('enabled', False)
     settings.scalp_auto_trade = enabled
+    server_settings.set('scalp_auto_trade', bool(enabled))   # persisted: survives restarts
     return {'success': True, 'data': {'scalp_auto_trading_enabled': enabled}}
 
 

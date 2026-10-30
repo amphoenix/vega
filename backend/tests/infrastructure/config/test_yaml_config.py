@@ -29,11 +29,6 @@ class TestYAMLLoader:
         assert 'active_exchange' in data['crypto']
         assert 'binance' in data['crypto']['exchanges']
 
-    def test_load_risk_yaml(self):
-        data = load_yaml('risk')
-        assert 'supervisor' in data
-        assert 'kill_switch' in data
-
     def test_caching(self):
         data1 = load_yaml('brokers')
         data2 = load_yaml('brokers')
@@ -93,10 +88,3 @@ class TestConfigServiceYAML:
         config = svc.get_exchange_config('deribit')
         assert config.get('default_type') == 'option'
 
-    def test_get_risk_config(self, svc):
-        risk = svc.get_risk_config()
-        assert 'supervisor' in risk
-
-    def test_get_risk_section(self, svc):
-        supervisor = svc.get_risk_config('supervisor')
-        assert supervisor.get('daily_loss_limit_inr') == 2500.0

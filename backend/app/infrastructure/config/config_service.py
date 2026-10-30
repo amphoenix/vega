@@ -154,35 +154,6 @@ class ConfigService:
         with self._lock:
             return dict(self._overrides)
 
-    # ── Domain config builders ────────────────────────────────────────────
-
-    def build_supervisor_config(self):
-        """Build a SupervisorConfig from current settings + overrides."""
-        from ...domain.supervisor.trade_supervisor import SupervisorConfig
-        return SupervisorConfig(
-            daily_loss_limit=self.get_float('daily_loss_limit_inr', 2500.0),
-            max_trades_per_day=self.get_int('max_trades_per_day', 10),
-            max_consecutive_losses=self.get_int('max_consecutive_losses', 3),
-            cooldown_minutes=self.get_int('cooldown_minutes', 30),
-            max_same_underlying_trades=self.get_int('max_same_underlying_trades', 2),
-            max_open_trades=self.get_int('max_open_trades', 5),
-            allow_outside_safe_hours=self.get_bool('allow_outside_safe_hours', False),
-        )
-
-    def build_kill_switch_config(self):
-        """Build a KillSwitchConfig from current settings + overrides."""
-        from ...domain.safety.kill_switch import KillSwitchConfig
-        return KillSwitchConfig(
-            daily_loss_soft=self.get_float('ks_daily_loss_soft', 2000.0),
-            daily_loss_hard=self.get_float('ks_daily_loss_hard', 4000.0),
-            drawdown_soft=self.get_float('ks_drawdown_soft', 1500.0),
-            drawdown_hard=self.get_float('ks_drawdown_hard', 3000.0),
-            loss_streak_soft=self.get_int('ks_loss_streak_soft', 3),
-            loss_streak_hard=self.get_int('ks_loss_streak_hard', 5),
-            max_errors_per_window=self.get_int('ks_max_errors', 5),
-            error_window_minutes=self.get_int('ks_error_window_min', 10),
-        )
-
     # ── YAML config access ───────────────────────────────────────────────────
 
     # ── Broker config (from YAML) ────────────────────────────────────────────
@@ -259,13 +230,6 @@ class ConfigService:
         return ex.get('crypto', {}).get('exchanges', {}).get(name, {})
 
     # ── Risk config (from YAML) ──────────────────────────────────────────────
-
-    def get_risk_config(self, section: str = '') -> dict[str, Any]:
-        """Get risk config. Optionally specify section: supervisor, kill_switch, etc."""
-        risk = load_yaml('risk')
-        if section:
-            return risk.get(section, {})
-        return risk
 
     # ── Validation ────────────────────────────────────────────────────────
 

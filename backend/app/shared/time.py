@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as dt_time
-from time import monotonic, monotonic_ns, sleep, time as clock  # re-export
+from time import monotonic, monotonic_ns, sleep  # re-export
+from time import time as clock
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo('Asia/Kolkata')

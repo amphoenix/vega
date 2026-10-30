@@ -17,6 +17,7 @@ All config in config.py (crypto_fo_* and crypto_perp_* fields).
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import math
 import threading
@@ -124,6 +125,14 @@ def close_to_close_rv(closes: list[float], window: int = 24) -> float | None:
 # Deribit Client Wrapper (sync, uses CCXT under the hood)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _ccxt_pro_available() -> bool:
+    """True if the optional ccxt.pro (WebSocket) package can be imported."""
+    try:
+        return importlib.util.find_spec('ccxt.pro') is not None
+    except (ImportError, ValueError):
+        return False
+
+
 class DeribitClient:
     """CCXT Deribit wrapper — REST for orders/data, WebSocket for live prices.
 
@@ -179,9 +188,7 @@ class DeribitClient:
         """Start WebSocket ticker stream for given symbols in a background thread."""
         if self._ws_running:
             return
-        try:
-            import ccxt.pro as ccxtpro
-        except ImportError:
+        if not _ccxt_pro_available():
             logger.info('ccxt.pro not available — falling back to REST polling')
             return
 
