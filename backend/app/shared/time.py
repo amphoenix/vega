@@ -86,28 +86,10 @@ def is_safe_hours() -> bool:
     return is_trading_day(n.date()) and (SAFE_OPEN <= n.time() <= SAFE_CLOSE)
 
 
-def is_force_exit_time() -> bool:
-    """True when we should force-exit all MIS positions."""
-    n = now_ist()
-    return is_trading_day(n.date()) and n.time() >= FORCE_EXIT
-
-
 def is_cds_hours() -> bool:
     """True if within NSE CDS (currency derivatives) hours."""
     n = now_ist()
     return is_trading_day(n.date()) and (CDS_OPEN <= n.time() <= CDS_CLOSE)
-
-
-def is_cds_safe_hours() -> bool:
-    """Window during which we are willing to OPEN currency positions."""
-    n = now_ist()
-    return is_trading_day(n.date()) and (CDS_SAFE_OPEN <= n.time() <= CDS_SAFE_CLOSE)
-
-
-def is_cds_force_exit_time() -> bool:
-    """True when we should force-exit all CDS MIS positions."""
-    n = now_ist()
-    return is_trading_day(n.date()) and n.time() >= CDS_FORCE_EXIT
 
 
 def seconds_until_cds_open() -> int:

@@ -25,7 +25,7 @@ from ..domain.safety.kill_switch import KillSwitchConfig, KillSwitchEngine
 from ..domain.supervisor.trade_supervisor import Denial, SupervisorConfig, TradeSupervisor
 from ..infrastructure.broker.base import BrokerAdapter, BrokerFactory, OrderResult
 from ..shared.logger import get_logger
-from ..shared.time import now_ist
+from ..shared.time import datetime, now_ist
 
 logger = get_logger('paper_validator')
 

@@ -50,18 +50,6 @@ def _get_ccxt_async() -> Any:
     return _ccxt_async if _ccxt_async else None
 
 
-def _get_ccxt_sync() -> Any:
-    """Lazy-import ccxt (sync) for exchange metadata only."""
-    global _ccxt_sync
-    if _ccxt_sync is None:
-        try:
-            import ccxt as mod
-            _ccxt_sync = mod
-        except ImportError:
-            _ccxt_sync = False
-    return _ccxt_sync if _ccxt_sync else None
-
-
 # ── Config ───────────────────────────────────────────────────────────────────
 
 @dataclass

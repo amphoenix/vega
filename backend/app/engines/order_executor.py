@@ -433,12 +433,6 @@ def reset_kill_switch() -> float:
     return new_limit
 
 
-def get_daily_pnl() -> float:
-    """Return today's swing P&L from DB (single source of truth)."""
-    _check_day_rollover()
-    return _swing_pnl_from_db()
-
-
 # ── Strict SL enforcement ────────────────────────────────────────────────────
 
 def enforce_strict_sl(ticket: dict) -> dict:

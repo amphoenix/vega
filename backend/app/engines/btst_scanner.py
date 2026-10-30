@@ -261,57 +261,6 @@ def _fetch_intraday_5m(symbol: str) -> pd.DataFrame | None:
     return None
 
 
-def _stage1_filter(symbol: str, df: pd.DataFrame, direction: str) -> bool:
-    if df is None or len(df) < 21:
-        return False
-    try:
-        high, low, close = df['High'], df['Low'], df['Close']
-        prev_close = close.shift(1)
-        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-        plus_dm = high.diff()
-        minus_dm = -low.diff()
-        plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
-        minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
-        length = 14
-        atr = tr.ewm(alpha=1/length, adjust=False).mean()
-        plus_di = 100 * plus_dm.ewm(alpha=1/length, adjust=False).mean() / atr
-        minus_di = 100 * minus_dm.ewm(alpha=1/length, adjust=False).mean() / atr
-        dx = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, float('nan')))
-        adx = float(dx.ewm(alpha=1/length, adjust=False).mean().iloc[-1])
-        if pd.isna(adx) or adx < _config['BTST_ADX_MIN']:
-            return False
-
-        avg_vol = df['Volume'].iloc[-21:-1].mean()
-        today_vol = float(df['Volume'].iloc[-1])
-        if avg_vol <= 0 or (today_vol / avg_vol) < _config['BTST_VOLUME_RATIO_MIN']:
-            return False
-
-        day_high = float(df['High'].iloc[-1])
-        day_low = float(df['Low'].iloc[-1])
-        close = float(df['Close'].iloc[-1])
-        day_range = day_high - day_low
-        if day_range <= 0:
-            return False
-        range_position = (close - day_low) / day_range
-
-        rolling_high = float(df['High'].iloc[-21:-1].max())
-        rolling_low = float(df['Low'].iloc[-21:-1].min())
-
-        if direction == 'bull':
-            # Near day low → oversold → mean-reversion bounce candidate
-            if range_position > 0.30:
-                return False
-        else:
-            # Near day high → overbought → mean-reversion fade candidate
-            if range_position < 0.70:
-                return False
-
-        return True
-    except Exception as e:
-        _log(f'Stage 1 filter error for {symbol}: {e}', 'warn')
-        return False
-
-
 _OPTION_META: dict[str, dict] = {
     'NIFTY':  {'base': 'NIFTY',  'step': 50},
     'SENSEX': {'base': 'SENSEX', 'step': 100},
@@ -352,7 +301,6 @@ def _fetch_option_quotes(symbol: str, spot: float, direction: str) -> list[dict]
             # Skip same-day expiry (expiry-day risk)
             today = _dt.date.today()
             if contract.get('expiry') == today:
-                contract2 = broker.resolve_option_contract(symbol, opt_type, strike + step * 100)
                 # Just re-resolve with a far strike to get next expiry — hack
                 # Better: filter candidates by expiry > today
                 # For now, try to find next expiry contract
@@ -413,126 +361,6 @@ def _run_stage1() -> tuple[list[str], list[str]]:
 
 
 # ── Stage 2: Technical Scoring ────────────────────────────────────────────────
-
-def _get_market_context() -> tuple[float, float]:
-    # Use 5m intraday for accurate today's change — daily iloc[-1] incomplete at scan time
-    try:
-        nifty_chg, sensex_chg = 0.0, 0.0
-        for sym, attr in [('NIFTY', 'nifty_chg'), ('SENSEX', 'sensex_chg')]:
-            df_d = _fetch_ohlcv(sym)
-            df_5m = _fetch_intraday_5m(sym)
-            if df_d is not None and len(df_d) >= 2:
-                prev_close = float(df_d['Close'].iloc[-2])
-                current = float(df_5m['Close'].iloc[-1]) if df_5m is not None and len(df_5m) >= 1 else float(df_d['Close'].iloc[-1])
-                chg = round((current - prev_close) / prev_close * 100, 2)
-                if attr == 'nifty_chg':
-                    nifty_chg = chg
-                else:
-                    sensex_chg = chg
-        return nifty_chg, sensex_chg
-    except Exception:
-        return 0.0, 0.0
-
-
-def _build_score_prompt(
-    symbol: str,
-    df_daily: pd.DataFrame,
-    df_5m: pd.DataFrame | None,
-    direction: str,
-    nifty_chg: float,
-    sensex_chg: float,
-    option_quotes: list[dict] | None = None,
-    technicals: dict | None = None,
-) -> str:
-    # Previous 5 completed daily sessions (exclude today's incomplete candle)
-    prev_days = df_daily.iloc[:-1].tail(5)[['Open', 'High', 'Low', 'Close', 'Volume']].round(2)
-    daily_table = prev_days.to_string()
-    prev_close = float(df_daily['Close'].iloc[-2]) if len(df_daily) >= 2 else float(df_daily['Close'].iloc[-1])
-    d20_high = float(df_daily['High'].iloc[-21:-1].max())
-    d20_low = float(df_daily['Low'].iloc[-21:-1].min())
-
-    if df_5m is not None and len(df_5m) >= 6:
-        intraday_high = float(df_5m['High'].max())
-        intraday_low = float(df_5m['Low'].min())
-        current_price = float(df_5m['Close'].iloc[-1])
-        intraday_open = float(df_5m['Open'].iloc[0])
-        intraday_range = intraday_high - intraday_low
-        range_pos = round((current_price - intraday_low) / intraday_range, 2) if intraday_range > 0 else 0.5
-        today_change_pct = round((current_price - prev_close) / prev_close * 100, 2)
-        last6 = df_5m['Close'].iloc[-6:]
-        momentum_pct = round((float(last6.iloc[-1]) - float(last6.iloc[0])) / float(last6.iloc[0]) * 100, 2)
-        avg_daily_vol = float(df_daily['Volume'].iloc[-21:-1].mean())
-        bars_elapsed = len(df_5m)
-        expected_vol = avg_daily_vol / 75 * bars_elapsed
-        today_vol = float(df_5m['Volume'].sum())
-        vol_ratio = round(today_vol / expected_vol, 2) if expected_vol > 0 else 0.0
-        last12 = df_5m.tail(12)[['Open', 'High', 'Low', 'Close', 'Volume']].round(2)
-        intraday_table = last12.to_string()
-        intraday_section = (
-            f'Intraday (5m candles, last 1 hour as of ~15:20 IST):\n{intraday_table}\n\n'
-            f'Today: Open={intraday_open:.2f}  High={intraday_high:.2f}  Low={intraday_low:.2f}  Current={current_price:.2f}\n'
-            f'Range position (0=day low, 1=day high): {range_pos:.2f}\n'
-            f'Change vs prev close: {today_change_pct:+.2f}%\n'
-            f'Last 30-min momentum: {momentum_pct:+.2f}%\n'
-            f'Volume pace vs 20d avg: {vol_ratio:.1f}x\n'
-        )
-    else:
-        current_price = float(df_daily['Close'].iloc[-1])
-        today_change_pct = round((current_price - prev_close) / prev_close * 100, 2)
-        intraday_section = f'Intraday data unavailable. Last daily close: {current_price:.2f} ({today_change_pct:+.2f}%)\n'
-
-    # Technical indicators section (from _fetch_market_data)
-    tech = technicals or {}
-    tech_parts = []
-    if tech.get('rsi'):
-        tech_parts.append(f'RSI(14)={tech["rsi"]:.1f}')
-    if tech.get('adx'):
-        tech_parts.append(f'ADX={tech["adx"]:.1f}  +DI={tech.get("adx_plus_di", 0):.1f}  -DI={tech.get("adx_minus_di", 0):.1f}')
-    if tech.get('macd_hist') is not None:
-        cross = tech.get('macd_cross', '')
-        tech_parts.append(f'MACD_hist={tech["macd_hist"]:.2f}({cross})')
-    if tech.get('supertrend_dir'):
-        tech_parts.append(f'Supertrend={tech["supertrend_dir"]}')
-    for em in ['ema9', 'ema20', 'ema50', 'ema200']:
-        if tech.get(em):
-            tech_parts.append(f'{em.upper()}={tech[em]:.2f}')
-    if tech.get('trend'):
-        tech_parts.append(f'Trend={tech["trend"]}')
-    tech_section = ('Technical indicators: ' + '  '.join(tech_parts) + '\n') if tech_parts else ''
-
-    # Option chain section
-    opt_type = 'CE' if direction == 'bull' else 'PE'
-    if option_quotes:
-        opt_lines = []
-        for q in option_quotes:
-            opt_lines.append(
-                f'  Strike {q["strike"]} {opt_type} | Expiry {q["expiry"]} | '
-                f'LTP ₹{q["ltp"]:.1f} | OI {q["oi"]:,} | Lot {q["lot_size"]}'
-            )
-        option_section = f'Available {opt_type} options:\n' + '\n'.join(opt_lines) + '\n'
-    else:
-        option_section = 'Option chain unavailable — estimate premiums based on spot and typical IV.\n'
-
-    return (
-        f'You are a BTST options trading analyst for Indian equity markets.\n\n'
-        f'Symbol: {symbol}  |  Scan time: ~15:20 IST (10 min before market close)\n'
-        f'Evaluate for BTST {"BUY" if direction == "bull" else "SHORT"} — buy {opt_type} today, sell next morning.\n\n'
-        f'Previous 5 daily sessions (completed candles):\n{daily_table}\n\n'
-        f'20-day range: Low={d20_low:.2f}  High={d20_high:.2f}\n'
-        f'Prev close: {prev_close:.2f}\n\n'
-        f'{intraday_section}\n'
-        f'{tech_section}'
-        f'Broader market today: Nifty {nifty_chg:+.2f}%  Sensex {sensex_chg:+.2f}%\n\n'
-        f'{option_section}\n'
-        f'Score 0–100 for overnight BTST {direction} potential. Score >=65 = viable.\n'
-        f'Consider: intraday momentum into close, volume confirmation, support/resistance, gap-up/down risk.\n'
-        f'Pick the best strike from the options listed. Set target and SL on the option premium.\n\n'
-        f'Return only the JSON — no markdown, no extra text:\n'
-        f'{{"score": <int 0-100>, "direction": "{direction}", '
-        f'"rationale": "<one sentence>", "target_pct": <float>, "risk_note": "<one sentence>", '
-        f'"strike": <int>, "expiry": "<YYYY-MM-DD>", "entry_premium": <float>, '
-        f'"target_premium": <float>, "sl_premium": <float>}}'
-    )
 
 
 def _technical_fallback_score(
@@ -1342,28 +1170,6 @@ def _fetch_opening_candle(symbol: str) -> dict | None:
         _log(f'Broker opening candle failed for {symbol}: {e}', 'warn')
     # Broker-agnostic: no yfinance fallback.
     return None
-
-
-def _build_exit_prompt(pos: dict, gap_pct: float, candle: dict | None) -> str:
-    candle_str = (
-        f'O={candle["open"]:.2f} H={candle["high"]:.2f} L={candle["low"]:.2f} C={candle["close"]:.2f}'
-        if candle else 'unavailable'
-    )
-    entry = float(pos['entry_price'])
-    current = _get_current_price(pos['symbol'])
-    if pos['direction'] == 'bull':
-        pnl_pct = (current - entry) / entry * 100
-    else:
-        pnl_pct = (entry - current) / entry * 100
-    return (
-        f'BTST exit decision for {pos["symbol"]} ({pos["direction"].upper()})\n'
-        f'Entry: ₹{entry:.2f}  Current: ₹{current:.2f}  P&L: {pnl_pct:+.2f}%\n'
-        f'Gap at open: {gap_pct:+.2f}%\n'
-        f'First 5-min candle: {candle_str}\n'
-        f'Original rationale: {pos.get("rationale", "N/A")}\n\n'
-        f'Decide exit action. Respond ONLY with JSON:\n'
-        f'{{"action": "<exit_now|wait|exit_by_1000>", "reason": "<one sentence>"}}'
-    )
 
 
 def _record_exit(pos: dict, reason: str) -> None:

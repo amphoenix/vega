@@ -1070,7 +1070,6 @@ class CryptoFOScanner:
         to_close = []
 
         for asset, pos in list(self._option_positions.items()):
-            spot = self._spot_prices.get(asset, 0)
             rv = self._rv_cache.get(asset, {}).get('rv_24h', 0)
             iv = self._iv_cache.get(asset, 0)
             vol_premium = iv - rv if iv and rv else 0

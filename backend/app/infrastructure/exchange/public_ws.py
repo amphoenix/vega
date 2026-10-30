@@ -96,20 +96,6 @@ class PublicStreamManager:
         sym = symbol.lower()
         self._start_binance(f'{sym}@ticker', f'binance:{sym}:ticker', _BINANCE_WS)
 
-    def start_binance_kline(self, symbol: str, interval: str = '1m') -> None:
-        sym = symbol.lower()
-        self._start_binance(f'{sym}@kline_{interval}', f'binance:{sym}:kline_{interval}', _BINANCE_WS)
-
-    def start_binance_depth(self, symbol: str) -> None:
-        """Partial book depth @100ms — top 20 bid/ask levels."""
-        sym = symbol.lower()
-        self._start_binance(f'{sym}@depth20@100ms', f'binance:{sym}:depth', _BINANCE_WS)
-
-    def start_binance_futures_ticker(self, symbol: str) -> None:
-        """Futures mark-price + funding rate stream."""
-        sym = symbol.lower()
-        self._start_binance(f'{sym}@ticker', f'binance_fut:{sym}:ticker', _BINANCE_FUTS)
-
     def _start_binance(self, stream: str, channel: str, base: str) -> None:
         with self._lock:
             if self._running.get(channel):
@@ -156,14 +142,6 @@ class PublicStreamManager:
         """Linear perpetual ticker: LTP, OI, funding rate."""
         sym = symbol.upper()
         self._start_bybit([f'tickers.{sym}'], f'bybit:{sym}:ticker')
-
-    def start_bybit_orderbook(self, symbol: str, depth: int = 25) -> None:
-        sym = symbol.upper()
-        self._start_bybit([f'orderbook.{depth}.{sym}'], f'bybit:{sym}:orderbook')
-
-    def start_bybit_trades(self, symbol: str) -> None:
-        sym = symbol.upper()
-        self._start_bybit([f'publicTrade.{sym}'], f'bybit:{sym}:trades')
 
     def _start_bybit(self, topics: list[str], channel: str) -> None:
         with self._lock:

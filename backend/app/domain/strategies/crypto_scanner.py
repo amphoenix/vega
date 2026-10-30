@@ -368,7 +368,7 @@ def _compute_signal(candles: list[dict], trend_candles: list[dict],
 
         # Standard BB: price at/below lower band
         if bb:
-            upper, mid, lower = bb
+            upper, _, lower = bb
             if price <= lower * 1.005:
                 buy_conditions.append('BB_LOW')                    # 8
 
@@ -429,7 +429,7 @@ def _compute_signal(candles: list[dict], trend_candles: list[dict],
             sell_conditions.append('RSI_OVERBOUGHT')
 
         if bb:
-            upper, mid, lower = bb
+            upper, _mid, lower = bb
             if price >= upper * 0.995:
                 sell_conditions.append('BB_HIGH')
 
@@ -469,7 +469,6 @@ def _compute_signal(candles: list[dict], trend_candles: list[dict],
     # min_votes = 4 base (TREND_1H + dip_trigger + 2 confirmations).
     # min_confidence only gates the *display* threshold after vote passes.
     min_conf = min_confidence if min_confidence is not None else settings.crypto_min_confidence
-    max_cats = 16
     min_votes = 4  # TREND_1H + dip_trigger + 2 confirms (realistic)
 
     side: str | None = None
@@ -965,10 +964,8 @@ class CryptoScanner:
             # Calculate profit %
             if side == 'LONG':
                 profit_pct = (price - entry) / entry
-                unrealized = (price - entry) * pos['qty']
             else:  # SHORT
                 profit_pct = (entry - price) / entry
-                unrealized = (entry - price) * pos['qty']
 
             # ── 1. Break-even SL (FixedRiskRewardLoss + NFI) ─────────────
             if not pos.get('be_activated') and profit_pct >= be_pct:

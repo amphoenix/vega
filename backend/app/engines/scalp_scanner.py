@@ -847,7 +847,6 @@ def _detect_momentum(candles: list[dict], ticker: str) -> dict | None:
     close_5_ago = float(candles[-6].get('close', 0)) if len(candles) > 6 else 0
     roc_5 = ((last_close - close_5_ago) / close_5_ago * 100) if close_5_ago > 0 else 0
 
-    is_index      = ticker.startswith('^')
     roc_threshold = 0.20  # uniform — 0.15% on indices fires on noise
 
     breakout_up   = last_close > channel_high

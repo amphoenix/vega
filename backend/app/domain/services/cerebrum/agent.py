@@ -72,8 +72,5 @@ class AgentRegistry:
     def list(self) -> builtins.list[str]:
         return list(self._registry.keys())
 
-    def all_instances(self) -> builtins.list[Agent]:
-        return list(self._registry.values())
-
 
 registry = AgentRegistry()

@@ -25,7 +25,7 @@ class PriorityQueue:
         self._q.put((priority, seq, item))
 
     def pop(self, timeout: float | None = None) -> Any:
-        priority, seq, item = self._q.get(timeout=timeout)
+        _priority, _seq, item = self._q.get(timeout=timeout)
         return item
 
     def size(self) -> int:

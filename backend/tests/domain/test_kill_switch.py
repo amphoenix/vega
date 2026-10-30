@@ -62,7 +62,7 @@ class TestDailyLoss:
         e = _engine()
         e.record_pnl(-2100)  # SOFT
         assert e.is_soft
-        acts = e.record_pnl(-2100)  # total -4200 → HARD
+        e.record_pnl(-2100)  # total -4200 → HARD
         assert e.is_hard
 
     def test_no_trigger_below_threshold(self):
@@ -253,7 +253,7 @@ class TestHistory:
 class TestIdempotency:
     def test_same_trigger_doesnt_duplicate(self):
         e = _engine()
-        acts1 = e.record_pnl(-2100)  # SOFT
+        e.record_pnl(-2100)  # SOFT
         acts2 = e.record_pnl(-100)   # still SOFT, same trigger
         # Second call should not create a new activation for daily_loss
         assert len(acts2) == 0 or all(

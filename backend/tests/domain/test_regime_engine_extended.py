@@ -66,7 +66,7 @@ class TestADXBoundaries:
 class TestRegimeWalks:
     def test_ranging_to_bull_to_high_vol(self, engine):
         """Simulate market going from calm → trending → volatile."""
-        r1, c1 = engine.classify(RegimeSnapshot(vix=14, adx=16, ema_slope=0.01, rsi=50))
+        r1, _c1 = engine.classify(RegimeSnapshot(vix=14, adx=16, ema_slope=0.01, rsi=50))
         assert r1 == Regime.RANGING  # initial classify always RANGING
         # c1 is False because default was already RANGING — no change
 

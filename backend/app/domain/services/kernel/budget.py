@@ -56,10 +56,6 @@ def _cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
     return (prompt_tokens * pricing['input'] + completion_tokens * pricing['output']) / 1_000_000
 
 
-def _ist_now() -> datetime:
-    return datetime.now(UTC) + _IST_OFFSET
-
-
 def _ist_date_str(dt_utc: datetime | None = None) -> str:
     """'YYYY-MM-DD' for the IST calendar day containing the given UTC datetime."""
     dt_utc = dt_utc or datetime.now(UTC)

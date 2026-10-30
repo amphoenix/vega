@@ -185,14 +185,6 @@ class ConfigService:
 
     # ── YAML config access ───────────────────────────────────────────────────
 
-    def get_yaml(self, name: str) -> dict[str, Any]:
-        """Load a YAML config file by name (cached)."""
-        return load_yaml(name)
-
-    def reload_yaml_config(self, name: str) -> dict[str, Any]:
-        """Force-reload a YAML config file."""
-        return reload_yaml(name)
-
     # ── Broker config (from YAML) ────────────────────────────────────────────
 
     def get_active_broker_name(self) -> str:
@@ -238,28 +230,6 @@ class ConfigService:
                 params.update({k: v for k, v in cfg.items() if k != 'params'})
                 self._strategy_config_store.put(name, params, reason='initial load from YAML')
         return self._strategy_config_store
-
-    def update_strategy_params(
-        self, strategy_name: str, params: dict, author: str = 'system', reason: str = '',
-    ):
-        """Update strategy params with version tracking."""
-        store = self.get_strategy_config_store()
-        return store.put(strategy_name, params, author=author, reason=reason)
-
-    def rollback_strategy(self, strategy_name: str, version: int, author: str = 'system'):
-        """Rollback strategy config to a prior version."""
-        store = self.get_strategy_config_store()
-        return store.rollback(strategy_name, version, author=author)
-
-    def strategy_config_history(self, strategy_name: str) -> list:
-        """Get version history for a strategy."""
-        store = self.get_strategy_config_store()
-        return store.history(strategy_name)
-
-    def strategy_config_diff(self, strategy_name: str, from_v: int, to_v: int):
-        """Diff two versions of a strategy config."""
-        store = self.get_strategy_config_store()
-        return store.diff(strategy_name, from_v, to_v)
 
     # ── A/B test config (from YAML) ──────────────────────────────────────────
 

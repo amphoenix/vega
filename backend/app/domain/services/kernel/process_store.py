@@ -77,15 +77,6 @@ class ProcessStore:
         entries.sort(key=lambda e: e.started_at, reverse=True)
         return [e.to_dict() for e in entries[:n]]
 
-    def clear_old(self, keep: int = 500) -> None:
-        with self._lock:
-            done = sorted(
-                [(k, v) for k, v in self._entries.items() if v.status != 'running'],
-                key=lambda x: x[1].started_at,
-            )
-            for k, _ in done[:-keep]:
-                del self._entries[k]
-
     def _save(self) -> None:
         try:
             with self._lock:

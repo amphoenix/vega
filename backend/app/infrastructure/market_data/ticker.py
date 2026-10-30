@@ -26,9 +26,6 @@ class TickerService:
         self._callbacks: list[Callable[[dict[str, Any]], None]] = []
         self._connected = False
 
-    def register_callback(self, cb: Callable[[dict[str, Any]], None]) -> None:
-        self._callbacks.append(cb)
-
     def start(self) -> None:
         logger.info('TickerService: placeholder — not yet connected')
         # Phase 3: establish WS connection

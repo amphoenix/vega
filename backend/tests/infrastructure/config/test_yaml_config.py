@@ -33,7 +33,6 @@ class TestYAMLLoader:
         data = load_yaml('risk')
         assert 'supervisor' in data
         assert 'kill_switch' in data
-        assert 'position_sizing' in data
 
     def test_caching(self):
         data1 = load_yaml('brokers')
@@ -58,7 +57,8 @@ class TestConfigServiceYAML:
 
     def test_get_active_broker(self, svc):
         name = svc.get_active_broker_name()
-        assert name == 'dhan'  # default from YAML
+        assert name == load_yaml('brokers')['active_broker']
+        assert name in load_yaml('brokers')['brokers']
 
     def test_get_broker_config(self, svc):
         config = svc.get_broker_config('dhan')

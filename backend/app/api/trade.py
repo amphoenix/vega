@@ -20,7 +20,7 @@ from ..config import settings
 from ..dependencies import get_broker
 from ..infrastructure.db import state_store
 from ..shared.logger import get_logger
-from ..shared.time import clock, datetime, now_ist, timedelta, today_ist
+from ..shared.time import clock, date, datetime, now_ist, timedelta, today_ist
 
 logger = get_logger('api.trade')
 router = APIRouter(prefix='/api/trade', tags=['trade'])

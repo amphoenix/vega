@@ -225,11 +225,6 @@ class InstrumentService:
         """Get lot size for an underlying."""
         return get_lot_size(underlying)
 
-    def clear_cache(self) -> None:
-        """Clear instrument cache (e.g. at day start)."""
-        with self._lock:
-            self._cache.clear()
-
     def _get_spot(self, underlying: str) -> float | None:
         """Get spot price for an underlying index."""
         # Try common spot symbols

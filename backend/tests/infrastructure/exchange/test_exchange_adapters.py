@@ -46,7 +46,8 @@ class TestCCXTConfig:
     def test_defaults(self):
         c = CCXTConfig()
         assert c.exchange_name == 'binance'
-        assert c.sandbox is True
+        assert c.sandbox is False
+        assert c.paper_mode is True
         assert c.rate_limit is True
         assert c.default_type == 'spot'
         assert c.margin_mode == ''
@@ -78,7 +79,9 @@ class TestCCXTConfig:
 class TestCCXTAdapterStub:
     @pytest.fixture
     def adapter(self):
-        return CCXTAdapter(config=CCXTConfig(exchange_name='binance'))
+        # Force stub mode (no ccxt, no network) with paper trading off
+        with patch('app.infrastructure.exchange.ccxt_adapter._get_ccxt_async', return_value=None):
+            yield CCXTAdapter(config=CCXTConfig(exchange_name='binance', sandbox=True, paper_mode=False))
 
     @pytest.mark.asyncio
     async def test_connect_stub(self, adapter):
@@ -279,7 +282,7 @@ class TestCCXTAdapterMocked:
         mock_ccxt_async = MagicMock()
         mock_ccxt_async.binance = MagicMock(return_value=mock_exchange)
 
-        adapter = CCXTAdapter(config=CCXTConfig(exchange_name='binance'))
+        adapter = CCXTAdapter(config=CCXTConfig(exchange_name='binance', paper_mode=False))
         return adapter, mock_exchange, mock_ccxt_async
 
     @pytest.mark.asyncio
@@ -293,7 +296,7 @@ class TestCCXTAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_fetch_ticker_real_path(self, adapter_with_mock):
-        adapter, mock_exchange, mock_ccxt_async = adapter_with_mock
+        adapter, _mock_exchange, mock_ccxt_async = adapter_with_mock
         with patch('app.infrastructure.exchange.ccxt_adapter._get_ccxt_async', return_value=mock_ccxt_async):
             await adapter.connect()
         ticker = await adapter.get_ticker(_btc_instrument())
@@ -323,7 +326,7 @@ class TestCCXTAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_fetch_positions_real_path(self, adapter_with_mock):
-        adapter, mock_exchange, mock_ccxt_async = adapter_with_mock
+        adapter, _mock_exchange, mock_ccxt_async = adapter_with_mock
         with patch('app.infrastructure.exchange.ccxt_adapter._get_ccxt_async', return_value=mock_ccxt_async):
             await adapter.connect()
         positions = await adapter.get_positions()
@@ -344,7 +347,7 @@ class TestCCXTAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_set_margin_mode_real_path(self, adapter_with_mock):
-        adapter, mock_exchange, mock_ccxt_async = adapter_with_mock
+        adapter, _mock_exchange, mock_ccxt_async = adapter_with_mock
         with patch('app.infrastructure.exchange.ccxt_adapter._get_ccxt_async', return_value=mock_ccxt_async):
             await adapter.connect()
         result = await adapter.set_margin_mode('cross', 'BTC/USDT:USDT')
@@ -352,7 +355,7 @@ class TestCCXTAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_get_balances_real_path(self, adapter_with_mock):
-        adapter, mock_exchange, mock_ccxt_async = adapter_with_mock
+        adapter, _mock_exchange, mock_ccxt_async = adapter_with_mock
         with patch('app.infrastructure.exchange.ccxt_adapter._get_ccxt_async', return_value=mock_ccxt_async):
             await adapter.connect()
         balances = await adapter.get_balances()
@@ -363,7 +366,7 @@ class TestCCXTAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_fetch_ohlcv_real_path(self, adapter_with_mock):
-        adapter, mock_exchange, mock_ccxt_async = adapter_with_mock
+        adapter, _mock_exchange, mock_ccxt_async = adapter_with_mock
         with patch('app.infrastructure.exchange.ccxt_adapter._get_ccxt_async', return_value=mock_ccxt_async):
             await adapter.connect()
         candles = await adapter.fetch_ohlcv(_btc_instrument(), timeframe='1h', limit=1)
@@ -409,7 +412,7 @@ def _poly_instrument() -> Instrument:
 class TestPolymarketAdapterStub:
     @pytest.fixture
     def adapter(self):
-        return PolymarketAdapter(config=PolymarketConfig())
+        return PolymarketAdapter(config=PolymarketConfig(paper_mode=False))
 
     @pytest.mark.asyncio
     async def test_connect_stub(self, adapter):
@@ -590,7 +593,7 @@ class TestPolymarketAdapterMocked:
 
     @pytest.fixture
     def adapter_with_mock(self):
-        adapter = PolymarketAdapter(config=PolymarketConfig(private_key='0xfake'))
+        adapter = PolymarketAdapter(config=PolymarketConfig(private_key='0xfake', paper_mode=False))
         mock_client = self._make_mock_client()
         adapter._client = mock_client
         adapter._connected = True
@@ -637,7 +640,7 @@ class TestPolymarketAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_get_order(self, adapter_with_mock):
-        adapter, mock_client = adapter_with_mock
+        adapter, _mock_client = adapter_with_mock
         order = await adapter.get_order('poly-ord-1')
         assert order.order_id == 'poly-ord-1'
         assert order.side == 'BUY'
@@ -647,7 +650,7 @@ class TestPolymarketAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_get_open_orders(self, adapter_with_mock):
-        adapter, mock_client = adapter_with_mock
+        adapter, _mock_client = adapter_with_mock
         orders = await adapter.get_open_orders()
         assert len(orders) == 1
         assert orders[0].order_id == 'poly-ord-1'
@@ -655,7 +658,7 @@ class TestPolymarketAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_get_ticker(self, adapter_with_mock):
-        adapter, mock_client = adapter_with_mock
+        adapter, _mock_client = adapter_with_mock
         ticker = await adapter.get_ticker(_poly_instrument())
         assert ticker.last == 0.55
         assert ticker.bid == 0.54
@@ -663,7 +666,7 @@ class TestPolymarketAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_get_orderbook(self, adapter_with_mock):
-        adapter, mock_client = adapter_with_mock
+        adapter, _mock_client = adapter_with_mock
         ob = await adapter.get_orderbook(_poly_instrument())
         assert len(ob['bids']) == 1
         assert ob['bids'][0] == [0.54, 500]
@@ -671,7 +674,7 @@ class TestPolymarketAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_get_balances(self, adapter_with_mock):
-        adapter, mock_client = adapter_with_mock
+        adapter, _mock_client = adapter_with_mock
         balances = await adapter.get_balances()
         assert len(balances) == 1
         assert balances[0].currency == 'USDC'
@@ -679,7 +682,7 @@ class TestPolymarketAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_get_positions(self, adapter_with_mock):
-        adapter, mock_client = adapter_with_mock
+        adapter, _mock_client = adapter_with_mock
         positions = await adapter.get_positions()
         assert len(positions) == 1
         assert positions[0].symbol == '0xabc'
@@ -709,7 +712,7 @@ class TestPolymarketAdapterMocked:
 
     @pytest.mark.asyncio
     async def test_get_spread(self, adapter_with_mock):
-        adapter, mock_client = adapter_with_mock
+        adapter, _mock_client = adapter_with_mock
         spread = await adapter.get_spread('0xabc')
         assert spread == 0.02
 

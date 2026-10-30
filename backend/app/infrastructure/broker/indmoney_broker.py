@@ -856,6 +856,7 @@ class INDMoneyBroker(BrokerAdapter):
         self, symbols: list[str],
         callback: Callable[[str, float, dict[str, Any]], None] | None = None,
         exchange: str = 'NFO',
+        security_id: str = '',  # accepted for interface parity; resolved via symbol
     ) -> bool:
         if self._stub:
             return False

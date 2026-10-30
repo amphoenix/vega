@@ -147,14 +147,3 @@ def upsert(record: dict) -> dict | None:
                 _write(items)
                 return record
     return None
-
-
-def update_notes(track_id: str, notes: str) -> dict | None:
-    with _lock:
-        items = _read()
-        for r in items:
-            if r.get('id') == track_id:
-                r['notes'] = (notes or '').strip()
-                _write(items)
-                return r
-    return None

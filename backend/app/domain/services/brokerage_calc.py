@@ -220,19 +220,6 @@ _PROFILES: dict[str, FeeProfile] = {
 _default_profile: FeeProfile = FO
 
 
-def set_default_profile(broker_name: str) -> None:
-    global _default_profile
-    key = broker_name.lower().strip()
-    if key in _PROFILES:
-        _default_profile = _PROFILES[key]
-
-
-def get_profile(broker_name: str | None = None) -> FeeProfile:
-    if broker_name:
-        return _PROFILES.get(broker_name.lower().strip(), _default_profile)
-    return _default_profile
-
-
 def calc_brokerage(
     entry_premium: float, exit_premium: float, qty: int,
     profile: FeeProfile | None = None,

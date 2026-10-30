@@ -46,16 +46,6 @@ class EventBus:
             return len(self._subs)
 
 
-def tick_event(ticker: str, price: float, source: str,
-               high: float | None = None, low: float | None = None,
-               volume: int | None = None,
-               change_pct: float | None = None) -> dict:
-    return {
-        'type': 'tick', 'ticker': ticker, 'price': price, 'source': source,
-        'high': high, 'low': low, 'volume': volume, 'change_pct': change_pct,
-    }
-
-
 def agent_submitted_event(execution_id: str, agent_id: str) -> dict:
     return {'type': 'agent_submitted', 'execution_id': execution_id, 'agent_id': agent_id}
 

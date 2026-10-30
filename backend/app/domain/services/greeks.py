@@ -110,10 +110,11 @@ def implied_vol(spot: float, strike: float, dte_days: float,
 
     f_lo = bs_price(spot, strike, T, rate, lo, opt_type) - market_price
     f_hi = bs_price(spot, strike, T, rate, hi, opt_type) - market_price
-    if f_lo > 0 and f_hi > 0:
-        return lo
-    if f_lo < 0 and f_hi < 0:
-        return hi
+    # Price outside the BS range for [lo, hi] means "no solution" (e.g. 0DTE with
+    # T≈0 can't explain any time value). Returning a bound here used to yield a
+    # fake IV=500% that blew up targets/reprice to ~₹5,500 on a ₹350 option.
+    if (f_lo > 0 and f_hi > 0) or (f_lo < 0 and f_hi < 0):
+        return None
 
     for _ in range(max_iter):
         mid = 0.5 * (lo + hi)

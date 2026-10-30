@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Pre-push gate: backend tests + frontend lint. Bypass once with git push --no-verify.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+echo "[pre-push] backend: pytest"
+(cd "$ROOT/backend" && uv run --frozen pytest -q --no-header -p no:cacheprovider)
+
+echo "[pre-push] frontend: eslint"
+(cd "$ROOT/frontend" && npm run --silent lint)
+
+echo "[pre-push] OK"

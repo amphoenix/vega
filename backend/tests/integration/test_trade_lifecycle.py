@@ -251,7 +251,7 @@ class TestExposureIntegration:
 
     def test_exposure_blocks_overconcentration(self, exposure, supervisor, broker):
         """Can't go all-in on one direction."""
-        for i in range(5):
+        for _ in range(5):
             exposure.add('CE', lots=1)
         v = exposure.check('CE', lots=1)
         assert not v.allowed

@@ -1064,7 +1064,7 @@ class DhanBroker(BrokerAdapter):
     def unsubscribe_ticks(self, symbols: list[str]) -> bool:
         """Unsubscribe from tick stream and remove callbacks."""
         for sym in symbols:
-            sec_int, segment = self._resolve_sec(sym, '', '')
+            sec_int, _segment = self._resolve_sec(sym, '', '')
             if not sec_int:
                 continue
             with self._callback_lock:

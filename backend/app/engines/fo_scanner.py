@@ -128,8 +128,6 @@ def _fo_cfg():
 
 def _scan_interval(): return _fo_cfg().fo_scan_interval_sec
 def _min_confidence(): return _fo_cfg().fo_min_confidence
-def _min_agent_agreement(): return _fo_cfg().fo_min_agents
-def _signal_min_dte(): return _fo_cfg().fo_signal_min_dte
 def _max_risk_pct(): return _fo_cfg().fo_max_risk_pct
 
 _scanner_thread: threading.Thread | None = None
@@ -248,33 +246,6 @@ def _nse_base(ticker: str) -> str:
 
 def _resolve_option_contract(ticker: str, option_type: str, strike: float) -> dict | None:
     return get_broker().resolve_option_contract(ticker, option_type, strike)
-
-
-def _build_trading_symbol(ticker: str, cio: dict, price: float) -> str:
-    """
-    Build NSE trading symbol from CIO instrument recommendation.
-    e.g. NIFTY + CE + 24500 + 10APR25 → NIFTY25APR24500CE
-    """
-    itype  = cio.get('instrument_type', 'EQ')
-    expiry = cio.get('expiry', '')
-    strike = cio.get('strike_price', 0)
-
-    if itype == 'EQ':
-        return ticker.replace('.NS', '').replace('.BO', '').replace('^', '')
-
-    # Base symbol
-    base = ticker.upper().replace('.NS', '').replace('.BO', '')
-    base = base.replace('^NSEI', 'NIFTY').replace('^NSEBANK', 'BANKNIFTY')
-
-    if itype == 'FUT':
-        # e.g. NIFTY25APR FUT
-        return f"{base}{expiry}FUT" if expiry else f"{base}FUT"
-
-    if itype in ('CE', 'PE'):
-        strike_int = int(round(strike / 50) * 50) if 'NIFTY' in base else int(strike)
-        return f"{base}{expiry}{strike_int}{itype}" if expiry else f"{base}{strike_int}{itype}"
-
-    return base
 
 
 # ── Stage 1: pure technical pre-filter (no LLM) ──────────────────────────────

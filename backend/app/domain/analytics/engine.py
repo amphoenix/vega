@@ -158,11 +158,10 @@ class AnalyticsEngine:
         peak = equity
         max_dd = 0.0
         max_dd_peak = equity
-        dd_start_idx = 0
         worst_dd_trades = 0
         current_dd_trades = 0
 
-        for i, t in enumerate(closed):
+        for t in closed:
             equity += t.realized_gross_pnl
 
             if equity > peak:
